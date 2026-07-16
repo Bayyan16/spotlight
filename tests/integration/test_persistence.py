@@ -24,7 +24,16 @@ def api_client(tmp_path, monkeypatch):
     app_mod.init_schema()
 
     client = TestClient(app_mod.app)
-    yield client, app_mod
+    try:
+        yield client, app_mod
+    finally:
+        # CRITICAL: reload BACK to the un-DATABASE_URL state so any other
+        # test (test_reporter, test_api) that already grabbed a reference to
+        # `spotlight.api.app` gets a module whose dicts + endpoints line up.
+        # Without this, our reload pollutes every downstream TestClient test.
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        importlib.reload(db_mod)
+        importlib.reload(app_mod)
 
 
 def test_sweep_persists_across_memory_clear(api_client):

@@ -116,38 +116,15 @@ class Reporter:
         # ── verified count for the exec summary ──────────────────────────
         verified_count = sum(1 for f in findings if f.get("tier") == "verified")
 
-        # ── exploit paths — one entry per finding whose Reproducer said
-        # "confirmed". The path is deliberately shallow (result + sandbox +
-        # location) so the Markdown can print it inline without unfolding
-        # the whole finding.
-        exploit_paths: list[dict] = []
-        for f in findings:
-            verification = (f.get("evidence") or {}).get("verification") or {}
-            sandbox_bundle = (f.get("evidence") or {}).get("sandbox") or {}
-            repro_sandbox = sandbox_bundle.get("reproducer") or {}
-            corroboration = (f.get("evidence") or {}).get("corroboration") or []
-            reproduced = any(
-                c.get("type") == "reproduction" and c.get("result") == "confirmed"
-                for c in corroboration
-            )
-            if not reproduced:
-                continue
-            exploit_paths.append(
-                {
-                    "finding_id": f.get("id"),
-                    "title": f.get("title"),
-                    "class": f.get("class"),
-                    "location": f.get("location"),
-                    "reproduced": True,
-                    "verification_result": verification.get("result"),
-                    "sandbox": {
-                        "engine": repro_sandbox.get("engine"),
-                        "duration_s": repro_sandbox.get("duration_s"),
-                        "exit_code": repro_sandbox.get("exit_code"),
-                        "capability_token": repro_sandbox.get("capability_token"),
-                    },
-                }
-            )
+        # ── exploit paths ────────────────────────────────────────────────
+        # The Chainer is authoritative for `exploit_paths`. If it composed
+        # zero chains (because there were no cross-surface pairs to link),
+        # the attestation reports zero — the per-finding reproduction proofs
+        # live in `sandbox_proofs` below, they don't belong under exploit
+        # paths. Consistency > convenience.
+        exploit_paths: list[dict] = list(
+            getattr(sweep_result, "exploit_paths", []) or []
+        )
 
         # ── warden self-defense block ────────────────────────────────────
         warden_block = self._assemble_warden_block(warden_events, events)

@@ -25,6 +25,18 @@ import pytest
 from fastapi.testclient import TestClient
 
 from spotlight.api.app import BUSES, SWEEPS, _running_threads, app
+
+
+def _api_mod():
+    """Fetch the LIVE spotlight.api.app module from sys.modules.
+
+    test_persistence.py reloads this module; after that reload, the module-
+    level `SWEEPS` and `app` symbols imported at the top of this file are
+    stale pointers to the previous incarnation. Everything below routes
+    through this helper so registry writes and TestClient share the same
+    live module."""
+    import sys
+    return sys.modules["spotlight.api.app"]
 from spotlight.orchestrator import SweepResult
 from spotlight.reporter import (
     PdfRenderError,
@@ -241,20 +253,38 @@ def test_assemble_metrics_sums_sandbox_duration():
     assert metrics["events_total"] == 4
 
 
-def test_assemble_exploit_paths_promotes_reproduced_findings():
-    """An `exploit_paths` entry is emitted for every finding whose
-    Reproducer said `confirmed`. Un-reproduced findings must not appear."""
+def test_assemble_exploit_paths_uses_chainer_output_verbatim():
+    """`exploit_paths` MUST reflect what the Chainer put on the SweepResult.
+    The Reporter no longer synthesizes per-finding reproduction proofs into
+    this field — those live in `sandbox_proofs`. Consistency > convenience:
+    if the Chainer composed zero chains, the attestation reports zero."""
     sweep = _sweep_stub()
-    # Add a second finding that was NOT reproduced — must be excluded from
-    # exploit_paths but still appear in `findings`.
-    unrep = _finding_stub("SPOT-0002")
-    unrep["evidence"]["corroboration"] = [
-        {"type": "reproduction", "result": "not-reproduced"}
-    ]
-    sweep.findings.append(unrep)
+    # Attach a canned Chainer output.
+    chainer_path = {
+        "id": "EP-0001",
+        "title": "prompt-injection → excessive-agency",
+        "severity": "critical",
+        "cross_surface": True,
+        "steps": [
+            {"order": 1, "finding_id": "SPOT-0003", "surface": "agentic",
+             "class": "prompt-injection", "cwe": "CWE-77",
+             "file": "app.py", "line": 12, "edge": "user text reaches LLM"},
+        ],
+        "reproduced": False,
+        "rationale": "test",
+    }
+    sweep.exploit_paths = [chainer_path]
     attestation = Reporter().assemble(sweep)
-    ids = [ep["finding_id"] for ep in attestation["exploit_paths"]]
-    assert ids == ["SPOT-0001"]
+    assert attestation["exploit_paths"] == [chainer_path]
+
+
+def test_assemble_exploit_paths_empty_when_chainer_composed_none():
+    """A finding being reproduced does NOT auto-promote to an exploit path.
+    Chain composition is the Chainer's job."""
+    sweep = _sweep_stub()
+    sweep.exploit_paths = []
+    attestation = Reporter().assemble(sweep)
+    assert attestation["exploit_paths"] == []
 
 
 def test_assemble_uses_explicit_chain_of_custody_when_provided():
@@ -368,9 +398,10 @@ def test_render_pdf_raises_clean_error_when_reportlab_missing(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _clear_registries():
-    BUSES.clear()
-    SWEEPS.clear()
-    _running_threads.clear()
+    m = _api_mod()
+    m.BUSES.clear()
+    m.SWEEPS.clear()
+    m._running_threads.clear()
     yield
 
 
@@ -381,12 +412,12 @@ def _install_sweep_in_memory(sweep_id: str = "sw_api_test") -> None:
     sweep.sweep_id = sweep_id
     rich = Reporter().assemble(sweep)
     sweep.attestations = [rich]
-    SWEEPS[sweep_id] = sweep
+    _api_mod().SWEEPS[sweep_id] = sweep
 
 
 def test_api_attestation_returns_json_by_default():
     _install_sweep_in_memory("sw_json_case")
-    client = TestClient(app)
+    client = TestClient(_api_mod().app)
     r = client.get("/attestations/sw_json_case")
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("application/json")
@@ -399,7 +430,7 @@ def test_api_attestation_markdown_content_type():
     """?format=markdown returns text/markdown; charset=utf-8 with a body
     containing the exec summary."""
     _install_sweep_in_memory("sw_md_case")
-    client = TestClient(app)
+    client = TestClient(_api_mod().app)
     r = client.get("/attestations/sw_md_case?format=markdown")
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/markdown")
@@ -412,7 +443,7 @@ def test_api_attestation_pdf_returns_pdf_bytes():
     """?format=pdf returns application/pdf when reportlab is available."""
     pytest.importorskip("reportlab")
     _install_sweep_in_memory("sw_pdf_case")
-    client = TestClient(app)
+    client = TestClient(_api_mod().app)
     r = client.get("/attestations/sw_pdf_case?format=pdf")
     assert r.status_code == 200
     assert r.headers["content-type"] == "application/pdf"
@@ -421,13 +452,13 @@ def test_api_attestation_pdf_returns_pdf_bytes():
 
 def test_api_attestation_unknown_format_400():
     _install_sweep_in_memory("sw_bad_case")
-    client = TestClient(app)
+    client = TestClient(_api_mod().app)
     r = client.get("/attestations/sw_bad_case?format=csv")
     # FastAPI's Query validator returns 422 for pattern mismatches.
     assert r.status_code in (400, 422)
 
 
 def test_api_attestation_404_for_missing_sweep():
-    client = TestClient(app)
+    client = TestClient(_api_mod().app)
     r = client.get("/attestations/sw_does_not_exist")
     assert r.status_code == 404
