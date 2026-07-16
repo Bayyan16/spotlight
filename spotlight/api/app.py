@@ -46,6 +46,27 @@ def _redact_response(data: Any) -> Any:
     """Apply redactor to a dict/list about to leave the process."""
     return _RESPONSE_REDACTOR.redact_dict(data)
 
+
+def _find_finding_row(sess, finding_id: str):
+    """Look up a FindingRow by either the workspace-scoped key
+    (e.g. `SPOT-0001`) OR the sweep-scoped key (`sw_abc:SPOT-0001`).
+
+    Post-fix rows use the sweep-scoped composite key; a URL like
+    `/findings/SPOT-0001` still resolves via the endswith fallback so the
+    Console + curl demos keep working without change. When multiple sweeps
+    each produced `SPOT-0001`, we return the most recent one (max row id).
+    """
+    row = sess.get(FindingRow, finding_id)
+    if row is not None:
+        return row
+    return (
+        sess.query(FindingRow)
+        .filter(FindingRow.id.endswith(f":{finding_id}"))
+        .order_by(FindingRow.id.desc())
+        .first()
+    )
+
+
 app = FastAPI(title="Spotlight API", version="0.1.0")
 
 app.add_middleware(
@@ -257,9 +278,15 @@ def _persist_sweep(result: SweepResult, source: str, repo_name: str) -> None:
             sess.query(FindingRow).filter(FindingRow.sweep_id == result.sweep_id).delete()
             sess.query(EventRow).filter(EventRow.sweep_id == result.sweep_id).delete()
             for f in result.findings:
+                # FindingRow.id is workspace-global. Every sweep produces
+                # 'SPOT-0001'; without namespacing the second sweep would
+                # collide on the primary key and _persist_sweep would fail
+                # silently (bug lived from Phase 1.5 to now). The Attestation
+                # still shows f["id"] as the human label via the JSONB
+                # payload; only the row key gets the sweep_id prefix.
                 sess.add(
                     FindingRow(
-                        id=f["id"],
+                        id=f"{result.sweep_id}:{f['id']}",
                         sweep_id=result.sweep_id,
                         surface=f["surface"],
                         title=f["title"],
@@ -419,7 +446,7 @@ def get_finding(finding_id: str) -> dict:
                 return _redact_response(f)
     if store_enabled():
         with get_session() as sess:
-            row = sess.get(FindingRow, finding_id)
+            row = _find_finding_row(sess, finding_id)
             if row:
                 return _redact_response(row.payload)
     raise HTTPException(404, "finding not found")
@@ -454,7 +481,7 @@ def get_finding_presence(finding_id: str) -> dict:
 
     if self_row is None and store_enabled():
         with get_session() as sess:
-            row = sess.get(FindingRow, finding_id)
+            row = _find_finding_row(sess, finding_id)
             if row:
                 self_row = row.payload
                 self_sweep_id = row.sweep_id
@@ -568,7 +595,7 @@ def get_pr_for_finding(finding_id: str) -> dict:
             break
     if payload is None and store_enabled():
         with get_session() as sess:
-            row = sess.get(FindingRow, finding_id)
+            row = _find_finding_row(sess, finding_id)
             if row:
                 payload = row.payload
     if payload is None:
