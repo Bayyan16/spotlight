@@ -6,15 +6,12 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/api": {
-        target: "http://127.0.0.1:8000",
-        changeOrigin: true,
-        rewrite: (p) => p.replace(/^\/api/, ""),
-      },
-      "/ws": {
-        target: "ws://127.0.0.1:8000",
-        ws: true,
-      },
+      "/targets": "http://127.0.0.1:8000",
+      "/sweeps": "http://127.0.0.1:8000",
+      "/findings": "http://127.0.0.1:8000",
+      "/attestations": "http://127.0.0.1:8000",
+      "/healthz": "http://127.0.0.1:8000",
+      "/ws": { target: "ws://127.0.0.1:8000", ws: true },
     },
   },
   test: {

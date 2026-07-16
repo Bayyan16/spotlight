@@ -14,6 +14,8 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from spotlight.orchestrator import EventBus, Orchestrator, SweepResult
@@ -174,3 +176,20 @@ async def ws_sweep(ws: WebSocket, sweep_id: str) -> None:
     except WebSocketDisconnect:
         return
     await ws.close()
+
+
+# --- Serve the built React SPA -------------------------------------------------
+
+_CONSOLE_DIST = Path(__file__).resolve().parents[2] / "console" / "dist"
+
+if _CONSOLE_DIST.exists():
+    app.mount("/assets", StaticFiles(directory=_CONSOLE_DIST / "assets"), name="assets")
+
+    @app.get("/")
+    def _serve_index() -> FileResponse:
+        return FileResponse(_CONSOLE_DIST / "index.html")
+
+    @app.get("/{path:path}")
+    def _spa_fallback(path: str) -> FileResponse:
+        # Do NOT swallow API routes — FastAPI matches those first.
+        return FileResponse(_CONSOLE_DIST / "index.html")

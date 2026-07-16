@@ -1,4 +1,4 @@
-const BASE = (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_API ?? "/api";
+const BASE = (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_API ?? "";
 
 export type Target = { name: string; path: string; has_ground_truth: boolean };
 
@@ -67,8 +67,7 @@ export async function getAttestation(id: string): Promise<unknown> {
 export function openSweepStream(id: string, onEvent: (e: SweepEvent) => void): WebSocket {
   const scheme = window.location.protocol === "https:" ? "wss" : "ws";
   const host = window.location.host;
-  const path = BASE.startsWith("/") ? BASE : "";
-  const ws = new WebSocket(`${scheme}://${host}${path}/ws/sweeps/${id}`);
+  const ws = new WebSocket(`${scheme}://${host}/ws/sweeps/${id}`);
   ws.onmessage = (msg) => {
     try {
       onEvent(JSON.parse(msg.data));
