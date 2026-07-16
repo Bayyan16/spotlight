@@ -79,7 +79,15 @@ class Orchestrator:
             emit(EventType.AGENT_SPAWNED, "orchestrator", role="investigator", slice=slice_)
             judgment = Investigator(self.model).run(slice_)
             if judgment:
-                judgment["evidence_used"] = judgment.get("evidence_used", []) + [slice_["reason"]]
+                # Static-analysis facts are attached by the orchestrator, not the
+                # model. That way "reachable" is a checkable graph fact, and the
+                # Consensus Kernel doesn't depend on the model saying magic words.
+                existing = judgment.get("evidence_used", []) or []
+                judgment["evidence_used"] = [
+                    "codegraph:source->sink reachable",
+                    slice_["reason"],
+                    *existing,
+                ]
                 candidates.append(judgment)
                 emit(EventType.CANDIDATE_RAISED, "investigator", candidate=judgment)
 
