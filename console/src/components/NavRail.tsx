@@ -63,8 +63,8 @@ export function NavRail({
           label="Findings"
           shortcut="3"
         />
-        <NavItem k="paths" active={active} onSelect={onSelect} icon={<IconExploitPath />} label="Exploit paths" shortcut="4" locked />
-        <NavItem k="warden" active={active} onSelect={onSelect} icon={<IconWarden />} label="Warden" shortcut="5" locked />
+        <NavItem k="paths" active={active} onSelect={onSelect} icon={<IconExploitPath />} label="Exploit paths" shortcut="4" />
+        <NavItem k="warden" active={active} onSelect={onSelect} icon={<IconWarden />} label="Warden" shortcut="5" />
         <NavItem
           k="attestations"
           active={active}

@@ -124,6 +124,19 @@ def _build_evidence(
                 detail=evidence_used,
             )
         )
+    # Tranche B3 — cognition sweep slices count as static-analysis facts too.
+    # The CognitionScanner produces AST-derived agentic slices with the same
+    # "reachable from source to sink" semantics as the code-graph; the
+    # ConsensusKernel treats them identically for tier decisions.
+    if "cognition:agentic-source->llm-sink" in evidence_used:
+        evidence.append(
+            EvidenceItem(
+                modality="static_analysis_fact",
+                origin={"tool": "cognition-scanner", "context_id": f"{sweep_id}:cognition"},
+                result="confirmed",
+                detail=evidence_used,
+            )
+        )
     # The Investigator's own verdict counts as an independent-agent vote for
     # the model that produced it. Two passes of the same model in the same
     # sweep would share the (family, context_id) key and collapse to one.

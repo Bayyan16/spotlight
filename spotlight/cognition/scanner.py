@@ -255,6 +255,7 @@ def _scan_denial_of_wallet(path: Path, text: str) -> list[CognitionFinding]:
         fn_body = _enclosing_function_body(text, tree, node) or body_src
         if any(k in fn_body for k in rules.BUDGET_KNOB_NEEDLES):
             continue
+        fn_name = _enclosing_function_name(tree, node) or "<module>"
         out.append(
             CognitionFinding(
                 file=str(path),
@@ -276,6 +277,18 @@ def _enclosing_function_name(tree: ast.Module, target: ast.AST) -> str | None:
             for child in ast.walk(node):
                 if child is target:
                     return node.name
+    return None
+
+
+def _enclosing_function_body(text: str, tree: ast.Module, target: ast.AST) -> str | None:
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for child in ast.walk(node):
+                if child is target:
+                    try:
+                        return ast.get_source_segment(text, node)
+                    except Exception:
+                        return None
     return None
 
 

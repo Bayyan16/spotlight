@@ -323,3 +323,166 @@ def test_agentic_dataflow_is_import_stable():
         class_="prompt-injection", owasp_llm="LLM01", reason="test", line=1,
     )
     assert df.to_dict()["surface"] == "agentic"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Parametrized coverage — each LLM sink + each excessive-agency callable
+# ─────────────────────────────────────────────────────────────────────────────
+
+LLM_SINK_POSITIVES = [
+    "chain.invoke({'input': request.args.get('q')})",
+    "chain.run(request.args.get('q'))",
+    "ChatPromptTemplate.from_template(request.args.get('q'))",
+    "PromptTemplate(request.args.get('q'))",
+    "client.chat.completions.create(messages=[{'role':'user','content': request.args.get('q')}])",
+    "anthropic_client.messages.create(messages=[{'role':'user','content': request.args.get('q')}])",
+    "AgentExecutor.from_agent_and_tools(input=request.args.get('q'), agent=None, tools=[])",
+    "llm.invoke(request.args.get('q'))",
+    "llm.predict(request.args.get('q'))",
+]
+
+
+@pytest.mark.parametrize("snippet_line", LLM_SINK_POSITIVES)
+def test_prompt_injection_fires_across_llm_sinks(snippet_line, tmp_path):
+    src = "from flask import request\n\ndef go():\n    " + snippet_line + "\n"
+    findings = _scan_snippet(src, tmp_path)
+    classes = [f.class_ for f in findings]
+    assert "prompt-injection" in classes, f"missing prompt-injection for: {snippet_line}"
+
+
+EXCESSIVE_AGENCY_POSITIVES = [
+    "requests.get",
+    "requests.post",
+    "httpx.get",
+    "httpx.request",
+    "subprocess.run",
+    "subprocess.Popen",
+    "os.system",
+    "os.popen",
+]
+
+
+@pytest.mark.parametrize("dangerous_callable", EXCESSIVE_AGENCY_POSITIVES)
+def test_excessive_agency_fires_per_dangerous_callable(dangerous_callable, tmp_path):
+    src = (
+        "from langchain.agents import Tool\n"
+        "\n"
+        "def go():\n"
+        f"    return Tool(name='t', func=lambda x: {dangerous_callable}(x), description='d')\n"
+    )
+    findings = _scan_snippet(src, tmp_path)
+    classes = [f.class_ for f in findings]
+    assert "excessive-agency" in classes, (
+        f"missing excessive-agency for callable: {dangerous_callable}"
+    )
+
+
+OUTPUT_HANDLING_POSITIVES = [
+    ("eval", "eval(llm_response)"),
+    ("exec", "exec(llm_response)"),
+    ("subprocess", "subprocess.run(llm_response, shell=True)"),
+    ("os.system", "os.system(llm_response)"),
+    ("db.execute", "db.execute(llm_response)"),
+]
+
+
+@pytest.mark.parametrize("label,sink_line", OUTPUT_HANDLING_POSITIVES)
+def test_output_handling_fires_per_sink(label, sink_line, tmp_path):
+    src = (
+        "from langchain.chains import LLMChain\n"
+        "import subprocess, os\n"
+        "\n"
+        "def go():\n"
+        "    chain = LLMChain()\n"
+        "    llm_response = chain.invoke({'input':'x'})\n"
+        f"    {sink_line}\n"
+    )
+    findings = _scan_snippet(src, tmp_path)
+    classes = [f.class_ for f in findings]
+    assert "output-handling" in classes, (
+        f"missing output-handling for {label}: {sink_line}"
+    )
+
+
+VECTOR_STORE_POSITIVES = [
+    "Chroma(collection_name='c', persist_directory=os.environ['VS'])",
+    "FAISS(index_url=os.environ['VS'])",
+    "Pinecone(host=os.environ['VS'])",
+    "Weaviate(url=os.environ['VS'])",
+    "Qdrant(url=os.environ['VS'])",
+]
+
+
+@pytest.mark.parametrize("ctor_line", VECTOR_STORE_POSITIVES)
+def test_rag_surface_fires_per_vectorstore(ctor_line, tmp_path):
+    src = (
+        "import os\n"
+        "from langchain.vectorstores import Chroma, FAISS, Pinecone, Weaviate, Qdrant\n"
+        "\n"
+        f"vs = {ctor_line}\n"
+    )
+    findings = _scan_snippet(src, tmp_path)
+    classes = [f.class_ for f in findings]
+    assert "rag-surface" in classes, (
+        f"missing rag-surface for vector store: {ctor_line}"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Robustness / silent-failure tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_scanner_survives_unparseable_file(tmp_path):
+    """A malformed .py file must NOT crash the scanner — it should skip
+    silently and keep going for the other files."""
+    bad = tmp_path / "bad.py"
+    bad.write_text("def broken(:\n    pass\n")  # syntax error
+    good = tmp_path / "good.py"
+    good.write_text(
+        "from flask import request\n"
+        "from langchain.chains import LLMChain\n"
+        "def go():\n"
+        "    LLMChain().invoke({'input': request.args.get('q')})\n"
+    )
+    findings = CognitionScanner().scan(tmp_path, [bad, good])
+    classes = {f.class_ for f in findings}
+    assert "prompt-injection" in classes
+
+
+def test_scanner_ignores_non_python_files(tmp_path):
+    js = tmp_path / "app.js"
+    js.write_text("const q = req.body.q; chain.invoke({input: q});\n")
+    findings = CognitionScanner().scan(tmp_path, [js])
+    # JS/TS agentic surface is Phase-3 scope — MVP scanner ignores non-py.
+    assert findings == []
+
+
+def test_scanner_dedupes_identical_findings(tmp_path):
+    src = (
+        "from flask import request\n"
+        "from langchain.chains import LLMChain\n"
+        "def go():\n"
+        "    LLMChain().invoke({'input': request.args.get('q')})\n"
+    )
+    findings = _scan_snippet(src, tmp_path)
+    pi = [f for f in findings if f.class_ == "prompt-injection"]
+    # Exactly one prompt-injection finding — no dupes across module/function
+    # walks.
+    assert len(pi) == 1, f"expected 1 dedup'd finding; got {len(pi)}"
+
+
+def test_cognition_finding_carries_line_number(tmp_path):
+    findings = CognitionScanner().scan(VULN_FIXTURE, _py_files(VULN_FIXTURE))
+    assert all(f.line > 0 for f in findings), "every finding must carry a line number"
+
+
+def test_owasp_llm_codes_are_llm_prefixed(tmp_path):
+    findings = CognitionScanner().scan(VULN_FIXTURE, _py_files(VULN_FIXTURE))
+    for f in findings:
+        assert f.owasp_llm.startswith("LLM"), f"bad owasp_llm code {f.owasp_llm!r} on {f.class_}"
+
+
+def test_reason_string_is_non_empty(tmp_path):
+    findings = CognitionScanner().scan(VULN_FIXTURE, _py_files(VULN_FIXTURE))
+    for f in findings:
+        assert f.reason, f"reason is empty on {f.__dict__}"

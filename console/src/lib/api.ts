@@ -205,6 +205,39 @@ export async function getPresence(findingId: string): Promise<PresenceResult | n
   return r.json();
 }
 
+// Exploit Paths (Tranche B4) — the cross-surface money-shot.
+export type ExploitPathStep = {
+  order: number;
+  finding_id: string;
+  surface: string;
+  class: string;
+  cwe: string;
+  file: string;
+  line: number;
+  edge: string;
+};
+
+export type ExploitPath = {
+  id: string;
+  title: string;
+  severity: string;
+  cross_surface: boolean;
+  steps: ExploitPathStep[];
+  reproduced: boolean;
+  rationale: string;
+};
+
+export async function getExploitPaths(sweepId: string): Promise<ExploitPath[]> {
+  const r = await fetch(`${BASE}/paths/${sweepId}`);
+  if (!r.ok) return [];
+  return r.json();
+}
+
+// Attestation download URL — used by the Export button on FindingDetail.
+export function attestationUrl(sweepId: string, format: "json" | "markdown" | "pdf"): string {
+  return `${BASE}/attestations/${sweepId}?format=${format}`;
+}
+
 export function openSweepStream(id: string, onEvent: (e: SweepEvent) => void): WebSocket {
   const scheme = window.location.protocol === "https:" ? "wss" : "ws";
   const host = window.location.host;

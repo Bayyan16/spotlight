@@ -1,0 +1,19 @@
+{
+  "target": "kitchen-sink",
+  "language": "python",
+  "purpose": "Demonstration — triggers every Spotlight detection surface in one sweep.",
+  "expected_findings": [
+    {"id": "GT-K01", "class": "sqli", "cwe": "CWE-89", "surface": "code", "file": "app.py", "function": "get_account"},
+    {"id": "GT-K02", "class": "hardcoded-aws-key", "cwe": "CWE-798", "surface": "secrets", "file": "app.py"},
+    {"id": "GT-K03", "class": "hardcoded-openai-key", "cwe": "CWE-798", "surface": "secrets", "file": "app.py"},
+    {"id": "GT-K04", "class": "prompt-injection", "cwe": "CWE-77", "surface": "agentic", "file": "app.py", "function": "support"},
+    {"id": "GT-K05", "class": "excessive-agency", "cwe": "CWE-269", "surface": "agentic", "file": "app.py", "function": "support_bot_lookup_tool"}
+  ],
+  "expected_exploit_paths": [
+    {"kinds": ["LLM01", "LLM06"], "cross_surface": true},
+    {"kinds": ["secrets-plus-primary"], "cross_surface": false}
+  ],
+  "expected_warden_events": [
+    {"kind": "html_comment_smuggling", "origin": "readme:README.md"}
+  ]
+}

@@ -7,6 +7,8 @@ import { LiveSweepPanel } from "./components/LiveSweepPanel";
 import { Board } from "./components/Board";
 import { Dashboard } from "./components/Dashboard";
 import { CommandPalette } from "./components/CommandPalette";
+import { ExploitPathsView } from "./components/ExploitPathsView";
+import { WardenView } from "./components/WardenView";
 import { Cmul8Mark } from "./components/Cmul8Mark";
 import { IconPlay } from "./components/Icons";
 import {
@@ -203,13 +205,13 @@ export default function App() {
                 onSelect={(id) => setActiveFinding(id)}
                 target={selected}
               />
-              {detail ? <FindingDetail finding={detail} /> : <EmptyDetail />}
+              {detail ? <FindingDetail finding={detail} sweepId={sweepId} /> : <EmptyDetail />}
             </>
           )}
 
-          {(nav === "paths" || nav === "warden" || nav === "attestations") && (
-            <ComingSoonPane label={nav} />
-          )}
+          {nav === "paths" && <ExploitPathsView onOpenSweep={openHistoricalSweep} />}
+          {nav === "warden" && <WardenView onOpenSweep={openHistoricalSweep} />}
+          {nav === "attestations" && <ComingSoonPane label={nav} />}
         </div>
       </div>
 

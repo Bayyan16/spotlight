@@ -1,8 +1,9 @@
 import type { Finding } from "../lib/api";
-import { IconCheck } from "./Icons";
+import { attestationUrl } from "../lib/api";
+import { IconAttestation, IconCheck } from "./Icons";
 import { PresencePanel } from "./PresencePanel";
 
-export function FindingDetail({ finding }: { finding: Finding }) {
+export function FindingDetail({ finding, sweepId }: { finding: Finding; sweepId?: string | null }) {
   const verified = finding.tier === "verified";
   const fixed = finding.state === "confirmed-fixed";
   return (
@@ -38,6 +39,16 @@ export function FindingDetail({ finding }: { finding: Finding }) {
             corroborators
           </span>
         </div>
+        {sweepId && (
+          <div className="mt-3 flex items-center gap-1.5">
+            <span className="text-2xs mono uppercase tracking-wider text-paper-500 mr-2">
+              Export Attestation
+            </span>
+            <AttestationBtn href={attestationUrl(sweepId, "pdf")} label="PDF" />
+            <AttestationBtn href={attestationUrl(sweepId, "markdown")} label="Markdown" />
+            <AttestationBtn href={attestationUrl(sweepId, "json")} label="JSON" />
+          </div>
+        )}
       </header>
 
       <div className="px-6 py-5 space-y-6">
@@ -221,6 +232,20 @@ function ConfidenceDial({ confidence, verified }: { confidence: number; verified
         </div>
       </div>
     </div>
+  );
+}
+
+function AttestationBtn({ href, label }: { href: string; label: string }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="inline-flex items-center gap-1 text-2xs mono uppercase tracking-wider text-paper-700 border border-paper-300 hover:border-accent hover:text-accent bg-white rounded px-2 py-1 transition-colors"
+    >
+      <IconAttestation size={10} />
+      {label}
+    </a>
   );
 }
 
