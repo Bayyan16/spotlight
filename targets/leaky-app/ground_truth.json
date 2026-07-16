@@ -1,0 +1,17 @@
+{
+  "target": "leaky-app",
+  "expected_findings": [],
+  "negative_expectations": [],
+  "notes": "Redaction fixture. Not a vulnerability target — used to prove secrets in a scanned repo never leak into prompts, events, or API responses. See tests/integration/test_redaction_chokepoints.py.",
+  "planted_secrets": [
+    {"kind": "aws-key", "value": "AKIAIOSFODNN7EXAMPLE"},
+    {"kind": "aws-secret", "value_shape": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"},
+    {"kind": "openai-key", "value_shape": "sk-proj-..."},
+    {"kind": "anthropic-key", "value_shape": "sk-ant-api03-..."},
+    {"kind": "github-pat", "value_shape": "ghp_..."},
+    {"kind": "slack-token", "value_shape": "xoxb-..."},
+    {"kind": "db-url", "value_shape": "postgres://user:pw@host/db"},
+    {"kind": "rsa-private-key", "value_shape": "-----BEGIN RSA PRIVATE KEY-----"},
+    {"kind": "generic-secret", "value_shape": "api_key/password kv-form"}
+  ]
+}

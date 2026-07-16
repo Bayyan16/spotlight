@@ -9,11 +9,10 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
-import subprocess
-import tempfile
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,6 +23,7 @@ from sqlalchemy import desc
 
 from spotlight.orchestrator import EventBus, Orchestrator, SweepResult
 from spotlight.profiles import get_profile, list_profiles
+from spotlight.redaction import Redactor
 from spotlight.store import (
     EventRow,
     FindingRow,
@@ -32,6 +32,18 @@ from spotlight.store import (
     init_schema,
     is_enabled as store_enabled,
 )
+
+# Chokepoint (c): scrub any string in an outbound JSON response body.
+# Used on endpoints that return Finding / Attestation / event payloads.
+# Do NOT apply to metadata endpoints like /targets or /profiles — those
+# ship no target-derived strings, and the noise of scrubbing them is
+# not worth the CPU. Idempotent w.r.t. events (already redacted at bus).
+_RESPONSE_REDACTOR = Redactor()
+
+
+def _redact_response(data: Any) -> Any:
+    """Apply redactor to a dict/list about to leave the process."""
+    return _RESPONSE_REDACTOR.redact_dict(data)
 
 app = FastAPI(title="Spotlight API", version="0.1.0")
 
@@ -162,18 +174,12 @@ def _resolve_repo(repo: str) -> tuple[Path, str]:
     Returns (path, source_kind).
     """
     if repo.startswith(("http://", "https://", "git@")) and repo.endswith(".git"):
-        workdir = Path(tempfile.mkdtemp(prefix="spotlight-clone-"))
-        # Shallow clone at HEAD — Phase 2 will accept a --pin-sha.
-        proc = subprocess.run(
-            ["git", "clone", "--depth", "1", repo, str(workdir / "src")],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        if proc.returncode != 0:
-            shutil.rmtree(workdir, ignore_errors=True)
-            raise HTTPException(400, f"git clone failed: {proc.stderr.strip()[:400]}")
-        return workdir / "src", "git-url"
+        from spotlight.git_ops import GitOps
+        try:
+            target = GitOps().clone_at(repo)
+        except RuntimeError as exc:
+            raise HTTPException(400, f"git clone failed: {str(exc)[:400]}")
+        return target, "git-url"
     # Bundled fixture — look up in targets/
     p = Path(repo)
     if not p.exists():
@@ -355,7 +361,9 @@ def cleanup_sweeps(status: str = "failed") -> dict:
 @app.get("/sweeps/{sweep_id}/events")
 def sweep_events(sweep_id: str, after: int = -1) -> list[dict]:
     if sweep_id in BUSES:
-        return [e.to_dict() for e in BUSES[sweep_id].replay(sweep_id, after_seq=after)]
+        return _redact_response(
+            [e.to_dict() for e in BUSES[sweep_id].replay(sweep_id, after_seq=after)]
+        )
     if store_enabled():
         with get_session() as sess:
             rows = (
@@ -364,17 +372,19 @@ def sweep_events(sweep_id: str, after: int = -1) -> list[dict]:
                 .order_by(EventRow.seq)
                 .all()
             )
-            return [
-                {"sweep_id": sweep_id, "seq": r.seq, "ts": r.ts, "type": r.type, "actor": r.actor, "payload": r.payload}
-                for r in rows
-            ]
+            return _redact_response(
+                [
+                    {"sweep_id": sweep_id, "seq": r.seq, "ts": r.ts, "type": r.type, "actor": r.actor, "payload": r.payload}
+                    for r in rows
+                ]
+            )
     raise HTTPException(404, "sweep not found")
 
 
 @app.get("/sweeps/{sweep_id}/findings")
 def sweep_findings(sweep_id: str) -> list[dict]:
     if sweep_id in SWEEPS:
-        return SWEEPS[sweep_id].findings
+        return _redact_response(SWEEPS[sweep_id].findings)
     if store_enabled():
         with get_session() as sess:
             rows = (
@@ -383,7 +393,7 @@ def sweep_findings(sweep_id: str) -> list[dict]:
                 .order_by(FindingRow.id)
                 .all()
             )
-            return [r.payload for r in rows]
+            return _redact_response([r.payload for r in rows])
     raise HTTPException(404, "sweep not found")
 
 
@@ -392,30 +402,61 @@ def get_finding(finding_id: str) -> dict:
     for s in SWEEPS.values():
         for f in s.findings:
             if f["id"] == finding_id:
-                return f
+                return _redact_response(f)
     if store_enabled():
         with get_session() as sess:
             row = sess.get(FindingRow, finding_id)
             if row:
-                return row.payload
+                return _redact_response(row.payload)
     raise HTTPException(404, "finding not found")
+
+
+@app.get("/prs/{finding_id}")
+def get_pr_for_finding(finding_id: str) -> dict:
+    """Return whatever PR info is stored on this finding.
+
+    Response shape: {pr_url, branch, commit_sha}. Any field may be null if
+    the sweep ran without `open_prs` enabled or `gh` failed.
+    """
+    payload: dict | None = None
+    for s in SWEEPS.values():
+        for f in s.findings:
+            if f["id"] == finding_id:
+                payload = f
+                break
+        if payload is not None:
+            break
+    if payload is None and store_enabled():
+        with get_session() as sess:
+            row = sess.get(FindingRow, finding_id)
+            if row:
+                payload = row.payload
+    if payload is None:
+        raise HTTPException(404, "finding not found")
+    fix = (payload.get("evidence") or {}).get("fix") or {}
+    return {
+        "finding_id": finding_id,
+        "pr_url": fix.get("pr_url"),
+        "branch": fix.get("branch"),
+        "commit_sha": fix.get("commit_sha"),
+    }
 
 
 @app.get("/attestations/{sweep_id}")
 def get_attestation(sweep_id: str) -> dict:
     if sweep_id in SWEEPS:
-        return SWEEPS[sweep_id].attestations[0]
+        return _redact_response(SWEEPS[sweep_id].attestations[0])
     if store_enabled():
         with get_session() as sess:
             row = sess.get(SweepRow, sweep_id)
             if row:
                 findings = [f.payload for f in row.findings]
-                return {
+                return _redact_response({
                     "sweep_id": row.id,
                     "repo": row.repo_path,
                     "findings": findings,
                     "threat_model": row.threat_model,
-                }
+                })
     raise HTTPException(404, "sweep not found")
 
 

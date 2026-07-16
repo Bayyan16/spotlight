@@ -1,9 +1,9 @@
 """Scan Profiles — real presets a user picks in the New Scan wizard.
 
 A Profile bundles the config a Sweep runs against: which surfaces (code /
-cognition / both), which vulnerability classes to look for, which model,
-concurrency and token budget, scope globs. Phase 1.5 ships four opinionated
-built-ins; Phase 2 lets the user save custom ones through the API.
+agentic), which vulnerability classes to look for, which model, concurrency
+and token budget, scope globs. Phase 1.5 ships four opinionated built-ins;
+Phase 2 lets the user save custom ones through the API.
 """
 from __future__ import annotations
 
@@ -16,15 +16,20 @@ class Profile:
     id: str
     name: str
     description: str
-    surfaces: list[str]  # code | cognition
+    surfaces: list[str]  # code | agentic
     classes: list[str]
     languages: list[str]  # python | javascript | typescript
     model: str  # moonshot | mock
     max_agents: int
     budget_tokens: int
+    budget_wall_seconds: int = 600
     scope_globs: list[str] = field(default_factory=lambda: ["**/*.py", "**/*.js", "**/*.ts"])
     runtime_validate: bool = True
     interactive: bool = False
+    # Whether the orchestrator should attempt to open a real PR via `gh` after
+    # remediation. Default OFF so we don't spam PRs on the demo repos. Deep
+    # and Balanced deliberately leave this False; opt in explicitly.
+    open_prs: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -43,6 +48,7 @@ BALANCED = Profile(
     model="moonshot",
     max_agents=6,
     budget_tokens=1_500_000,
+    budget_wall_seconds=600,
 )
 
 DEEP = Profile(
@@ -71,18 +77,20 @@ DEEP = Profile(
     model="moonshot",
     max_agents=8,
     budget_tokens=4_000_000,
+    budget_wall_seconds=1800,
     interactive=True,
 )
 
-COGNITION_ONLY = Profile(
-    id="cognition-only",
-    name="Cognition (AI/agentic)",
+AGENTIC = Profile(
+    id="agentic",
+    name="Agentic",
     description=(
-        "The LLM/agent-layer sweep. OWASP LLM Top 10 + OWASP Agentic Security "
-        "categories. Prompt injection, excessive agency, RAG surface, output "
-        "handling. Skips classic AppSec — pair with Balanced for full coverage."
+        "The AI-layer / agent-security sweep. OWASP LLM Top 10 + OWASP Agentic "
+        "Security categories. Prompt injection, excessive agency, RAG surface, "
+        "output handling. Skips classic AppSec — pair with Balanced for full "
+        "coverage."
     ),
-    surfaces=["cognition"],
+    surfaces=["agentic"],
     classes=[
         "prompt-injection",
         "excessive-agency",
@@ -95,6 +103,7 @@ COGNITION_ONLY = Profile(
     model="moonshot",
     max_agents=6,
     budget_tokens=2_000_000,
+    budget_wall_seconds=600,
     interactive=True,
 )
 
@@ -111,12 +120,13 @@ FAST = Profile(
     model="moonshot",
     max_agents=4,
     budget_tokens=400_000,
+    budget_wall_seconds=120,
 )
 
 BUILT_IN: dict[str, Profile] = {
     "balanced": BALANCED,
     "deep": DEEP,
-    "cognition-only": COGNITION_ONLY,
+    "agentic": AGENTIC,
     "fast": FAST,
 }
 

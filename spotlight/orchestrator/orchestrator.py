@@ -3,10 +3,19 @@
 Runs the vertical Sweep: Recon → Investigate → Reduce → Reproduce → Remediate
 → Verify → Attest. Consensus Kernel logic is inlined here for Phase 1; Phase
 2 lifts it into `consensus/`.
+
+Phase-2 Tranche A1 adds two production guards:
+  * Budget cap: token & wall-clock. On breach we jump to Attest with a
+    partial result rather than crash — bill safety without losing work.
+  * Phase state machine: rejects backwards jumps in `sweep.phase.changed`.
+    A backwards jump is always a bug; we log + emit `sweep.phase.illegal`
+    and refuse to advance, but don't crash the sweep.
 """
 from __future__ import annotations
 
 import json
+import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -20,6 +29,22 @@ from spotlight.agents.moonshot import maybe_from_env
 from spotlight.profiles import Profile, get_profile
 
 from .events import EventBus, EventType
+
+
+# Canonical phase order for the state machine. Per-finding phases (reproduce,
+# remediate, verify) can repeat inside the finding loop — that's not a
+# backward jump, it's the loop rolling forward across findings.
+_PHASE_ORDER = [
+    "recon",
+    "investigate",
+    "reduce",
+    "reproduce",
+    "remediate",
+    "verify",
+    "attest",
+]
+_PHASE_RANK = {name: i for i, name in enumerate(_PHASE_ORDER)}
+_REPEATABLE_PHASES = {"reproduce", "remediate", "verify", "attest"}
 
 
 @dataclass
@@ -50,6 +75,31 @@ def _promote_tier(finding: dict[str, Any], repro: dict[str, Any] | None) -> tupl
     return "needs-review", 0.4, "single-source, unreproduced"
 
 
+def _extract_usage_tokens(payload: Any) -> int | None:
+    """Pull a Moonshot-style `usage.prompt_tokens + completion_tokens` if present.
+
+    Investigators return a judgment dict; if the model client threaded a
+    `usage` block through, honor it. Otherwise return None and the caller
+    falls back to a char-based estimate.
+    """
+    if not isinstance(payload, dict):
+        return None
+    usage = payload.get("usage") or payload.get("_usage")
+    if not isinstance(usage, dict):
+        return None
+    pt = usage.get("prompt_tokens") or 0
+    ct = usage.get("completion_tokens") or 0
+    try:
+        return int(pt) + int(ct)
+    except (TypeError, ValueError):
+        return None
+
+
+def _estimate_tokens(payload: Any) -> int:
+    """Conservative char-based estimate when the model didn't report usage."""
+    return max(1, len(str(payload)) // 4)
+
+
 class Orchestrator:
     def __init__(
         self,
@@ -61,32 +111,131 @@ class Orchestrator:
         self.model = model or maybe_from_env() or MockModelClient()
         self.bus = bus or EventBus()
         self.profile = profile or get_profile(None)
+        # Budget bookkeeping (reset at the start of each `run`).
+        self._tokens_used: int = 0
+        self._start_wall: float = 0.0
+        # Phase state machine bookkeeping.
+        self._current_phase: str | None = None
+        self._sweep_id: str | None = None
 
+    # ── budget helpers ────────────────────────────────────────────────
+    def _wall_elapsed(self) -> float:
+        if self._start_wall <= 0:
+            return 0.0
+        return time.monotonic() - self._start_wall
+
+    def _budget_breach(self) -> tuple[str, int, int] | None:
+        """Return ('tokens'|'wall', used, cap) if breached, else None."""
+        if self._tokens_used >= self.profile.budget_tokens:
+            return ("tokens", self._tokens_used, self.profile.budget_tokens)
+        if self._wall_elapsed() >= self.profile.budget_wall_seconds:
+            return ("wall", int(self._wall_elapsed()), self.profile.budget_wall_seconds)
+        return None
+
+    def _account_usage(self, judgment: Any) -> None:
+        """Increment token counter from a judgment/model output."""
+        used = _extract_usage_tokens(judgment)
+        if used is None:
+            used = _estimate_tokens(judgment)
+        self._tokens_used += int(used)
+
+    # ── phase state machine ───────────────────────────────────────────
+    def _advance_phase(self, target: str, **payload: Any) -> bool:
+        """Try to advance the phase state machine to `target`.
+
+        Returns True if the transition was accepted and emitted, False if it
+        was rejected as an illegal backwards jump. Repeatable per-finding
+        phases (reproduce/remediate/verify/attest) can fire again without
+        being flagged as backwards.
+        """
+        assert self._sweep_id is not None, "phase transition outside a run()"
+        current = self._current_phase
+        target_rank = _PHASE_RANK.get(target)
+        if target_rank is None:
+            self._emit_illegal(current, target)
+            return False
+
+        if current is not None:
+            current_rank = _PHASE_RANK.get(current, -1)
+            if target_rank < current_rank and target not in _REPEATABLE_PHASES:
+                self._emit_illegal(current, target)
+                return False
+
+        self._current_phase = target
+        self.bus.emit(
+            self._sweep_id,
+            EventType.SWEEP_PHASE_CHANGED,
+            "orchestrator",
+            phase=target,
+            **payload,
+        )
+        return True
+
+    def _emit_illegal(self, frm: str | None, to: str) -> None:
+        msg = f"[orchestrator] illegal phase transition: {frm} -> {to}"
+        print(msg, file=sys.stdout, flush=True)
+        assert self._sweep_id is not None
+        self.bus.emit(
+            self._sweep_id,
+            EventType.SWEEP_PHASE_ILLEGAL,
+            "orchestrator",
+            **{"from": frm, "to": to},
+        )
+
+    def _emit_budget_breach(self, kind: str, used: int, cap: int) -> None:
+        assert self._sweep_id is not None
+        self.bus.emit(
+            self._sweep_id,
+            EventType.SWEEP_BUDGET_EXCEEDED,
+            "orchestrator",
+            kind=kind,
+            used=used,
+            cap=cap,
+        )
+
+    # ── main entrypoint ───────────────────────────────────────────────
     def run(self, repo_path: str | Path, out_dir: str | Path | None = None) -> SweepResult:
         repo_path = Path(repo_path).resolve()
         sweep_id = f"sw_{uuid4().hex[:12]}"
         out_dir = Path(out_dir) if out_dir else Path.cwd() / "sweep-run" / sweep_id
         out_dir.mkdir(parents=True, exist_ok=True)
 
+        # Reset budget + phase state for this run.
+        self._tokens_used = 0
+        self._start_wall = time.monotonic()
+        self._current_phase = None
+        self._sweep_id = sweep_id
+
         emit = lambda t, actor, **p: self.bus.emit(sweep_id, t, actor, **p)
         emit(EventType.SWEEP_STARTED, "orchestrator", repo=str(repo_path))
 
-        # 1. Recon
-        emit(EventType.SWEEP_PHASE_CHANGED, "orchestrator", phase="recon")
+        # 1. Recon — check budget FIRST so an already-blown wall/token cap
+        #    halts the sweep before we spawn any agent.
+        self._advance_phase("recon")
+        breach = self._budget_breach()
+        if breach:
+            self._emit_budget_breach(*breach)
+            return self._finalize(
+                sweep_id, repo_path, out_dir,
+                recon_out={"threat_model": {}, "signals": [], "slices": []},
+                findings=[],
+            )
         emit(EventType.AGENT_SPAWNED, "orchestrator", role="recon")
         recon_out = Recon(self.model).run(repo_path)
+        self._account_usage(recon_out.get("threat_model", {}))
         emit(EventType.AGENT_FINISHED, "recon", signals=len(recon_out["signals"]))
 
-        # 2. Investigate — parallel fan-out under Profile.max_agents.
-        emit(EventType.SWEEP_PHASE_CHANGED, "orchestrator", phase="investigate")
+        # 2. Investigate — parallel fan-out under Profile.max_agents, guarded
+        #    by budget. If a breach lands mid-fan-out we stop spawning.
+        self._advance_phase("investigate")
         candidates: list[dict[str, Any]] = []
         slices = recon_out["signals"]
-        # Filter slices by the Profile's class set — if a profile targets only
-        # `sqli`, don't spawn Investigators for XSS/SSRF signals.
         allowed_classes = set(self.profile.classes)
         active_slices = [
             s for s in slices if s["sink"]["class"] in allowed_classes
         ] if allowed_classes else slices
+
+        halted = False
 
         def _investigate(idx_slice):
             idx, slice_ = idx_slice
@@ -111,27 +260,53 @@ class Orchestrator:
             emit(EventType.CANDIDATE_RAISED, f"inv-{idx}", candidate=judgment)
             return judgment
 
-        max_workers = max(1, min(self.profile.max_agents, max(1, len(active_slices))))
-        if max_workers > 1 and len(active_slices) > 1:
-            with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                for judgment in pool.map(_investigate, enumerate(active_slices)):
-                    if judgment:
-                        candidates.append(judgment)
-        else:
-            for pair in enumerate(active_slices):
+        # Budget check before each spawn batch so a runaway model can't keep
+        # burning through slices. Parallelism kicks in only when we still have
+        # multiple slices and headroom.
+        idx = 0
+        while idx < len(active_slices):
+            breach = self._budget_breach()
+            if breach:
+                self._emit_budget_breach(*breach)
+                halted = True
+                break
+            remaining = list(enumerate(active_slices))[idx:]
+            max_workers = max(1, min(self.profile.max_agents, max(1, len(remaining))))
+            if max_workers > 1 and len(remaining) > 1:
+                with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                    for judgment in pool.map(_investigate, remaining):
+                        if judgment:
+                            candidates.append(judgment)
+                            self._account_usage(judgment)
+                idx = len(active_slices)
+            else:
+                pair = remaining[0]
                 judgment = _investigate(pair)
                 if judgment:
                     candidates.append(judgment)
+                    self._account_usage(judgment)
+                idx += 1
 
         # 3. Reduce
-        emit(EventType.SWEEP_PHASE_CHANGED, "orchestrator", phase="reduce")
-        reduced = Reducer().run(candidates)
+        self._advance_phase("reduce")
+        reduced = Reducer().run(candidates) if candidates else []
 
-        # 4. Reproduce → Remediate → Verify → Attest — per finding
+        # If the budget already busted, jump straight to Attest with partial
+        # findings (empty here — nothing survived the halt).
+        if halted or self._budget_breach() is not None:
+            self._advance_phase("attest")
+            return self._finalize(sweep_id, repo_path, out_dir, recon_out, findings=[])
+
+        # 4. Reproduce → Remediate → Verify per finding.
         findings: list[dict[str, Any]] = []
         for i, cand in enumerate(reduced, start=1):
+            breach = self._budget_breach()
+            if breach:
+                self._emit_budget_breach(*breach)
+                break
+
             fid = _finding_id(i)
-            emit(EventType.SWEEP_PHASE_CHANGED, "orchestrator", phase="reproduce", finding=fid)
+            self._advance_phase("reproduce", finding=fid)
             emit(EventType.REPRO_STARTED, "reproducer", finding=fid)
             repro = Reproducer().run(repo_path, cand)
             sandbox_info = repro.get("sandbox", {})
@@ -160,15 +335,37 @@ class Orchestrator:
                     )
             emit(EventType.REPRO_RESULT, "reproducer", finding=fid, result=repro["result"])
 
-            emit(EventType.SWEEP_PHASE_CHANGED, "orchestrator", phase="remediate", finding=fid)
-            remediation = Remediator().run(repo_path, cand)
+            self._advance_phase("remediate", finding=fid)
+            remediator = Remediator()
+            remediation = remediator.run(repo_path, cand)
             if remediation.get("applied"):
                 (out_dir / f"{fid}.diff").write_text(remediation["diff"])
                 emit(EventType.REMEDIATION_OPENED, "remediator", finding=fid)
 
-            emit(EventType.SWEEP_PHASE_CHANGED, "orchestrator", phase="verify", finding=fid)
+            self._advance_phase("verify", finding=fid)
             verify = Verifier(self.model).run(repo_path, cand, remediation)
+            self._account_usage(verify)
             emit(EventType.VERIFY_RESULT, "verifier", finding=fid, result=verify.get("result"))
+
+            # Optional: open a real PR via `gh`, gated by Profile.open_prs.
+            # Only runs on git-cloned targets; log-and-continue on failure.
+            pr_info: dict[str, Any] | None = None
+            if getattr(self.profile, "open_prs", False) and remediation.get("applied"):
+                pr_info = remediator.open_pr(
+                    repo_path,
+                    {"id": fid, **cand},
+                    remediation,
+                    open_prs=True,
+                )
+                if pr_info:
+                    emit(
+                        EventType.REMEDIATION_OPENED,
+                        "remediator",
+                        finding=fid,
+                        pr_url=pr_info.get("pr_url"),
+                        branch=pr_info.get("branch"),
+                        commit_sha=pr_info.get("commit_sha"),
+                    )
 
             tier, confidence, tier_reason = _promote_tier(cand, repro)
             state = "confirmed-fixed" if (
@@ -199,8 +396,13 @@ class Orchestrator:
                         },
                     ],
                     "root_cause": cand["root_cause"],
-                    "fix": {"diff": f"{fid}.diff" if remediation.get("applied") else None,
-                            "approach": cand["recommendation"]},
+                    "fix": {
+                        "diff": f"{fid}.diff" if remediation.get("applied") else None,
+                        "approach": cand["recommendation"],
+                        "pr_url": pr_info.get("pr_url") if pr_info else None,
+                        "branch": pr_info.get("branch") if pr_info else None,
+                        "commit_sha": pr_info.get("commit_sha") if pr_info else None,
+                    },
                     "verification": {
                         **verify,
                         "path": f"verify/{fid}.json",
@@ -235,6 +437,8 @@ class Orchestrator:
                     "profile_name": self.profile.name,
                     "commit": "<dev>",
                     "timestamp": None,
+                    "tokens_used": int(self._tokens_used),
+                    "wall_seconds": round(self._wall_elapsed(), 6),
                 },
             }
             findings.append(finding)
@@ -242,25 +446,54 @@ class Orchestrator:
             emit(EventType.FINDING_PROMOTED, "consensus", finding=fid, tier=tier)
 
         # 5. Attest
-        emit(EventType.SWEEP_PHASE_CHANGED, "orchestrator", phase="attest")
+        self._advance_phase("attest")
+        return self._finalize(sweep_id, repo_path, out_dir, recon_out, findings)
+
+    # ── finalization ──────────────────────────────────────────────────
+    def _finalize(
+        self,
+        sweep_id: str,
+        repo_path: Path,
+        out_dir: Path,
+        recon_out: dict[str, Any],
+        findings: list[dict[str, Any]],
+    ) -> SweepResult:
+        """Write attestation + supporting artifacts; return the SweepResult.
+
+        Called from the normal happy path and from budget-breach halt paths.
+        Idempotent enough: writes the current view of `findings` (possibly
+        empty) so the caller always has an attestation on disk.
+        """
+        if self._current_phase != "attest":
+            self._advance_phase("attest")
         attestation = {
             "sweep_id": sweep_id,
             "repo": str(repo_path),
             "findings": findings,
-            "threat_model": recon_out["threat_model"],
+            "threat_model": recon_out.get("threat_model", {}),
         }
         (out_dir / "attestation.json").write_text(json.dumps(attestation, indent=2))
         (out_dir / "findings.json").write_text(json.dumps(findings, indent=2))
-        (out_dir / "threat_model.json").write_text(json.dumps(recon_out["threat_model"], indent=2))
-        (out_dir / "signals.json").write_text(json.dumps(recon_out["signals"], indent=2))
-        emit(EventType.ATTESTATION_WRITTEN, "reporter", path=str(out_dir / "attestation.json"))
-        emit(EventType.SWEEP_FINISHED, "orchestrator", findings=len(findings))
+        (out_dir / "threat_model.json").write_text(
+            json.dumps(recon_out.get("threat_model", {}), indent=2)
+        )
+        (out_dir / "signals.json").write_text(
+            json.dumps(recon_out.get("signals", []), indent=2)
+        )
+        self.bus.emit(
+            sweep_id, EventType.ATTESTATION_WRITTEN, "reporter",
+            path=str(out_dir / "attestation.json"),
+        )
+        self.bus.emit(
+            sweep_id, EventType.SWEEP_FINISHED, "orchestrator",
+            findings=len(findings),
+        )
 
         result = SweepResult(
             sweep_id=sweep_id,
             repo_path=str(repo_path),
-            threat_model=recon_out["threat_model"],
-            signals=recon_out["signals"],
+            threat_model=recon_out.get("threat_model", {}),
+            signals=recon_out.get("signals", []),
             findings=findings,
             attestations=[attestation],
             events_log=[e.to_dict() for e in self.bus.replay(sweep_id)],

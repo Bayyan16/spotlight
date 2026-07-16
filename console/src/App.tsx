@@ -4,7 +4,8 @@ import { TopBar } from "./components/TopBar";
 import { FindingsList } from "./components/FindingsList";
 import { FindingDetail } from "./components/FindingDetail";
 import { LiveSweepPanel } from "./components/LiveSweepPanel";
-import { SweepsHistory } from "./components/SweepsHistory";
+import { SweepsList } from "./components/SweepsList";
+import { Dashboard } from "./components/Dashboard";
 import { CommandPalette } from "./components/CommandPalette";
 import { Cmul8Mark } from "./components/Cmul8Mark";
 import { IconPlay } from "./components/Icons";
@@ -16,6 +17,7 @@ import {
   startSweep,
   type Finding,
   type SweepEvent,
+  type SweepSummary,
   type Target,
 } from "./lib/api";
 
@@ -34,6 +36,7 @@ export default function App() {
   const [historyCount, setHistoryCount] = useState<number>(0);
   const [palette, setPalette] = useState(false);
   const [profileId, setProfileId] = useState<string>("balanced");
+  const [selectedSweep, setSelectedSweep] = useState<SweepSummary | null>(null);
 
   useEffect(() => {
     listTargets().then(setTargets).catch(() => setTargets([]));
@@ -61,34 +64,26 @@ export default function App() {
     return () => ws.close();
   }, [sweepId]);
 
-  // Keyboard shortcuts — Codex/Linear-style
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null;
       const inField =
         target &&
         (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
-
-      // ⌘K / Ctrl+K → command palette
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setPalette((p) => !p);
         return;
       }
-
       if (inField) return;
-
-      // Number keys 1..6 → nav
       if (e.key >= "1" && e.key <= "6") {
         const idx = parseInt(e.key, 10) - 1;
         if (idx >= 0 && idx < NAV_ORDER.length) setNav(NAV_ORDER[idx]);
       }
-      // ⌘Enter → start sweep
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !running) {
         e.preventDefault();
         onStart();
       }
-      // Esc → close palette
       if (e.key === "Escape") setPalette(false);
     }
     window.addEventListener("keydown", onKey);
@@ -145,10 +140,25 @@ export default function App() {
         />
 
         <div key={nav} className="flex-1 min-h-0 flex overflow-hidden animate-fade-in">
+          {/* HOME — always three panes: nav | sweeps list | dashboard/summary */}
           {nav === "home" && (
-            <SweepsHistory onOpen={openHistoricalSweep} refreshSignal={historyRefresh} />
+            <>
+              <SweepsList
+                onOpen={openHistoricalSweep}
+                onSelect={setSelectedSweep}
+                selected={selectedSweep?.sweep_id ?? null}
+                refreshSignal={historyRefresh}
+              />
+              <Dashboard
+                onOpen={openHistoricalSweep}
+                refreshSignal={historyRefresh}
+                selected={selectedSweep}
+                onStart={() => onStart()}
+              />
+            </>
           )}
 
+          {/* LIVE — nav | findings list (if any) | Live Sweep panel */}
           {nav === "sweeps" && (
             <>
               {findings.length > 0 && (
@@ -174,6 +184,7 @@ export default function App() {
             </>
           )}
 
+          {/* FINDINGS — nav | findings list | finding detail */}
           {nav === "findings" && (
             <>
               <FindingsList
@@ -212,9 +223,6 @@ function EmptyDetail() {
           <Cmul8Mark size={44} />
         </div>
         <div className="text-paper-500 text-sm">Select a finding to see its evidence.</div>
-        <div className="text-paper-400 text-2xs mono uppercase tracking-wider mt-1">
-          j / k to navigate · enter to open
-        </div>
       </div>
     </div>
   );
@@ -257,11 +265,6 @@ function EmptySweep({
               History · {historyCount}
             </button>
           </div>
-          <div className="mt-4 text-2xs mono uppercase tracking-wider text-paper-500">
-            <kbd className="border border-paper-300 rounded px-1 py-0.5 bg-white mr-1">⌘</kbd>
-            <kbd className="border border-paper-300 rounded px-1 py-0.5 bg-white">↵</kbd>
-            <span className="ml-1">start</span>
-          </div>
         </div>
       </div>
     );
@@ -270,31 +273,23 @@ function EmptySweep({
     <div className="flex-1 min-w-0 grid place-items-center bg-paper-50">
       <div className="text-center max-w-md px-6">
         <div className="mb-6 flex justify-center">
-          <div className="relative">
-            <Cmul8Mark size={72} />
-            <div className="absolute -inset-6 rounded-full bg-accent/5 blur-2xl -z-10" />
-          </div>
+          <Cmul8Mark size={72} />
         </div>
         <h1 className="text-2xl text-paper-900 font-semibold tracking-tight mb-2">
           The AI security engineer
         </h1>
         <p className="text-sm text-paper-600 leading-relaxed">
           Point Spotlight at a target repo. It classifies the stack, reasons over a code graph,
-          corroborates every candidate with independent evidence, reproduces where feasible, patches,
-          and gets independently verified — all before you see a finding.
+          corroborates every candidate with independent evidence, reproduces in a hardened Modal
+          sandbox, patches, and gets independently verified — all before you see a finding.
         </p>
         <button
           onClick={onStart}
-          className="mt-6 inline-flex items-center gap-2 px-4 py-2 rounded bg-accent text-white text-sm uppercase tracking-wider mono hover:brightness-95 hover:scale-[1.02] active:scale-[0.98] transition-transform shadow-card"
+          className="mt-6 inline-flex items-center gap-2 px-4 py-2 rounded bg-accent text-white text-sm uppercase tracking-wider mono hover:brightness-95"
         >
           <IconPlay />
           Start your first Sweep
         </button>
-        <div className="mt-4 text-2xs mono uppercase tracking-wider text-paper-500">
-          <kbd className="border border-paper-300 rounded px-1 py-0.5 bg-white mr-1">⌘</kbd>
-          <kbd className="border border-paper-300 rounded px-1 py-0.5 bg-white">↵</kbd>{" "}
-          <span className="ml-1">to start</span>
-        </div>
       </div>
     </div>
   );

@@ -32,7 +32,7 @@ class MockModelClient:
             has_ai = context.get("has_ai_layer", False)
             return {
                 "stack": {"language": "python", "framework": "flask"},
-                "surfaces": ["code"] + (["cognition"] if has_ai else []),
+                "surfaces": ["code"] + (["agentic"] if has_ai else []),
                 "signals": context.get("signals", []),
                 "threat_model": {
                     "untrusted_sources": ["http_params", "request_body"],

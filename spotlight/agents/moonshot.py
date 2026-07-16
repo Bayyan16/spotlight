@@ -20,6 +20,8 @@ from typing import Any
 
 import httpx
 
+from spotlight.redaction import Redactor
+
 from .model import MockModelClient
 
 
@@ -30,9 +32,23 @@ class MoonshotModelClient:
     model: str = "moonshot-v1-128k"
     family: str = "moonshot"
     timeout_s: float = 45.0
+    # Sweep-scoped counter of secrets scrubbed from outbound prompts.
+    # Read by callers if they want to record it into the sweep summary.
+    redactions_applied: int = 0
 
     def complete(self, *, role: str, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
         system, user = _prompts_for(role, prompt, context)
+        # Chokepoint (a): scrub the outbound user prompt BEFORE it hits
+        # the wire. The system prompt is Spotlight-authored and safe;
+        # the user prompt is derived from target code + signals and is
+        # where a live key would leak in.
+        redactor = Redactor()
+        user, matches = redactor.redact(user)
+        # Also scrub the system prompt defensively — cheap, and future
+        # role templates may interpolate context there.
+        system, sys_matches = redactor.redact(system)
+        applied = len(matches) + len(sys_matches)
+        self.redactions_applied += applied
         try:
             resp = httpx.post(
                 f"{self.base_url}/chat/completions",
@@ -54,13 +70,18 @@ class MoonshotModelClient:
             resp.raise_for_status()
             body = resp.json()
             content = body["choices"][0]["message"]["content"]
-            return _parse_json_safely(content, role, context)
+            out = _parse_json_safely(content, role, context)
+            if applied:
+                out["redaction.applied"] = applied
+            return out
         except Exception as e:
             # Never let a model hiccup break the sweep. Fall back to the mock
             # for schema-safety, tag it in the audit trail.
             fallback = MockModelClient().complete(role=role, prompt=prompt, context=context)
             fallback["_model_error"] = repr(e)[:200]
             fallback["_fallback"] = True
+            if applied:
+                fallback["redaction.applied"] = applied
             return fallback
 
 

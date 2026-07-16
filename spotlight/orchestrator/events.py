@@ -12,10 +12,17 @@ from enum import Enum
 from time import time
 from typing import Any, Callable
 
+from spotlight.redaction import Redactor
+
+# Module-level redactor — cheap to reuse. Detectors are compiled once.
+_REDACTOR = Redactor()
+
 
 class EventType(str, Enum):
     SWEEP_STARTED = "sweep.started"
     SWEEP_PHASE_CHANGED = "sweep.phase.changed"
+    SWEEP_PHASE_ILLEGAL = "sweep.phase.illegal"
+    SWEEP_BUDGET_EXCEEDED = "sweep.budget.exceeded"
     SWEEP_FINISHED = "sweep.finished"
     SWEEP_FAILED = "sweep.failed"
     AGENT_SPAWNED = "agent.spawned"
@@ -66,13 +73,18 @@ class EventBus:
         self._async_subscribers: list[asyncio.Queue] = []
 
     def emit(self, sweep_id: str, type_: EventType | str, actor: str, **payload: Any) -> Event:
+        # Chokepoint (b): scrub string values in the payload before we
+        # persist. The bus is the fan-out point — anything not redacted
+        # here lands in Postgres, in the WS stream, and in every log
+        # subscriber. Redact once, at the source.
+        safe_payload = _REDACTOR.redact_dict(payload)
         evt = Event(
             sweep_id=sweep_id,
             seq=len(self._log),
             ts=time(),
             type=str(type_.value if isinstance(type_, EventType) else type_),
             actor=actor,
-            payload=payload,
+            payload=safe_payload,
         )
         self._log.append(evt)
         for cb in self._subscribers:
