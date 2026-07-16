@@ -1,0 +1,14 @@
+{
+  "target": "clean-bank-api",
+  "expected_findings": [],
+  "negative_expectations": [
+    {
+      "id": "NEG-001",
+      "class": "sqli",
+      "file": "app.py",
+      "function": "get_account",
+      "expectation": "no-promoted-finding",
+      "reason": "parameterized query — tainted value bound, not interpolated"
+    }
+  ]
+}

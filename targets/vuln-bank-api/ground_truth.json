@@ -1,0 +1,19 @@
+{
+  "target": "vuln-bank-api",
+  "expected_findings": [
+    {
+      "id": "GT-001",
+      "class": "sqli",
+      "cwe": "CWE-89",
+      "surface": "code",
+      "file": "app.py",
+      "function": "get_account",
+      "line_hint": 24,
+      "trigger": "GET /accounts/'%20OR%201=1--",
+      "expected_state": "confirmed-fixed",
+      "expected_tier": "verified"
+    }
+  ],
+  "negative_expectations": [],
+  "notes": "Classic string concatenation SQLi in the account lookup endpoint. Fix approach: parameterized query."
+}

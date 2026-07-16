@@ -1,0 +1,12 @@
+FROM node:20-alpine AS build
+WORKDIR /app
+COPY console/package.json console/package-lock.json* ./console/
+WORKDIR /app/console
+RUN npm ci --silent || npm install --silent
+COPY console/ ./
+RUN npm run build
+
+FROM nginx:alpine
+COPY --from=build /app/console/dist /usr/share/nginx/html
+COPY infra/nginx.conf /etc/nginx/conf.d/default.conf
+EXPOSE 5173
