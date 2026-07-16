@@ -1,4 +1,4 @@
-"""Kitchen-sink demo target.
+"""Acme-Bank demo target.
 
 Deliberately combines FIVE distinct security issues so ONE Spotlight sweep
 lights up every product surface at once:

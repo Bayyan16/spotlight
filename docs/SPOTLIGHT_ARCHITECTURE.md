@@ -648,9 +648,9 @@ The public key is served at `/verify-key`. Anyone can verify the chain of custod
 
 ---
 
-## 11 · The kitchen-sink demo — one sweep tells the whole story
+## 11 · The acme-bank demo — one sweep tells the whole story
 
-`targets/kitchen-sink/` is a demonstration fixture that triggers every Spotlight surface in a single scan. Pick it from the target selector, click **Start Sweep**, and in ~2 minutes you get:
+`targets/acme-bank/` is a demonstration fixture that triggers every Spotlight surface in a single scan. Pick it from the target selector, click **Start Sweep**, and in ~2 minutes you get:
 
 **Six findings** across two surfaces:
 - `sqli`, `ssrf`, `cmdi` — code surface (CWE-89, CWE-918, CWE-78)
@@ -673,7 +673,7 @@ The public key is served at `/verify-key`. Anyone can verify the chain of custod
 **Attestation** downloadable as PDF · Markdown · JSON from any finding's detail header.
 
 **The demo walk-through** (5 clicks, no talking track needed):
-1. **Board** — top row is `kitchen-sink` with 6 findings and a spike in the area chart.
+1. **Board** — top row is `acme-bank` with 6 findings and a spike in the area chart.
 2. **Findings** → click any → **Finding detail** shows: confidence dial (top-right) · big severity/tier/state chips · Why-you-can-trust-this evidence panel · Fix panel · Sandbox card (Modal, egress-off) · Threat model in effect (chips of untrusted sources ← / high-impact sinks →) · **Presence panel** (which other sweeps have this same class) · Audit block.
 3. **Exploit paths** (nav rail item 4) — 6 cards, cross-surface ones highlighted with the accent gradient. Each path renders as horizontal step-cards linked by `enables` arrows.
 4. **Warden** (nav rail item 5) — the swarm-defends-itself audit. 4 injection flags, each with kind + origin + timestamp. This is the "we treated your code as hostile input and can prove it" evidence.
@@ -703,7 +703,7 @@ The public key is served at `/verify-key`. Anyone can verify the chain of custod
 
 ### Small gaps to close
 
-- SQLi reproduction on kitchen-sink returns `not-reproduced` (Modal image doesn't preinstall LangChain, so the guarded `try/except ImportError` slows the container's cold start enough to nudge the 60s PoC timeout). Fix by either shortening the PoC's app-import path or preinstalling `langchain` in the Modal image. Same fix applies to any target that imports non-pinned deps.
+- SQLi reproduction on acme-bank returns `not-reproduced` (Modal image doesn't preinstall LangChain, so the guarded `try/except ImportError` slows the container's cold start enough to nudge the 60s PoC timeout). Fix by either shortening the PoC's app-import path or preinstalling `langchain` in the Modal image. Same fix applies to any target that imports non-pinned deps.
 - Chain of custody is signed but not yet automatically populated per-finding by the orchestrator — the field lands in the Attestation as an empty stub. Wire lands in the next micro-pass.
 - Exploit Paths view doesn't yet render the `edge` label (why step-N enables step-N+1) prominently — it just says "enables". Cosmetic.
 
@@ -729,7 +729,7 @@ Every fixture ships with a `ground_truth.json` declaring the expected findings s
 | `injected-readme` | Warden self-defense fixture · README injection payload | 0 code findings + ≥2 Warden flags |
 | `vuln-langchain-agent` | Agentic Sweep baseline · LangChain agent with 3 issues | 3 findings (LLM01, LLM05, LLM06) |
 | `clean-langchain-agent` | Precision negative for the agentic surface | 0 findings |
-| `kitchen-sink` | **The demo** — all surfaces at once | 6 findings + 6 exploit paths + 4 Warden flags |
+| `acme-bank` | **The demo** — all surfaces at once | 6 findings + 6 exploit paths + 4 Warden flags |
 
 ---
 
@@ -793,7 +793,7 @@ Every fixture ships with a `ground_truth.json` declaring the expected findings s
 
 **Finding** — one vulnerability report.
 
-**Kitchen-sink** — the demonstration fixture at `targets/kitchen-sink/` that produces 6 findings + 6 exploit paths + 4 Warden events in one sweep. Used for the guided demo walk-through.
+**Acme-Bank** — the demonstration fixture at `targets/acme-bank/` that produces 6 findings + 6 exploit paths + 4 Warden events in one sweep. Used for the guided demo walk-through.
 
 **Fixture target** — a bundled example repo used for tests / demos.
 

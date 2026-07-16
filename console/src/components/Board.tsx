@@ -81,8 +81,8 @@ export function Board({
 
   return (
     <section className="flex-1 min-w-0 overflow-y-auto bg-paper-50">
-      {/* Top: category pills — Total · Verified · Open · Failed */}
-      <div className="px-10 pt-8 pb-4 flex items-center gap-8">
+      {/* Top: category pills — Total · Verified · Open · Failed. NO card, no border. */}
+      <div className="px-12 pt-10 pb-6 flex items-center gap-10">
         <StatPill label="Total" value={rollup.total} tone="neutral" />
         <StatPill
           label="Verified"
@@ -102,21 +102,19 @@ export function Board({
           pct={rollup.total ? (rollup.failed / rollup.total) * 100 : 0}
           tone="red"
         />
-        <div className="ml-auto flex items-center gap-2 text-2xs mono text-paper-500">
-          {rollup.total > 0 && (
-            <button
-              onClick={onCleanupAll}
-              className="uppercase tracking-wider border border-paper-300 hover:border-sev-critical/40 hover:text-sev-critical rounded px-2 py-1 transition-colors"
-            >
-              Clear all
-            </button>
-          )}
-        </div>
+        {rollup.total > 0 && (
+          <button
+            onClick={onCleanupAll}
+            className="ml-auto text-2xs mono uppercase tracking-wider text-paper-400 hover:text-sev-critical transition-colors"
+          >
+            Clear all
+          </button>
+        )}
       </div>
 
-      {/* Big chart hero — findings over time */}
-      <div className="px-10 pb-4">
-        <div className="flex items-center gap-3 mb-2">
+      {/* Chart floats on the paper background — NO wrapping card, NO border. */}
+      <div className="px-12 pb-8">
+        <div className="flex items-center gap-3 mb-1">
           <div className="text-sm text-paper-900 font-medium">
             Findings <span className="text-accent">↗ {rollup.totalFindings}</span>
           </div>
@@ -125,24 +123,22 @@ export function Board({
             Total
           </div>
         </div>
-        <div className="border border-paper-300 rounded-xl bg-white shadow-card p-4">
-          <AreaChart
-            points={chartPoints}
-            color="#5b8def"
-            height={240}
-            emptyMessage={nothingYet ? "Start a sweep to see activity" : "No findings yet"}
-          />
-        </div>
+        <AreaChart
+          points={chartPoints}
+          color="#5b8def"
+          height={260}
+          emptyMessage={nothingYet ? "Start a sweep to see activity" : "No findings yet"}
+        />
       </div>
 
-      {/* Scans/Profiles tabs + Start scan */}
-      <div className="px-10 pt-2 pb-2 flex items-center gap-6 border-b border-paper-300">
+      {/* Scans/Profiles tabs — Devin-style underline, no pill background */}
+      <div className="px-12 pt-3 flex items-center gap-8 border-b border-paper-300">
         <TabPill label="Scans" count={rows?.length ?? 0} active />
         <TabPill label="Profiles" count={4} />
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex items-center gap-3 pb-2">
           <button
             onClick={onStart}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-accent text-white text-xs uppercase tracking-wider mono hover:brightness-95 shadow-card"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-accent text-white text-xs uppercase tracking-wider mono hover:brightness-95"
           >
             <IconPlay size={12} />
             Start scan
@@ -150,20 +146,20 @@ export function Board({
         </div>
       </div>
 
-      {/* Scans table — cleanui1-style */}
-      <div className="px-10 py-4">
+      {/* Scans table — no card, no vertical dividers, just row lines */}
+      <div className="px-12 py-4">
         {rows === null && <SkeletonRows />}
         {nothingYet && <EmptyState onStart={onStart} />}
         {rows !== null && rows.length > 0 && (
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-2xs mono uppercase tracking-wider text-paper-500">
-                <th className="text-left px-3 py-2 font-medium">Created by you</th>
-                <th className="text-right px-3 py-2 font-medium">Total</th>
-                <th className="text-right px-3 py-2 font-medium">Critical</th>
-                <th className="text-right px-3 py-2 font-medium">High</th>
-                <th className="text-right px-3 py-2 font-medium">Med</th>
-                <th className="text-right px-3 py-2 font-medium">Last Scan</th>
+              <tr className="text-2xs mono uppercase tracking-wider text-paper-500 border-b border-paper-200">
+                <th className="text-left px-3 py-3 font-normal">Created by you</th>
+                <th className="text-right px-3 py-3 font-normal">Total</th>
+                <th className="text-right px-3 py-3 font-normal">Critical</th>
+                <th className="text-right px-3 py-3 font-normal">High</th>
+                <th className="text-right px-3 py-3 font-normal">Med</th>
+                <th className="text-right px-3 py-3 font-normal">Last Scan</th>
                 <th className="px-2"></th>
               </tr>
             </thead>
@@ -177,15 +173,15 @@ export function Board({
                     key={r.sweep_id}
                     onClick={() => onSelect(r)}
                     onDoubleClick={() => onOpen(r.sweep_id)}
-                    className={`border-t border-paper-200 group cursor-pointer transition-colors ${
-                      active ? "bg-white shadow-card" : "hover:bg-paper-100/50"
+                    className={`border-b border-paper-200/60 last:border-none group cursor-pointer transition-colors ${
+                      active ? "bg-paper-100/60" : "hover:bg-paper-100/40"
                     }`}
                   >
-                    <td className="px-3 py-3">
+                    <td className="px-3 py-3.5">
                       <div className="flex items-center gap-2 min-w-0">
                         <StatusDot status={r.status} />
                         <span className="text-paper-900 font-medium truncate">{r.repo_name}</span>
-                        <span className="mono text-2xs text-paper-500 tabular-nums">
+                        <span className="mono text-2xs text-paper-400 tabular-nums">
                           {r.sweep_id.slice(0, 10)}
                         </span>
                       </div>
@@ -194,7 +190,7 @@ export function Board({
                     <TdNum n={sev.critical} colorClass={sev.critical > 0 ? "text-sev-critical" : ""} />
                     <TdNum n={sev.high} colorClass={sev.high > 0 ? "text-sev-high" : ""} />
                     <TdNum n={sev.medium} colorClass={sev.medium > 0 ? "text-sev-medium" : ""} />
-                    <td className="px-3 py-3 text-right mono text-2xs text-paper-500 tabular-nums">
+                    <td className="px-3 py-3.5 text-right mono text-2xs text-paper-500 tabular-nums">
                       {r.started_at ? relativeTime(r.started_at) : "—"}
                     </td>
                     <td className="px-2 text-right">
@@ -266,12 +262,15 @@ function StatPill({
 function TabPill({ label, count, active }: { label: string; count: number; active?: boolean }) {
   return (
     <div
-      className={`flex items-baseline gap-1.5 py-2 ${
-        active ? "text-paper-900 border-b-2 border-paper-900" : "text-paper-500"
+      className={`relative flex items-baseline gap-1.5 py-2 cursor-pointer ${
+        active ? "text-paper-900" : "text-paper-500 hover:text-paper-700"
       }`}
     >
       <span className="text-sm font-medium">{label}</span>
       <span className="mono text-2xs tabular-nums text-paper-500">{count}</span>
+      {active && (
+        <span className="absolute left-0 right-0 -bottom-[2px] h-[2px] bg-paper-900" />
+      )}
     </div>
   );
 }

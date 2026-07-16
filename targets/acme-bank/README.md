@@ -1,4 +1,4 @@
-# kitchen-sink — the demo target
+# acme-bank — the demo target
 
 This is Spotlight's **demonstration target**. One sweep should light up every
 surface Spotlight covers — classical AppSec, LLM/agent-layer, secrets, and

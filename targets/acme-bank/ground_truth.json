@@ -1,5 +1,5 @@
 {
-  "target": "kitchen-sink",
+  "target": "acme-bank",
   "language": "python",
   "purpose": "Demonstration — triggers every Spotlight detection surface in one sweep.",
   "expected_findings": [
