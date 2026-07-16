@@ -107,8 +107,16 @@ class GitOps:
         files: list[Path],
         message: str,
         author: str = "Spotlight <bot@cmul8.com>",
+        trailers: dict[str, str] | None = None,
     ) -> str:
-        """Stage `files` and create one commit. Returns the commit SHA."""
+        """Stage `files` and create one commit. Returns the commit SHA.
+
+        `trailers`, when provided, are appended to the commit message as
+        ``Key: Value`` lines separated from the body by a blank line — this is
+        the mechanism the non-repudiation layer uses to attach a
+        ``Signed-off-by-agent`` trailer that points at the finding's
+        Attestation.
+        """
         # Stage each file explicitly — never `git add -A` (safety: don't sweep
         # up stray artifacts from the workdir).
         rel_paths = []
@@ -123,6 +131,7 @@ class GitOps:
         if not rel_paths:
             raise RuntimeError("stage_and_commit: no files inside repo to stage")
         self._run(["git", "add", "--", *rel_paths], cwd=repo)
+        final_message = _append_trailers(message, trailers)
         # Use -c overrides so we don't touch the global git config.
         self._run(
             [
@@ -133,7 +142,7 @@ class GitOps:
                 f"user.email={_author_email(author)}",
                 "commit",
                 "-m",
-                message,
+                final_message,
                 "--author",
                 author,
             ],
@@ -208,6 +217,35 @@ class GitOps:
                 f"git command failed ({args[:3]}...): {r.stderr.strip()[:400]}"
             )
         return r
+
+
+def _append_trailers(message: str, trailers: dict[str, str] | None) -> str:
+    """Append ``Key: Value`` trailer lines to `message`, blank-line separated.
+
+    Empty/None trailers are a no-op. We keep this pure so tests can pin the
+    exact wire format without touching git.
+    """
+    if not trailers:
+        return message
+    lines = [f"{k}: {v}" for k, v in trailers.items()]
+    return message.rstrip("\n") + "\n\n" + "\n".join(lines) + "\n"
+
+
+def format_non_repudiation_footer(attestation_url: str) -> str:
+    """Return the PR-body ``## Non-repudiation`` section as a Markdown block.
+
+    Callers concatenate this onto their PR body so every Spotlight-authored
+    PR carries a pointer at the finding's signed Attestation. Kept in
+    ``git_ops`` (not in ``non_repudiation``) so we don't create a cycle:
+    ``non_repudiation`` shouldn't need to know about PRs.
+    """
+    return (
+        "\n\n## Non-repudiation\n\n"
+        f"This PR was opened by the Spotlight agent. Full signed chain of "
+        f"custody, including every Triager / Remediator / Verifier action, "
+        f"is available at the finding's Attestation:\n\n"
+        f"{attestation_url}\n"
+    )
 
 
 def _author_name(author: str) -> str:

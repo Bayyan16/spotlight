@@ -3,6 +3,7 @@ import { PhaseTracker } from "./PhaseTracker";
 import { SwarmGrid } from "./SwarmGrid";
 import { EventLog } from "./EventLog";
 import { Cmul8Mark } from "./Cmul8Mark";
+import { ThreatModelPanel } from "./ThreatModelPanel";
 
 function SandboxBadge({ events }: { events: SweepEvent[] }) {
   const spawn = events.find((e) => e.type === "sandbox.spawned");
@@ -67,6 +68,7 @@ export function LiveSweepPanel({ events, running }: { events: SweepEvent[]; runn
 
       <div className="p-6 space-y-4">
         <PhaseTracker events={events} />
+        <ThreatModelPanel events={events} />
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
           <SwarmGrid events={events} />
           <EventLog events={events} />

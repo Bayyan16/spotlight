@@ -17,6 +17,7 @@ from typing import Any
 
 from spotlight.sandbox import CapabilityToken, SandboxResult, SandboxRunner, get_sandbox
 from spotlight.sg_core import CodeGraph, DataFlowSlice
+from spotlight.warden import WardenService
 
 from .model import MockModelClient, ModelClient
 
@@ -40,16 +41,149 @@ class Recon:
             or "openai" in f.read_text(errors="ignore").lower()
             for f in code_files
         )
+        warden_flags, wrapped_docs = _warden_scan_recon_surface(repo_path, code_files)
         threat_model = self.model.complete(
             role="recon",
             prompt="classify stack and threat model",
-            context={"signals": signals, "has_ai_layer": has_ai_layer},
+            context={
+                "signals": signals,
+                "has_ai_layer": has_ai_layer,
+                # Wrapped, envelope-fenced target docs. The model prompt
+                # template concatenates these into the user message so the
+                # model sees README content behind the untrusted envelope,
+                # not inline as trusted operator instructions.
+                "wrapped_docs": wrapped_docs,
+            },
         )
         return {
             "threat_model": threat_model,
             "signals": signals,
             "slices": [s.to_dict() for s in slices],
+            "warden_flags": warden_flags,
+            "wrapped_docs": wrapped_docs,
         }
+
+
+def _warden_scan_recon_surface(
+    repo_path: Path, code_files: list[Path]
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Run WardenService prompt-injection scans over the target's public
+    documentation and the top comment block of every source file.
+
+    Returns:
+        (warden_flags, wrapped_docs)
+
+        warden_flags — flat list of dicts with `origin`, `kind`, `span`,
+        `snippet` so the orchestrator can emit one event per hit.
+
+        wrapped_docs — list of `{origin, wrapped}` dicts: each README /
+        top-comment run through `WardenService.wrap_target_content`. The
+        model prompt template concatenates these into the user message so
+        target-derived text is always fenced behind the untrusted envelope.
+
+    Any file we can't read is silently skipped — we do NOT crash Recon over
+    a stray permission error or a non-UTF-8 file.
+    """
+    warden = WardenService()
+    flags: list[dict[str, Any]] = []
+    wrapped_docs: list[dict[str, str]] = []
+    # 1. README-shaped files at the top level.
+    readme_globs = ("README.md", "README.rst", "README.txt", "README")
+    top_level_md = list(repo_path.glob("*.md"))
+    seen: set[Path] = set()
+    for name in readme_globs:
+        p = repo_path / name
+        if p.exists() and p.is_file():
+            top_level_md.append(p)
+    for p in top_level_md:
+        if p in seen:
+            continue
+        seen.add(p)
+        try:
+            content = p.read_text(errors="ignore")
+        except Exception:
+            continue
+        origin = f"readme:{p.name}"
+        for m in warden.scan_target_for_injection(content, origin):
+            flags.append({"origin": origin, **m.to_dict()})
+        wrapped_docs.append(
+            {"origin": origin, "wrapped": warden.wrap_target_content(content, origin)}
+        )
+
+    # 2. Top comments of every source file. `_extract_top_comments` is
+    #    dedent-safe and returns "" for a file with no leading comments.
+    for src in code_files:
+        try:
+            content = src.read_text(errors="ignore")
+        except Exception:
+            continue
+        top = _extract_top_comments(content, src.suffix)
+        if not top:
+            continue
+        try:
+            rel = src.relative_to(repo_path)
+        except ValueError:
+            rel = src.name
+        origin = f"comment:{rel}"
+        for m in warden.scan_target_for_injection(top, origin):
+            flags.append({"origin": origin, **m.to_dict()})
+    return flags, wrapped_docs
+
+
+def _extract_top_comments(text: str, suffix: str) -> str:
+    '''Pull the top-of-file comment block from `text`. Handles Python
+    `#`/`"""`, JS/TS `//`/`/* */`. Returns "" if there is no leading
+    comment / docstring.'''
+    if not text:
+        return ""
+    lines = text.splitlines()
+    if suffix in (".py",):
+        # Skip shebang/encoding.
+        i = 0
+        while i < len(lines) and (
+            lines[i].startswith("#!") or "coding" in lines[i][:20]
+        ):
+            i += 1
+        # Triple-string docstring at the top?
+        stripped = "\n".join(lines[i:]).lstrip()
+        for q in ('"""', "'''"):
+            if stripped.startswith(q):
+                end = stripped.find(q, len(q))
+                if end != -1:
+                    return stripped[len(q):end]
+        # Otherwise consecutive `#` comments.
+        block: list[str] = []
+        for l in lines[i:]:
+            s = l.strip()
+            if s.startswith("#"):
+                block.append(s.lstrip("#").strip())
+            elif not s:
+                # blank line inside a comment block is ok
+                if block:
+                    block.append("")
+                continue
+            else:
+                break
+        return "\n".join(block).strip()
+    if suffix in (".js", ".ts", ".jsx", ".tsx"):
+        stripped = text.lstrip()
+        if stripped.startswith("/*"):
+            end = stripped.find("*/")
+            if end != -1:
+                return stripped[2:end]
+        block: list[str] = []
+        for l in lines:
+            s = l.strip()
+            if s.startswith("//"):
+                block.append(s[2:].strip())
+            elif not s:
+                if block:
+                    block.append("")
+                continue
+            else:
+                break
+        return "\n".join(block).strip()
+    return ""
 
 
 _CLASS_ALIASES = {
@@ -446,7 +580,12 @@ class Verifier:
             else:
                 sandbox_result = sandbox.run_python(script=_PY_POC_SCRIPT, token=token, env=env)
         data = _last_json_line(sandbox_result.stdout)
-        backdoor = _backdoor_check(remediation.get("diff", ""))
+        backdoor_matches = WardenService().check_fix_diff(remediation.get("diff", ""))
+        backdoor = {
+            "verdict": "fail" if backdoor_matches else "pass",
+            "notes": [m.kind for m in backdoor_matches],
+            "matches": [m.to_dict() for m in backdoor_matches],
+        }
         judgment = self.model.complete(
             role="verifier",
             prompt=self.system_prompt,
@@ -470,16 +609,3 @@ class Verifier:
         }
 
 
-def _backdoor_check(diff: str) -> dict[str, Any]:
-    """Scan the fix diff for weakening patterns. Phase 1 substring scan;
-    Phase 2 Warden module owns this with proper AST diffing."""
-    weakenings = [
-        ("verify=False", "TLS verification disabled"),
-        ("check=False", "Auth check disabled"),
-        (".skip(", "Test skipped"),
-        ("# noqa", "Lint suppression added"),
-        ("auth_required = False", "Auth requirement removed"),
-        ("permission=", "Permission scope widened"),
-    ]
-    hits = [note for pat, note in weakenings if pat in diff]
-    return {"verdict": "fail" if hits else "pass", "notes": hits}

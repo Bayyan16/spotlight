@@ -177,6 +177,34 @@ export async function getAttestation(id: string): Promise<unknown> {
   return r.json();
 }
 
+// Cross-surface presence (Tranche B7). Answers "is this same class also
+// reachable in my other repos?" — the bank-feedback wedge.
+export type PresenceMatch = {
+  sweep_id: string;
+  repo_name: string;
+  finding_id: string;
+  file: string;
+  line: number;
+  tier: string;
+  state: string;
+  sweep_started_at: string | null;
+};
+
+export type PresenceResult = {
+  class: string;
+  cwe: string;
+  self: { sweep_id: string; repo_name: string; finding_id: string };
+  matches: PresenceMatch[];
+  presence_count: number;
+};
+
+export async function getPresence(findingId: string): Promise<PresenceResult | null> {
+  const r = await fetch(`${BASE}/findings/${findingId}/presence`);
+  if (r.status === 404) return null;
+  if (!r.ok) return null;
+  return r.json();
+}
+
 export function openSweepStream(id: string, onEvent: (e: SweepEvent) => void): WebSocket {
   const scheme = window.location.protocol === "https:" ? "wss" : "ws";
   const host = window.location.host;

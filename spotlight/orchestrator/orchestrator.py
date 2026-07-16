@@ -235,6 +235,24 @@ class Orchestrator:
         recon_out = Recon(self.model).run(repo_path)
         self._account_usage(recon_out.get("threat_model", {}))
         emit(EventType.AGENT_FINISHED, "recon", signals=len(recon_out["signals"]))
+        emit(
+            EventType.RECON_THREAT_MODEL,
+            "recon",
+            threat_model=recon_out["threat_model"],
+            stack=recon_out.get("threat_model", {}).get("stack", {}),
+            signals_count=len(recon_out["signals"]),
+            surfaces=recon_out["threat_model"].get("surfaces", []),
+        )
+
+        # Warden fan-out: one warden.injection.flagged event per Recon flag.
+        # This is the ONE point in the orchestrator that talks to Warden —
+        # everything else lives inside the roles.
+        for flag in recon_out.get("warden_flags", []) or []:
+            emit(
+                EventType.WARDEN_INJECTION_FLAGGED,
+                "warden",
+                **flag,
+            )
 
         # 2. Investigate — parallel fan-out under Profile.max_agents, guarded
         #    by budget. If a breach lands mid-fan-out we stop spawning.

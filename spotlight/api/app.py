@@ -424,6 +424,132 @@ def get_finding(finding_id: str) -> dict:
     raise HTTPException(404, "finding not found")
 
 
+@app.get("/findings/{finding_id}/presence")
+def get_finding_presence(finding_id: str) -> dict:
+    """Cross-surface presence — is this same vulnerability *class* reachable
+    in other repos in the workspace?
+
+    Bank feedback wedge (docs/BANK_FEEDBACK_2026-07-16.md): scanners answer
+    the per-repo question ("what did you find here?") but nobody answers
+    the fleet question ("is this same class reachable in my other repos?").
+    This endpoint groups findings by class across sweeps and returns every
+    match outside the finding's own sweep.
+    """
+    # Locate the source finding. Check in-memory first (hot cache /
+    # store-disabled tests), then fall through to Postgres if enabled.
+    self_row: dict | None = None
+    self_sweep_id: str | None = None
+    self_repo_name: str | None = None
+
+    for s in SWEEPS.values():
+        for f in s.findings:
+            if f["id"] == finding_id:
+                self_row = f
+                self_sweep_id = s.sweep_id
+                self_repo_name = Path(s.repo_path).name
+                break
+        if self_row is not None:
+            break
+
+    if self_row is None and store_enabled():
+        with get_session() as sess:
+            row = sess.get(FindingRow, finding_id)
+            if row:
+                self_row = row.payload
+                self_sweep_id = row.sweep_id
+                sweep_row = sess.get(SweepRow, row.sweep_id)
+                self_repo_name = sweep_row.repo_name if sweep_row else ""
+
+    if self_row is None:
+        raise HTTPException(404, "finding not found")
+
+    finding_class = self_row.get("class", "")
+    finding_cwe = self_row.get("cwe", "")
+
+    matches: list[dict] = []
+
+    if store_enabled():
+        with get_session() as sess:
+            rows = (
+                sess.query(FindingRow)
+                .filter(FindingRow.class_ == finding_class)
+                .filter(FindingRow.sweep_id != self_sweep_id)
+                .all()
+            )
+            # Group by sweep_id — take the first (lowest id) finding per sweep
+            # so the panel doesn't show 5 rows for the same repo.
+            by_sweep: dict[str, FindingRow] = {}
+            for r in rows:
+                if r.sweep_id not in by_sweep or r.id < by_sweep[r.sweep_id].id:
+                    by_sweep[r.sweep_id] = r
+            for sweep_id, r in by_sweep.items():
+                sweep_row = sess.get(SweepRow, sweep_id)
+                matches.append(
+                    {
+                        "sweep_id": sweep_id,
+                        "repo_name": sweep_row.repo_name if sweep_row else "",
+                        "finding_id": r.id,
+                        "file": r.file,
+                        "line": r.line,
+                        "tier": r.tier,
+                        "state": r.state,
+                        "sweep_started_at": sweep_row.started_at.isoformat()
+                        if sweep_row and sweep_row.started_at
+                        else None,
+                    }
+                )
+    else:
+        # In-memory fallback (tests, or store-disabled dev).
+        by_sweep_mem: dict[str, dict] = {}
+        for s in SWEEPS.values():
+            if s.sweep_id == self_sweep_id:
+                continue
+            for f in s.findings:
+                if f.get("class") != finding_class:
+                    continue
+                cur = by_sweep_mem.get(s.sweep_id)
+                if cur is None or f["id"] < cur["_finding"]["id"]:
+                    by_sweep_mem[s.sweep_id] = {
+                        "_sweep": s,
+                        "_finding": f,
+                    }
+        for sweep_id, packed in by_sweep_mem.items():
+            s = packed["_sweep"]
+            f = packed["_finding"]
+            matches.append(
+                {
+                    "sweep_id": sweep_id,
+                    "repo_name": Path(s.repo_path).name,
+                    "finding_id": f["id"],
+                    "file": f["location"]["file"],
+                    "line": f["location"]["line"],
+                    "tier": f["tier"],
+                    "state": f["state"],
+                    "sweep_started_at": None,
+                }
+            )
+
+    # Stable order: most recent first when we have a timestamp, else by sweep_id.
+    matches.sort(
+        key=lambda m: (m["sweep_started_at"] or "", m["sweep_id"]),
+        reverse=True,
+    )
+
+    return _redact_response(
+        {
+            "class": finding_class,
+            "cwe": finding_cwe,
+            "self": {
+                "sweep_id": self_sweep_id,
+                "repo_name": self_repo_name,
+                "finding_id": finding_id,
+            },
+            "matches": matches,
+            "presence_count": len(matches),
+        }
+    )
+
+
 @app.get("/prs/{finding_id}")
 def get_pr_for_finding(finding_id: str) -> dict:
     """Return whatever PR info is stored on this finding.

@@ -1,5 +1,6 @@
 import type { Finding } from "../lib/api";
 import { IconCheck } from "./Icons";
+import { PresencePanel } from "./PresencePanel";
 
 export function FindingDetail({ finding }: { finding: Finding }) {
   const verified = finding.tier === "verified";
@@ -162,6 +163,8 @@ export function FindingDetail({ finding }: { finding: Finding }) {
             </div>
           </Panel>
         )}
+
+        <PresencePanel findingId={finding.id} />
 
         <Panel title="Audit">
           <dl className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-xs mono">

@@ -74,6 +74,19 @@ beforeEach(() => {
       if (url.endsWith("/sweeps") && init?.method === "POST") {
         return Promise.resolve({ ok: true, json: () => Promise.resolve({ sweep_id: "sw_test" }) }) as any;
       }
+      if (url.includes("/presence")) {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              class: "sqli",
+              cwe: "CWE-89",
+              self: { sweep_id: "sw_test", repo_name: "vuln-bank-api", finding_id: "SPOT-0001" },
+              matches: [],
+              presence_count: 0,
+            }),
+        }) as any;
+      }
       if (url.includes("/findings")) {
         return Promise.resolve({ ok: true, json: () => Promise.resolve(mockFindings) }) as any;
       }

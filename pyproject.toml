@@ -19,6 +19,7 @@ dependencies = [
     "python-multipart>=0.0.12",
     "flask>=3.0",
     "modal>=1.0",
+    "cryptography>=42",
 ]
 
 [project.optional-dependencies]
