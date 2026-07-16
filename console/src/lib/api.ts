@@ -225,6 +225,11 @@ export type ExploitPath = {
   steps: ExploitPathStep[];
   reproduced: boolean;
   rationale: string;
+  // Tranche B5 — signed rule chains carry tier="verified" (default),
+  // model proposals carry tier="hypothesis" and never enter the signed
+  // attestation set.
+  tier?: "verified" | "hypothesis";
+  origin?: "chainer-rule" | "llm-proposal";
 };
 
 export async function getExploitPaths(sweepId: string): Promise<ExploitPath[]> {

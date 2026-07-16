@@ -197,6 +197,11 @@ class Chainer:
                 "steps": steps_sorted,
                 "reproduced": False,  # repro composition is a later tranche
                 "rationale": rationale,
+                # Deterministic rule chains are the signed lane. Hypothesis
+                # paths from the LLM proposer (Tranche B5) carry
+                # tier="hypothesis" and never enter the attested set.
+                "tier": "verified",
+                "origin": "chainer-rule",
             })
 
         # ── Rule 1: agentic → code ────────────────────────────────

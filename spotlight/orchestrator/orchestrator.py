@@ -31,6 +31,7 @@ from spotlight.profiles import Profile, get_profile
 
 from .chainer import Chainer
 from .events import EventBus, EventType
+from .hypothesis import HypothesisProposer
 
 
 # Canonical phase order for the state machine. Per-finding phases (reproduce,
@@ -537,6 +538,27 @@ class Orchestrator:
         #     rewrite the step ids inside the finding loop below once each
         #     candidate has its concrete finding id.
         exploit_paths = Chainer().compose(reduced) if reduced else []
+
+        # 3c. Hypothesis lane — one LLM call proposes plausible chains the
+        #     Chainer didn't rule-match. Tagged tier="hypothesis" and never
+        #     enters the signed/attested set. Analysts promote by adding a
+        #     new Chainer rule.
+        hypothesis_paths: list[dict[str, Any]] = []
+        if reduced:
+            try:
+                hypothesis_paths = HypothesisProposer(self.model).propose(
+                    candidates=reduced, verified=exploit_paths,
+                )
+            except Exception as exc:  # noqa: BLE001 — hypothesis lane must never crash the sweep
+                print(f"[orchestrator] hypothesis proposer failed: {exc!r}")
+                hypothesis_paths = []
+
+        # Union: hypothesis paths sit alongside verified in the same list, but
+        # each carries a `tier` field. Persistence, API, and Console filter/
+        # split by `tier` — the reporter's signed attestation excludes any
+        # tier != "verified".
+        exploit_paths = list(exploit_paths) + list(hypothesis_paths)
+
         cand_key_to_path_and_step: dict[str, list[tuple[dict, dict]]] = {}
         for ep in exploit_paths:
             for step in ep["steps"]:

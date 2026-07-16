@@ -117,14 +117,25 @@ class Reporter:
         verified_count = sum(1 for f in findings if f.get("tier") == "verified")
 
         # ── exploit paths ────────────────────────────────────────────────
-        # The Chainer is authoritative for `exploit_paths`. If it composed
-        # zero chains (because there were no cross-surface pairs to link),
-        # the attestation reports zero — the per-finding reproduction proofs
-        # live in `sandbox_proofs` below, they don't belong under exploit
-        # paths. Consistency > convenience.
-        exploit_paths: list[dict] = list(
+        # The Chainer is authoritative for the signed `exploit_paths` block.
+        # If it composed zero chains, the attestation reports zero — per-
+        # finding reproduction proofs live in `sandbox_proofs` below.
+        #
+        # Tranche B5 — the Hypothesis Proposer emits speculative chains
+        # tagged tier="hypothesis". Those are surfaced separately in
+        # `hypothesis_paths` and are NEVER included in the signed
+        # `exploit_paths` set (that would grant a signed attestation to a
+        # model-invented chain). Attestation viewers must render hypotheses
+        # from `hypothesis_paths` under an explicit "unsigned" banner.
+        _all_paths: list[dict] = list(
             getattr(sweep_result, "exploit_paths", []) or []
         )
+        exploit_paths: list[dict] = [
+            ep for ep in _all_paths if (ep.get("tier") or "verified") == "verified"
+        ]
+        hypothesis_paths: list[dict] = [
+            ep for ep in _all_paths if ep.get("tier") == "hypothesis"
+        ]
 
         # ── warden self-defense block ────────────────────────────────────
         warden_block = self._assemble_warden_block(warden_events, events)
@@ -192,6 +203,7 @@ class Reporter:
             "threat_model": threat_model,
             "findings": findings,
             "exploit_paths": exploit_paths,
+            "hypothesis_paths": hypothesis_paths,
             "warden": warden_block,
             "chain_of_custody": chain_of_custody,
             "sandbox_proofs": sandbox_proofs,
@@ -292,6 +304,7 @@ def render_markdown(attestation: dict) -> str:
     tm = attestation.get("threat_model", {}) or {}
     findings = attestation.get("findings", []) or []
     exploit_paths = attestation.get("exploit_paths", []) or []
+    hypothesis_paths = attestation.get("hypothesis_paths", []) or []
     warden = attestation.get("warden", {}) or {}
     coc = attestation.get("chain_of_custody", {}) or {}
     metrics = attestation.get("metrics", {}) or {}
@@ -452,6 +465,29 @@ def render_markdown(attestation: dict) -> str:
                 f" — reproduced in sandbox `{(ep.get('sandbox') or {}).get('engine', '?')}`,"
                 f" verifier said `{ep.get('verification_result', '?')}`"
             )
+        lines.append("")
+
+    # ── hypothesis paths (Tranche B5, unsigned) ──────────────────────────
+    if hypothesis_paths:
+        lines.append("## Hypothesis Paths (unsigned — analyst review required)")
+        lines.append("")
+        lines.append(
+            "> These chains were **proposed by the model** and did not match "
+            "a deterministic Chainer rule. They are **not signed** and are "
+            "**not** part of the attested finding set. Treat as leads, not "
+            "conclusions."
+        )
+        lines.append("")
+        for ep in hypothesis_paths:
+            title = _md_escape(ep.get("title") or ep.get("id"))
+            severity = ep.get("severity", "?")
+            steps = ep.get("steps") or []
+            chain_repr = " → ".join(
+                f"`{s.get('class', '?')}` ({s.get('finding_id', '?')})" for s in steps
+            )
+            lines.append(f"- **{ep.get('id')}** — {title} · severity `{severity}` · {chain_repr}")
+            if ep.get("rationale"):
+                lines.append(f"  - Rationale: {_md_escape(ep['rationale'])}")
         lines.append("")
 
     # ── warden self-defense ──────────────────────────────────────────────

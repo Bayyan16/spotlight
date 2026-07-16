@@ -90,6 +90,37 @@ class MockModelClient:
                 "evidence_used": ["codegraph:source->sink reachable", slice_["reason"]],
             }
 
+        if role == "hypothesis-proposer":
+            # Deterministic mock proposer: pair the first two candidates that
+            # (a) live in the same repo and (b) span two surfaces. Real model
+            # will propose free-form chains keyed off classes, function names,
+            # and file proximity. The Chainer's rule-validated lane still owns
+            # the signed paths; this lane is analyst-review only.
+            cands = context.get("candidates", []) or []
+            if len(cands) < 2:
+                return {"chains": []}
+            first, second = cands[0], cands[1]
+            return {
+                "chains": [
+                    {
+                        "title": (
+                            f"Hypothesis: {first.get('class', '?')} → "
+                            f"{second.get('class', '?')} (proposed by model)"
+                        ),
+                        "rationale": (
+                            "Model proposes these two findings compose into a "
+                            "single attacker path — no deterministic rule "
+                            "matched, review before treating as verified."
+                        ),
+                        "severity": first.get("severity", "medium"),
+                        "step_finding_ids": [
+                            first.get("id") or first.get("title"),
+                            second.get("id") or second.get("title"),
+                        ],
+                    }
+                ]
+            }
+
         if role == "verifier":
             return {
                 "result": "repro-now-blocked",
