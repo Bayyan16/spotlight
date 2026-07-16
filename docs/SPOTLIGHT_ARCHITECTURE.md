@@ -648,31 +648,92 @@ The public key is served at `/verify-key`. Anyone can verify the chain of custod
 
 ---
 
-## 11 · What's built vs. what's not
+## 11 · The kitchen-sink demo — one sweep tells the whole story
+
+`targets/kitchen-sink/` is a demonstration fixture that triggers every Spotlight surface in a single scan. Pick it from the target selector, click **Start Sweep**, and in ~2 minutes you get:
+
+**Six findings** across two surfaces:
+- `sqli`, `ssrf`, `cmdi` — code surface (CWE-89, CWE-918, CWE-78)
+- `secrets` — hardcoded AWS + OpenAI + GitHub keys
+- `excessive-agency` — LangChain Tool with no allowlist (OWASP LLM06)
+- `prompt-injection` — raw user ticket → `ChatPromptTemplate` (OWASP LLM01)
+
+**Six Exploit Paths** — 2 cross-surface:
+- EP-0001 `LLM01 → LLM06` (indirect prompt injection → over-permissioned tool) — cross-surface
+- EP-0005 secrets + `excessive-agency` — cross-surface
+- EP-0006 secrets + `prompt-injection` — cross-surface
+- EP-0002/03/04 secrets + sqli/ssrf/cmdi — same-surface
+
+**Four Warden events** fired on the README trap:
+- `kind=ignore_instructions`
+- `kind=system_override`
+- `kind=you_are_now`
+- `kind=html_comment_smuggling`
+
+**Attestation** downloadable as PDF · Markdown · JSON from any finding's detail header.
+
+**The demo walk-through** (5 clicks, no talking track needed):
+1. **Board** — top row is `kitchen-sink` with 6 findings and a spike in the area chart.
+2. **Findings** → click any → **Finding detail** shows: confidence dial (top-right) · big severity/tier/state chips · Why-you-can-trust-this evidence panel · Fix panel · Sandbox card (Modal, egress-off) · Threat model in effect (chips of untrusted sources ← / high-impact sinks →) · **Presence panel** (which other sweeps have this same class) · Audit block.
+3. **Exploit paths** (nav rail item 4) — 6 cards, cross-surface ones highlighted with the accent gradient. Each path renders as horizontal step-cards linked by `enables` arrows.
+4. **Warden** (nav rail item 5) — the swarm-defends-itself audit. 4 injection flags, each with kind + origin + timestamp. This is the "we treated your code as hostile input and can prove it" evidence.
+5. **Attestation → PDF** from any finding — a printable audit-ready record with every section populated.
+
+---
+
+## 12 · What's built vs. what's not
 
 ### Built (as of 2026-07-16)
 
 - All of Phase 1 + Phase 1.5.
-- **Tranche A** (real swarm, sandbox, JS/TS, redaction, git ops, budget guards) — complete.
-- **Tranche B batch 1**: Warden v1 + Threat-model UI + Cross-surface presence + Non-repudiation.
-- **Tranche B batch 2** (in flight now): Consensus Kernel with adjudicator + Cognition Sweep + Cross-surface Exploit Path + Attestation v2.
+- **Tranche A** — real swarm, Modal sandbox, JS/TS, redaction pipeline, git ops, budget guards + phase state machine. **Complete.**
+- **Tranche B batch 1** — Warden v1 (injection detector + backdoor scan + envelope wrap), Threat-model UI, Cross-surface presence, Non-repudiation ledger. **Complete.**
+- **Tranche B batch 2** — Consensus Kernel v1 with adjudicator, Cognition Sweep + Analyst (OWASP LLM Top 10), Cross-surface Exploit Path Chainer, Attestation v2 Reporter (JSON + Markdown + PDF). **Complete.**
+- **Console UI** — Board (cleanui1 aesthetic + area chart + 4 KPI pills), Live Sweep (phase tracker + swarm grid + event log + Threat Model panel), Findings inbox, Finding detail with Presence + Sandbox + Threat model + Audit + **Attestation export buttons**, **Exploit Paths view** (cross-surface highlighted), **Warden view**, Command palette (⌘K), keyboard shortcuts (1-6 for nav, ⌘↵ for Start Sweep). **Complete.**
+- **Backend depth** — 346 backend tests + 11 frontend tests, all passing on `main`. Live at https://spotlight-api-production-ff76.up.railway.app/.
 
 ### Deliberately mocked (still)
 
-- **No fine-tuned model.** We use Moonshot Kimi (T0 hosted).
+- **No fine-tuned model.** We use Moonshot Kimi (T0 hosted). Provider abstraction ready for T1 swap.
 - **Multi-tenant auth**: none. Single workspace for the demo.
 - **Real T1 self-hosted model path**: Phase 3.
 - **Eval harness with precision + recall on labeled corpora**: Phase 3.
-- **Full first-scan wizard, review threads, delta view, watch-mode**: Tranche C (Phase 2).
+- **First-scan wizard, review threads, delta view, watch-mode**: Tranche C (Phase 2).
+- **RBI-compliance Attestation export**: Phase 3 (Reporter already emits the base — needs the RBI heading mapping).
+
+### Small gaps to close
+
+- SQLi reproduction on kitchen-sink returns `not-reproduced` (Modal image doesn't preinstall LangChain, so the guarded `try/except ImportError` slows the container's cold start enough to nudge the 60s PoC timeout). Fix by either shortening the PoC's app-import path or preinstalling `langchain` in the Modal image. Same fix applies to any target that imports non-pinned deps.
+- Chain of custody is signed but not yet automatically populated per-finding by the orchestrator — the field lands in the Attestation as an empty stub. Wire lands in the next micro-pass.
+- Exploit Paths view doesn't yet render the `edge` label (why step-N enables step-N+1) prominently — it just says "enables". Cosmetic.
 
 ### Deliberately deferred
 
-- Semantic DLP (adjacent product idea, not scoped)
-- HSM-backed signing (software Ed25519 sufficient for MVP)
+- Semantic DLP (adjacent product idea, not scoped).
+- HSM-backed signing (software Ed25519 sufficient for MVP).
+- Real T1 sovereign model deployment.
 
 ---
 
-## 12 · Glossary — every term in one place
+## 13 · Fixture targets (bundled)
+
+Every fixture ships with a `ground_truth.json` declaring the expected findings so the eval harness can measure recall.
+
+| Fixture | Purpose | Expected findings |
+|---|---|---|
+| `vuln-bank-api` | Python + Flask · SQLi baseline | 1 verified SQLi |
+| `clean-bank-api` | Precision negative — same shape, parameterized query | 0 findings |
+| `vuln-node-api` | JS + Express · concat SQLi | 1 high-confidence SQLi (JS repro pending Modal Node image) |
+| `clean-node-api` | Precision negative for JS | 0 findings |
+| `leaky-app` | Redaction pipeline test target · hardcoded creds | 2 verified secrets |
+| `injected-readme` | Warden self-defense fixture · README injection payload | 0 code findings + ≥2 Warden flags |
+| `vuln-langchain-agent` | Cognition Sweep baseline · LangChain agent with 3 issues | 3 findings (LLM01, LLM05, LLM06) |
+| `clean-langchain-agent` | Precision negative for the agentic surface | 0 findings |
+| `kitchen-sink` | **The demo** — all surfaces at once | 6 findings + 6 exploit paths + 4 Warden flags |
+
+---
+
+## 14 · Glossary — every term in one place
 
 **Adjudicator** — a fresh-context LLM step that resolves disagreements between evidence items.
 
@@ -700,7 +761,11 @@ The public key is served at `/verify-key`. Anyone can verify the chain of custod
 
 **Code Graph (`sg-core`)** — AST + taint-propagation substrate.
 
+**Chainer** — the component (`spotlight/orchestrator/chainer.py`) that composes candidates into ExploitPaths. Rules: `LLM01+LLM06` → cross-surface, `LLM05+eval/cmdi` → same-surface, `secrets+any` → credential+primary pairing.
+
 **Cognition Analyst** — the agent that scans the agentic surface.
+
+**Cognition Scanner** — the sg-core sibling (`spotlight/cognition/`) that recognizes LangChain / OpenAI / Anthropic / RAG patterns statically and emits AgenticDataFlow slices.
 
 **Consensus Kernel** — the promotion decision layer.
 
@@ -722,9 +787,13 @@ The public key is served at `/verify-key`. Anyone can verify the chain of custod
 
 **Evidence item** — a corroboration record: static fact, reproduction, independent agent, external signal.
 
-**ExploitPath** — a chain of findings composed by the Chainer.
+**ExploitPath** — a chain of findings composed by the Chainer. `cross_surface=true` when the chain spans both `code` and `agentic` surfaces.
+
+**Exploit Paths view** — the Console page (nav rail item 4) that renders every ExploitPath in the workspace as horizontal step-cards linked by `enables` arrows. Cross-surface paths highlighted with the accent gradient.
 
 **Finding** — one vulnerability report.
+
+**Kitchen-sink** — the demonstration fixture at `targets/kitchen-sink/` that produces 6 findings + 6 exploit paths + 4 Warden events in one sweep. Used for the guided demo walk-through.
 
 **Fixture target** — a bundled example repo used for tests / demos.
 
@@ -801,6 +870,8 @@ The public key is served at `/verify-key`. Anyone can verify the chain of custod
 **Warden** — the control plane that defends the swarm from hostile input.
 
 **Warden event** — `warden.injection.flagged`, `warden.capability.denied`, `warden.budget.tripped`.
+
+**Warden view** — the Console page (nav rail item 5) that renders every Warden + sandbox-egress-denied event across the workspace. Four summary tiles + a per-event table.
 
 **Workspace** — the single-tenant scope for the demo. Owns the signing key.
 
