@@ -1,112 +1,161 @@
 import type { Finding } from "../lib/api";
+import { IconCheck } from "./Icons";
 
 export function FindingDetail({ finding }: { finding: Finding }) {
   return (
-    <div className="border border-ink-800 rounded-md bg-ink-900 divide-y divide-ink-800">
-      <header className="p-4 flex items-start justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2 mb-1">
-            <SeverityChip s={finding.severity} />
-            <span className="mono text-xs text-ink-400">{finding.id}</span>
-            <span className="mono text-xs text-ink-500">{finding.cwe}</span>
-            <TierBadge tier={finding.tier} />
-          </div>
-          <h2 className="text-lg text-ink-100">{finding.title}</h2>
-          <div className="mono text-xs text-ink-500 mt-1">
-            {finding.location.file}:{finding.location.line} · {finding.location.function}
-          </div>
+    <section className="flex-1 min-w-0 overflow-y-auto bg-paper-50">
+      <header className="border-b border-paper-300 bg-paper-50/80 backdrop-blur px-6 py-4 sticky top-0">
+        <div className="flex items-center gap-2 mb-1 text-2xs mono text-paper-500">
+          <span>{finding.id}</span>
+          <span>·</span>
+          <span>{finding.cwe}</span>
+          <span>·</span>
+          <span>surface {finding.surface}</span>
         </div>
-        <div className="text-right">
-          <div className="text-xs uppercase text-ink-500 mono">Confidence</div>
-          <div className="mono text-2xl text-spot-green">{(finding.confidence * 100).toFixed(0)}%</div>
-          <div className="mono text-xs text-ink-400 mt-1">{finding.state}</div>
+        <h1 className="text-lg text-paper-900 font-semibold tracking-tight">{finding.title}</h1>
+        <div className="mt-1 text-xs mono text-paper-600">
+          {finding.location.file}:{finding.location.line} · {finding.location.function}
         </div>
       </header>
 
-      <section className="p-4">
-        <div className="text-xs uppercase tracking-wider text-ink-400 mono mb-2">
-          Why you can trust this
-        </div>
-        <div className="text-sm text-ink-200 mb-3">{finding.evidence.root_cause}</div>
-        <ul className="space-y-1 text-sm">
-          {finding.evidence.corroboration.map((c, i) => (
-            <li key={i} className="flex items-start gap-2">
-              <span className="text-spot-green mono">✓</span>
-              <span className="mono text-xs text-ink-400 uppercase">{c.type}</span>
-              <span className="text-ink-300 text-xs">
-                {c.result ?? (Array.isArray(c.detail) ? c.detail.join(" · ") : String(c.detail ?? ""))}
-              </span>
-            </li>
-          ))}
-          <li className="flex items-start gap-2">
-            <span className="text-spot-green mono">✓</span>
-            <span className="mono text-xs text-ink-400 uppercase">consensus</span>
-            <span className="text-ink-300 text-xs">
-              {finding.consensus.rationale} ({finding.consensus.independent_corroborators} independent corroborators)
+      {/* Fields row — inspo-2's key-value pills. */}
+      <div className="grid grid-cols-2 gap-x-6 gap-y-3 px-6 py-4 border-b border-paper-300 bg-paper-100/50">
+        <Field label="Severity" value={<SeverityPill s={finding.severity} />} />
+        <Field label="Status" value={<span className="text-paper-800 text-sm">{finding.state}</span>} />
+        <Field
+          label="Confidence"
+          value={<span className="text-paper-800 text-sm">{(finding.confidence * 100).toFixed(0)}%</span>}
+        />
+        <Field
+          label="Tier"
+          value={<span className="text-accent text-sm uppercase mono">{finding.tier}</span>}
+        />
+        <Field
+          label="Class"
+          value={<span className="mono text-paper-800 text-sm">{finding.class}</span>}
+        />
+        <Field
+          label="Corroborators"
+          value={
+            <span className="text-paper-800 text-sm">
+              {finding.consensus.independent_corroborators} independent
             </span>
-          </li>
-        </ul>
-      </section>
+          }
+        />
+      </div>
 
-      <section className="p-4">
-        <div className="text-xs uppercase tracking-wider text-ink-400 mono mb-2">Fix</div>
-        <div className="text-sm text-ink-300">{finding.evidence.fix.approach}</div>
-        <div className="mt-2 flex gap-3 text-xs mono">
-          <StatChip
-            label="Verifier"
-            value={finding.evidence.verification.result as string}
-            good={finding.evidence.verification.result === "repro-now-blocked"}
-          />
-          <StatChip
-            label="Backdoor check"
-            value={finding.evidence.verification.backdoor_check as string}
-            good={finding.evidence.verification.backdoor_check === "pass"}
-          />
-          <StatChip
-            label="Independent"
-            value={String(finding.evidence.verification.independent_verifier)}
-            good={!!finding.evidence.verification.independent_verifier}
-          />
-        </div>
-      </section>
+      <div className="px-6 py-5 space-y-6">
+        <Panel title="Why you can trust this">
+          <p className="text-sm text-paper-800 leading-relaxed mb-3">{finding.evidence.root_cause}</p>
+          <ul className="space-y-1.5">
+            {finding.evidence.corroboration.map((c, i) => (
+              <li key={i} className="flex items-start gap-2 text-sm">
+                <span className="text-accent mt-0.5">
+                  <IconCheck />
+                </span>
+                <span className="mono text-2xs uppercase tracking-wider text-paper-500 pt-0.5 w-24 shrink-0">
+                  {c.type}
+                </span>
+                <span className="text-paper-800 text-xs">
+                  {c.result ??
+                    (Array.isArray(c.detail) ? c.detail.join(" · ") : String(c.detail ?? ""))}
+                </span>
+              </li>
+            ))}
+            <li className="flex items-start gap-2 text-sm">
+              <span className="text-accent mt-0.5">
+                <IconCheck />
+              </span>
+              <span className="mono text-2xs uppercase tracking-wider text-paper-500 pt-0.5 w-24 shrink-0">
+                consensus
+              </span>
+              <span className="text-paper-800 text-xs">{finding.consensus.rationale}</span>
+            </li>
+          </ul>
+        </Panel>
+
+        <Panel title="Fix">
+          <p className="text-sm text-paper-800 mb-3">{finding.evidence.fix.approach}</p>
+          <div className="flex flex-wrap gap-2 text-xs">
+            <StatChip
+              label="Verifier"
+              value={String(finding.evidence.verification.result ?? "")}
+              good={finding.evidence.verification.result === "repro-now-blocked"}
+            />
+            <StatChip
+              label="Backdoor scan"
+              value={String(finding.evidence.verification.backdoor_check ?? "")}
+              good={finding.evidence.verification.backdoor_check === "pass"}
+            />
+            <StatChip
+              label="Independence"
+              value={String(finding.evidence.verification.independent_verifier ?? "")}
+              good={!!finding.evidence.verification.independent_verifier}
+            />
+          </div>
+        </Panel>
+
+        <Panel title="Audit">
+          <dl className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-xs mono">
+            {Object.entries(finding.audit ?? {}).map(([k, v]) => (
+              <div key={k} className="contents">
+                <dt className="text-paper-500 uppercase text-2xs tracking-wider">{k}</dt>
+                <dd className="text-paper-800 truncate">{String(v ?? "—")}</dd>
+              </div>
+            ))}
+          </dl>
+        </Panel>
+      </div>
+    </section>
+  );
+}
+
+function Field({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-3">
+      <span className="text-2xs uppercase tracking-wider text-paper-500 mono w-24 shrink-0">
+        {label}
+      </span>
+      {value}
     </div>
   );
 }
 
-function SeverityChip({ s }: { s: string }) {
-  const color =
-    s === "critical" || s === "high"
-      ? "bg-spot-red/20 text-spot-red border-spot-red/40"
-      : s === "medium"
-      ? "bg-spot-amber/20 text-spot-amber border-spot-amber/40"
-      : "bg-ink-700 text-ink-300 border-ink-600";
-  return <span className={`mono text-[10px] uppercase px-1.5 py-0.5 rounded border ${color}`}>{s}</span>;
+function Panel({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="border border-paper-300 rounded-md bg-white shadow-card">
+      <div className="px-4 py-2.5 border-b border-paper-200 text-2xs uppercase tracking-wider text-paper-500 mono">
+        {title}
+      </div>
+      <div className="px-4 py-3">{children}</div>
+    </div>
+  );
 }
 
-function TierBadge({ tier }: { tier: string }) {
+function SeverityPill({ s }: { s: string }) {
   const map: Record<string, string> = {
-    verified: "border-spot-green/50 text-spot-green bg-spot-green/10",
-    "high-confidence": "border-spot-amber/50 text-spot-amber bg-spot-amber/10",
-    "needs-review": "border-ink-600 text-ink-300 bg-ink-800",
-    held: "border-ink-700 text-ink-500 bg-ink-900",
+    critical: "bg-sev-critical/15 text-sev-critical border-sev-critical/30",
+    high: "bg-sev-high/15 text-sev-high border-sev-high/30",
+    medium: "bg-sev-medium/15 text-sev-medium border-sev-medium/30",
+    low: "bg-sev-low/15 text-sev-low border-sev-low/30",
   };
   return (
-    <span className={`mono text-[10px] uppercase px-1.5 py-0.5 rounded border ${map[tier] ?? ""}`}>
-      {tier}
+    <span className={`text-2xs uppercase mono px-1.5 py-0.5 rounded border ${map[s] ?? ""}`}>
+      {s}
     </span>
   );
 }
 
 function StatChip({ label, value, good }: { label: string; value: string; good: boolean }) {
   return (
-    <div
-      className={`px-2 py-1 rounded border ${
-        good ? "border-spot-green/40 text-spot-green" : "border-ink-600 text-ink-400"
+    <span
+      className={`inline-flex items-center gap-1.5 px-2 py-1 rounded border mono ${
+        good ? "border-accent/40 bg-accent-soft text-accent" : "border-paper-400 text-paper-600"
       }`}
     >
-      <span className="text-ink-500 uppercase text-[10px] mr-1">{label}</span>
-      {good ? "✓ " : ""}
-      {value}
-    </div>
+      <span className="text-2xs uppercase text-paper-500">{label}</span>
+      {good && <IconCheck size={10} />}
+      <span>{value}</span>
+    </span>
   );
 }

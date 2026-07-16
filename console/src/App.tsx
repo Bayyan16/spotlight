@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
-import { PhaseTracker } from "./components/PhaseTracker";
-import { SwarmGrid } from "./components/SwarmGrid";
-import { EventLog } from "./components/EventLog";
+import { NavRail, type NavKey } from "./components/NavRail";
+import { TopBar } from "./components/TopBar";
+import { FindingsList } from "./components/FindingsList";
 import { FindingDetail } from "./components/FindingDetail";
+import { LiveSweepPanel } from "./components/LiveSweepPanel";
 import {
   getFindings,
-  getSweep,
   listTargets,
   openSweepStream,
   startSweep,
@@ -15,13 +15,14 @@ import {
 } from "./lib/api";
 
 export default function App() {
+  const [nav, setNav] = useState<NavKey>("sweeps");
   const [targets, setTargets] = useState<Target[]>([]);
   const [selected, setSelected] = useState<string>("vuln-bank-api");
   const [sweepId, setSweepId] = useState<string | null>(null);
   const [events, setEvents] = useState<SweepEvent[]>([]);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [running, setRunning] = useState(false);
-  const [detail, setDetail] = useState<Finding | null>(null);
+  const [activeFinding, setActiveFinding] = useState<string | null>(null);
 
   useEffect(() => {
     listTargets().then(setTargets).catch(() => setTargets([]));
@@ -33,7 +34,10 @@ export default function App() {
       setEvents((prev) => [...prev, e]);
       if (e.type === "sweep.finished") {
         setRunning(false);
-        getFindings(sweepId).then(setFindings);
+        getFindings(sweepId).then((fs) => {
+          setFindings(fs);
+          if (fs.length > 0) setActiveFinding(fs[0].id);
+        });
       }
     });
     return () => ws.close();
@@ -42,8 +46,9 @@ export default function App() {
   async function onStart() {
     setEvents([]);
     setFindings([]);
-    setDetail(null);
+    setActiveFinding(null);
     setRunning(true);
+    setNav("sweeps");
     try {
       const { sweep_id } = await startSweep(selected);
       setSweepId(sweep_id);
@@ -53,143 +58,90 @@ export default function App() {
     }
   }
 
-  return (
-    <div className="min-h-screen bg-ink-950">
-      <TopBar running={running} onStart={onStart} target={selected} onTarget={setSelected} targets={targets} />
-      <main className="max-w-7xl mx-auto p-6 space-y-4">
-        {!sweepId && <EmptyState onStart={onStart} />}
-        {sweepId && (
-          <>
-            <div className="text-xs text-ink-500 mono">
-              sweep_id <span className="text-ink-300">{sweepId}</span> · target{" "}
-              <span className="text-ink-300">{selected}</span>
-            </div>
-            <PhaseTracker events={events} />
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              <SwarmGrid events={events} />
-              <EventLog events={events} />
-            </div>
-            <FindingsSection findings={findings} onOpen={setDetail} />
-            {detail && <FindingDetail finding={detail} />}
-          </>
-        )}
-      </main>
-    </div>
-  );
-}
+  const showFindings = nav === "findings" && findings.length > 0;
+  const showLive = nav === "sweeps";
+  const detail = activeFinding ? findings.find((f) => f.id === activeFinding) ?? null : null;
 
-function TopBar({
-  running,
-  onStart,
-  target,
-  onTarget,
-  targets,
-}: {
-  running: boolean;
-  onStart: () => void;
-  target: string;
-  onTarget: (t: string) => void;
-  targets: Target[];
-}) {
   return (
-    <div className="border-b border-ink-800 bg-ink-900/60 backdrop-blur">
-      <div className="max-w-7xl mx-auto px-6 py-3 flex items-center gap-4">
-        <div className="flex items-center gap-2">
-          <span className="h-2.5 w-2.5 rounded-full bg-spot-green" />
-          <span className="text-ink-100 font-semibold tracking-tight">Spotlight</span>
-          <span className="text-ink-500 text-xs mono">by CMUL8</span>
-        </div>
-        <div className="ml-auto flex items-center gap-3">
-          <select
-            className="bg-ink-800 border border-ink-700 text-ink-200 text-sm rounded px-2 py-1.5 mono"
-            value={target}
-            onChange={(e) => onTarget(e.target.value)}
-            disabled={running}
-          >
-            {targets.map((t) => (
-              <option key={t.name} value={t.name}>
-                {t.name}
-              </option>
-            ))}
-          </select>
-          <button
-            className={`px-4 py-1.5 rounded text-sm mono uppercase tracking-wider transition-colors ${
-              running
-                ? "bg-ink-800 text-ink-500 cursor-not-allowed"
-                : "bg-spot-green/20 text-spot-green border border-spot-green/40 hover:bg-spot-green/30"
-            }`}
-            onClick={onStart}
-            disabled={running}
-          >
-            {running ? "Sweeping…" : "▸ Start Sweep"}
-          </button>
+    <div className="h-screen w-screen flex bg-paper-50 text-paper-900 overflow-hidden">
+      <NavRail active={nav} onSelect={setNav} />
+
+      <div className="flex-1 min-w-0 flex flex-col">
+        <TopBar
+          running={running}
+          onStart={onStart}
+          target={selected}
+          onTarget={setSelected}
+          targets={targets}
+          sweepId={sweepId}
+        />
+
+        <div className="flex-1 min-h-0 flex overflow-hidden">
+          {(showFindings || (nav === "sweeps" && findings.length > 0)) && (
+            <FindingsList
+              findings={findings}
+              active={activeFinding}
+              onSelect={(id) => {
+                setActiveFinding(id);
+                setNav("findings");
+              }}
+              target={selected}
+            />
+          )}
+
+          {nav === "findings" && detail && <FindingDetail finding={detail} />}
+          {nav === "findings" && !detail && <EmptyDetail />}
+
+          {showLive && !detail && sweepId && <LiveSweepPanel events={events} />}
+          {showLive && !sweepId && <EmptySweep onStart={onStart} />}
+
+          {(nav === "home" || nav === "paths" || nav === "warden" || nav === "attestations") && (
+            <ComingSoonPane label={nav} />
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-function EmptyState({ onStart }: { onStart: () => void }) {
+function EmptyDetail() {
   return (
-    <div className="text-center py-24">
-      <h1 className="text-2xl text-ink-100 font-semibold tracking-tight mb-2">
-        The AI security engineer
-      </h1>
-      <p className="text-ink-400 max-w-lg mx-auto text-sm">
-        Point Spotlight at a target repo. It classifies the stack, reasons over a code graph, corroborates every
-        candidate, reproduces where feasible, patches, and gets independently verified — all before you see a finding.
-      </p>
-      <button
-        onClick={onStart}
-        className="mt-6 px-5 py-2 rounded mono uppercase tracking-wider text-sm bg-spot-green/20 text-spot-green border border-spot-green/40 hover:bg-spot-green/30"
-      >
-        ▸ Start your first Sweep
-      </button>
+    <div className="flex-1 min-w-0 grid place-items-center bg-paper-50">
+      <div className="text-paper-500 text-sm">Select a finding to see its evidence.</div>
     </div>
   );
 }
 
-function FindingsSection({
-  findings,
-  onOpen,
-}: {
-  findings: Finding[];
-  onOpen: (f: Finding) => void;
-}) {
+function EmptySweep({ onStart }: { onStart: () => void }) {
   return (
-    <div className="border border-ink-800 rounded-md bg-ink-900">
-      <div className="p-4 border-b border-ink-800">
-        <div className="text-xs uppercase tracking-wider text-ink-400 mono">
-          Findings ({findings.length})
-        </div>
+    <div className="flex-1 min-w-0 grid place-items-center bg-paper-50">
+      <div className="text-center max-w-md px-6">
+        <h1 className="text-2xl text-paper-900 font-semibold tracking-tight mb-2">
+          The AI security engineer
+        </h1>
+        <p className="text-sm text-paper-600 leading-relaxed">
+          Point Spotlight at a target repo. It classifies the stack, reasons over a code graph,
+          corroborates every candidate with independent evidence, reproduces where feasible, patches,
+          and gets independently verified — all before you see a finding.
+        </p>
+        <button
+          onClick={onStart}
+          className="mt-6 inline-flex items-center gap-2 px-4 py-2 rounded bg-accent text-white text-sm uppercase tracking-wider mono hover:brightness-95"
+        >
+          ▸ Start your first Sweep
+        </button>
       </div>
-      {findings.length === 0 && (
-        <div className="p-6 text-ink-500 text-sm italic">
-          None promoted yet. When the Consensus Kernel promotes a candidate it appears here.
-        </div>
-      )}
-      <ul className="divide-y divide-ink-800">
-        {findings.map((f) => (
-          <li key={f.id}>
-            <button
-              className="w-full flex items-center gap-3 p-3 hover:bg-ink-800 text-left"
-              onClick={() => onOpen(f)}
-            >
-              <span className="mono text-xs text-ink-400">{f.id}</span>
-              <span className="text-ink-100 text-sm">{f.title}</span>
-              <span className="mono text-[10px] uppercase px-1.5 py-0.5 rounded border border-spot-green/40 text-spot-green">
-                {f.tier}
-              </span>
-              <span className="mono text-xs text-ink-500 ml-auto">
-                {f.location.file}:{f.location.line}
-              </span>
-              <span className="mono text-xs text-spot-green">
-                {(f.confidence * 100).toFixed(0)}%
-              </span>
-            </button>
-          </li>
-        ))}
-      </ul>
+    </div>
+  );
+}
+
+function ComingSoonPane({ label }: { label: string }) {
+  return (
+    <div className="flex-1 min-w-0 grid place-items-center bg-paper-50">
+      <div className="text-center">
+        <div className="text-2xs uppercase tracking-wider text-paper-500 mono mb-1">{label}</div>
+        <div className="text-paper-700 text-sm">Ships in Phase 2/3.</div>
+      </div>
     </div>
   );
 }

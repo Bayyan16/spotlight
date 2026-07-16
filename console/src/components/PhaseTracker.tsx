@@ -16,21 +16,26 @@ export function PhaseTracker({ events }: { events: SweepEvent[] }) {
   const current = currentPhase(events);
   const finished = events.some((e) => e.type === "sweep.finished");
   return (
-    <div className="border border-ink-800 rounded-md p-4 bg-ink-900">
-      <div className="text-xs uppercase tracking-wider text-ink-400 mb-3 mono">Sweep Phases</div>
-      <ol className="flex gap-2 flex-wrap">
-        {PHASES.map((p) => {
+    <div className="rounded-md border border-paper-300 bg-white shadow-card p-4">
+      <div className="text-2xs uppercase tracking-wider text-paper-500 mono mb-3">Sweep phases</div>
+      <ol className="flex items-center flex-wrap gap-1.5">
+        {PHASES.map((p, i) => {
           const state = phaseState(p, current, finished);
           return (
-            <li
-              key={p}
-              className={`px-3 py-1.5 rounded border mono text-xs transition-colors
-                ${state === "done" ? "border-spot-green/40 text-spot-green bg-spot-green/5" : ""}
-                ${state === "active" ? "border-spot-green text-spot-green bg-spot-green/10 animate-pulse" : ""}
-                ${state === "pending" ? "border-ink-700 text-ink-500" : ""}`}
-            >
-              {state === "done" ? "✓ " : state === "active" ? "▸ " : ""}
-              {p}
+            <li key={p} className="flex items-center gap-1.5">
+              <span
+                className={`px-2.5 py-1 rounded-full border text-2xs mono uppercase tracking-wider transition-colors ${
+                  state === "done"
+                    ? "border-accent/40 text-accent bg-accent-soft"
+                    : state === "active"
+                    ? "border-sev-medium/60 text-sev-medium bg-amber-50 animate-pulse"
+                    : "border-paper-300 text-paper-500 bg-paper-100"
+                }`}
+              >
+                {state === "done" ? "✓ " : state === "active" ? "▸ " : ""}
+                {p}
+              </span>
+              {i < PHASES.length - 1 && <span className="text-paper-400">·</span>}
             </li>
           );
         })}
@@ -50,7 +55,11 @@ function currentPhase(events: SweepEvent[]): Phase | null {
   return null;
 }
 
-function phaseState(p: Phase, current: Phase | null, finished: boolean): "done" | "active" | "pending" {
+function phaseState(
+  p: Phase,
+  current: Phase | null,
+  finished: boolean
+): "done" | "active" | "pending" {
   if (finished) return "done";
   if (!current) return "pending";
   const currentIdx = PHASES.indexOf(current);

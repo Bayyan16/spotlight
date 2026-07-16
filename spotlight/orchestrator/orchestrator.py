@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from spotlight.agents import Investigator, Recon, Reducer, Remediator, Reproducer, Verifier
 from spotlight.agents.model import MockModelClient, ModelClient
+from spotlight.agents.moonshot import maybe_from_env
 
 from .events import EventBus, EventType
 
@@ -52,7 +53,8 @@ class Orchestrator:
         model: ModelClient | None = None,
         bus: EventBus | None = None,
     ) -> None:
-        self.model = model or MockModelClient()
+        # Priority: explicit model > Moonshot from env > mock.
+        self.model = model or maybe_from_env() or MockModelClient()
         self.bus = bus or EventBus()
 
     def run(self, repo_path: str | Path, out_dir: str | Path | None = None) -> SweepResult:

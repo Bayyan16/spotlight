@@ -3,15 +3,28 @@
 @tailwind utilities;
 
 :root {
-  color-scheme: dark;
+  color-scheme: light;
 }
 
+html,
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Inter", sans-serif;
+  background: #fbfaf8;
+  color: #33322e;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
   -webkit-font-smoothing: antialiased;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
 }
 
 .mono {
   font-family: "JetBrains Mono", "SF Mono", Menlo, monospace;
   font-feature-settings: "tnum";
 }
+
+/* Subtle scrollbar to match warm palette. */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(30, 25, 15, 0.14);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(30, 25, 15, 0.25); }
