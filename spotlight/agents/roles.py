@@ -24,14 +24,19 @@ class Recon:
     model: ModelClient
 
     def run(self, repo_path: Path) -> dict[str, Any]:
-        py_files = list(repo_path.rglob("*.py"))
-        graph = CodeGraph.build(py_files)
+        code_files: list[Path] = []
+        for ext in ("*.py", "*.js", "*.ts", "*.jsx", "*.tsx"):
+            code_files.extend(
+                p for p in repo_path.rglob(ext)
+                if "node_modules" not in p.parts and ".venv" not in p.parts and "dist" not in p.parts
+            )
+        graph = CodeGraph.build(code_files)
         slices = graph.slices()
         signals = [s.to_dict() for s in graph.reachable_slices()]
         has_ai_layer = any(
             "langchain" in f.read_text(errors="ignore").lower()
             or "openai" in f.read_text(errors="ignore").lower()
-            for f in py_files
+            for f in code_files
         )
         threat_model = self.model.complete(
             role="recon",
