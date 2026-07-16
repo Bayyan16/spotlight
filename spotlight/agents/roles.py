@@ -45,6 +45,38 @@ class Recon:
         }
 
 
+_CLASS_ALIASES = {
+    "sqli": "sqli",
+    "sql injection": "sqli",
+    "sql-injection": "sqli",
+    "sql_injection": "sqli",
+    "cwe-89": "sqli",
+    "cmdi": "cmdi",
+    "command injection": "cmdi",
+    "os command injection": "cmdi",
+    "ssrf": "ssrf",
+    "server-side request forgery": "ssrf",
+    "eval": "eval",
+    "code injection": "eval",
+}
+
+
+def _canonical_class(raw: str, sink_class: str | None = None) -> str:
+    """Normalize the LLM's freeform `class` field to a canonical short code.
+
+    Falls back to the sink's class label from the code graph if the model
+    returned something we don't recognize."""
+    if not raw:
+        return sink_class or "unknown"
+    key = raw.strip().lower()
+    if key in _CLASS_ALIASES:
+        return _CLASS_ALIASES[key]
+    for alias, canonical in _CLASS_ALIASES.items():
+        if alias in key:
+            return canonical
+    return sink_class or key
+
+
 @dataclass
 class Investigator:
     model: ModelClient
@@ -59,6 +91,12 @@ class Investigator:
         )
         if judgment.get("verdict") != "candidate":
             return None
+        # Normalize `class` so downstream code (Reproducer, Consensus Kernel)
+        # doesn't depend on model wording. The code-graph sink label is the
+        # ground truth here — the model can dress it up, but we key off the
+        # canonical code.
+        sink_class = slice_dict.get("sink", {}).get("class")
+        judgment["class"] = _canonical_class(judgment.get("class", ""), sink_class)
         return judgment
 
 
