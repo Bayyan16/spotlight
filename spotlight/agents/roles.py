@@ -134,6 +134,14 @@ class Reproducer:
 
     def run(self, repo_path: Path, finding: dict[str, Any]) -> dict[str, Any]:
         cls = finding["class"]
+        # Static-fact classes: no PoC exists to run — the finding *is* the
+        # static evidence. Consensus Kernel promotes on static-fact alone.
+        if cls in ("secrets", "hardcoded-secret"):
+            return {
+                "result": "not-applicable",
+                "reason": "static-fact class (hardcoded credential) — no dynamic PoC to run",
+                "sandbox": {},
+            }
         if cls != "sqli":
             return {
                 "result": "inconclusive",

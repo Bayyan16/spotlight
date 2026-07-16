@@ -63,13 +63,24 @@ def _finding_id(i: int) -> str:
 
 
 def _promote_tier(finding: dict[str, Any], repro: dict[str, Any] | None) -> tuple[str, float, str]:
-    """Consensus Kernel v0 (§8.2) — reproduction + independent corroborator = verified."""
+    """Consensus Kernel v0 (§8.2) — reproduction + independent corroborator = verified.
+
+    Special case: static-fact classes (like `secrets`, where the finding IS the
+    static evidence and there's no PoC to run) are promoted directly to
+    `verified` on static-fact alone. The repro result will be 'not-applicable'
+    in that case."""
     static_fact = "codegraph:source->sink reachable" in finding.get("evidence_used", [])
     reproduced = bool(repro and repro.get("result") == "confirmed")
+    not_applicable = bool(repro and repro.get("result") == "not-applicable")
+    cls = finding.get("class", "")
+    if cls in ("secrets", "hardcoded-secret") and static_fact:
+        return "verified", 0.95, "static-fact class — hardcoded credential in source (no PoC needed)"
     if reproduced and static_fact:
         return "verified", 0.93, "reproduction + static-analysis fact"
     if reproduced:
         return "verified", 0.85, "reproduction alone"
+    if static_fact and not_applicable:
+        return "verified", 0.90, "static-analysis fact for static-only class"
     if static_fact:
         return "high-confidence", 0.7, "static-analysis fact without reproduction"
     return "needs-review", 0.4, "single-source, unreproduced"
@@ -368,9 +379,16 @@ class Orchestrator:
                     )
 
             tier, confidence, tier_reason = _promote_tier(cand, repro)
-            state = "confirmed-fixed" if (
-                verify.get("result") == "repro-now-blocked" and verify.get("backdoor_check") == "pass"
-            ) else "candidate"
+            cls_ = cand.get("class", "")
+            if cls_ in ("secrets", "hardcoded-secret") and tier == "verified":
+                # Static-fact classes don't have a "fix" per se — the user has
+                # to rotate the credential out-of-band. Label the state so the
+                # UI can show the right guidance instead of "confirmed-fixed".
+                state = "detected"
+            elif verify.get("result") == "repro-now-blocked" and verify.get("backdoor_check") == "pass":
+                state = "confirmed-fixed"
+            else:
+                state = "candidate"
 
             finding = {
                 "id": fid,

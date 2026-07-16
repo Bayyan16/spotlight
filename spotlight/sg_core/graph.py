@@ -150,16 +150,25 @@ def _arg_names(arg_source: str) -> set[str]:
 class CodeGraph:
     files: list[ParsedFile] = field(default_factory=list)
     _js_paths: list[Path] = field(default_factory=list)
+    _secrets_roots: list[Path] = field(default_factory=list)
 
     @classmethod
-    def build(cls, paths: Iterable[str | Path]) -> "CodeGraph":
-        py_paths = [Path(p) for p in paths if str(p).endswith(".py")]
+    def build(cls, paths: Iterable[str | Path], scan_secrets_in: Iterable[str | Path] | None = None) -> "CodeGraph":
+        paths_list = list(paths)
+        py_paths = [Path(p) for p in paths_list if str(p).endswith(".py")]
         parsed = [parse_python(p) for p in py_paths]
-        # JS/TS files are attached separately — their slices are computed
-        # directly by parse_js_ts and returned by slices() below.
-        js_paths = [Path(p) for p in paths if str(p).endswith((".js", ".ts", ".jsx", ".tsx"))]
+        js_paths = [Path(p) for p in paths_list if str(p).endswith((".js", ".ts", ".jsx", ".tsx"))]
         graph = cls(files=parsed)
         graph._js_paths = js_paths
+        # Secrets scanner: walk any provided root(s). By default we scan
+        # each unique parent directory of the input paths so the caller
+        # doesn't have to pass a separate arg — that captures the common
+        # case (Recon passing every code file from repo_path.rglob).
+        if scan_secrets_in is not None:
+            graph._secrets_roots = [Path(p) for p in scan_secrets_in]
+        else:
+            parents = {Path(p).parent for p in paths_list if Path(p).is_file()}
+            graph._secrets_roots = sorted(parents)
         return graph
 
     def slices(self) -> list[DataFlowSlice]:
@@ -217,6 +226,13 @@ class CodeGraph:
             from .js_parser import parse_js_ts
 
             results.extend(parse_js_ts(js_path))
+        # Hardcoded-secret slices: scan all files individually (root walk is
+        # done by the Recon caller which passes each root to us).
+        if self._secrets_roots:
+            from .secrets_scan import scan_secrets
+
+            for root in self._secrets_roots:
+                results.extend(scan_secrets(root))
         return results
 
     def reachable_slices(self) -> list[DataFlowSlice]:

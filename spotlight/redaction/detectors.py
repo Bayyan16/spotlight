@@ -83,7 +83,10 @@ DEFAULT_DETECTORS: tuple[Detector, ...] = (
     ),
     Detector(
         kind="slack-token",
-        pattern=_compile(r"xox[baprs]-[A-Za-z0-9\-]{10,}"),
+        # b=bot, a=app, p=user, r=refresh, s=session, o=oauth (broader
+        # than strict PRD list on purpose — Slack has expanded prefixes
+        # and we prefer over-redaction).
+        pattern=_compile(r"xox[baproxs]-[A-Za-z0-9\-]{10,}"),
         token="[REDACTED:slack-token]",
     ),
     Detector(

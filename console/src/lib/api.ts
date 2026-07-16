@@ -98,6 +98,45 @@ export async function listSweeps(): Promise<SweepSummary[]> {
   return r.json();
 }
 
+export type SweepEvents = Array<{
+  sweep_id: string;
+  seq: number;
+  ts: number;
+  type: string;
+  actor: string;
+  payload: Record<string, unknown>;
+}>;
+
+export async function getSweepEvents(id: string): Promise<SweepEvents> {
+  const r = await fetch(`${BASE}/sweeps/${id}/events`);
+  if (!r.ok) return [];
+  return r.json();
+}
+
+export type VulnClass = {
+  id: string;
+  name: string;
+  cwe: string;
+  owasp?: string;
+  owasp_llm?: string;
+  surface: string;
+  detection: string;
+  default_severity: string;
+  description: string;
+};
+
+export type Taxonomy = {
+  total: number;
+  counts_by_surface: Record<string, number>;
+  classes: VulnClass[];
+};
+
+export async function getTaxonomy(): Promise<Taxonomy> {
+  const r = await fetch(`${BASE}/taxonomy`);
+  if (!r.ok) return { total: 0, counts_by_surface: {}, classes: [] };
+  return r.json();
+}
+
 export async function startSweep(repo: string, profileId?: string): Promise<{ sweep_id: string }> {
   const r = await fetch(`${BASE}/sweeps`, {
     method: "POST",

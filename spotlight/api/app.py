@@ -24,6 +24,7 @@ from sqlalchemy import desc
 from spotlight.orchestrator import EventBus, Orchestrator, SweepResult
 from spotlight.profiles import get_profile, list_profiles
 from spotlight.redaction import Redactor
+from spotlight.taxonomy import ALL_CLASSES, counts_by_surface
 from spotlight.store import (
     EventRow,
     FindingRow,
@@ -102,6 +103,18 @@ def get_profiles() -> list[dict]:
 def get_profile_by_id(profile_id: str) -> dict:
     p = get_profile(profile_id)
     return p.to_dict()
+
+
+@app.get("/taxonomy")
+def get_taxonomy() -> dict:
+    """Full vulnerability-class catalog (CWE + OWASP + OWASP-LLM mappings).
+    Used by the Console class-coverage picker and the '# of CWEs I look for'
+    stat on the dashboard."""
+    return {
+        "counts_by_surface": counts_by_surface(),
+        "total": len(ALL_CLASSES),
+        "classes": [c.to_dict() for c in ALL_CLASSES],
+    }
 
 
 @app.get("/healthz")

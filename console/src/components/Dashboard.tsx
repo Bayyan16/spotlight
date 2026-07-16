@@ -1,7 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
-import { getAttestation, getFindings, listSweeps, type Finding, type SweepSummary } from "../lib/api";
+import {
+  getAttestation,
+  getFindings,
+  getSweepEvents,
+  getTaxonomy,
+  listSweeps,
+  type Finding,
+  type SweepEvents,
+  type SweepSummary,
+  type Taxonomy,
+} from "../lib/api";
 import { Cmul8Mark } from "./Cmul8Mark";
-import { IconAttestation, IconCheck, IconExploitPath, IconSweep, IconWarden } from "./Icons";
+import { IconAttestation, IconCheck, IconSweep, IconWarden } from "./Icons";
 
 /**
  * Right-pane dashboard for the home nav. Codex-style status readout:
@@ -203,7 +213,22 @@ function SelectedSweepPane({
   findings: Finding[];
   onOpenFinding: (sweepId: string) => void;
 }) {
+  const [events, setEvents] = useState<SweepEvents>([]);
+  const [taxonomy, setTaxonomy] = useState<Taxonomy | null>(null);
+
+  useEffect(() => {
+    getSweepEvents(sweep.sweep_id).then(setEvents).catch(() => setEvents([]));
+    getTaxonomy().then(setTaxonomy).catch(() => setTaxonomy(null));
+  }, [sweep.sweep_id]);
+
   const verified = findings.filter((f) => f.tier === "verified");
+  const timeline = useMemo(() => buildTimeline(events), [events]);
+  const sandboxRuns = events.filter((e) => e.type === "sandbox.result").length;
+  const wallSeconds =
+    timeline.length > 1
+      ? timeline[timeline.length - 1].ts - timeline[0].ts
+      : 0;
+
   return (
     <section className="flex-1 min-w-0 overflow-y-auto bg-paper-50">
       <div className="px-8 py-6 border-b border-paper-300">
@@ -221,18 +246,22 @@ function SelectedSweepPane({
           <span className="mono">
             {sweep.findings_count} finding{sweep.findings_count === 1 ? "" : "s"}
           </span>
+          {wallSeconds > 0 && (
+            <>
+              <span className="text-paper-400">·</span>
+              <span className="mono tabular-nums">{wallSeconds.toFixed(1)}s</span>
+            </>
+          )}
         </div>
       </div>
-      <div className="px-8 py-6 grid grid-cols-2 gap-4">
-        <MiniStat label="Verified" value={verified.length} accent={verified.length > 0} />
-        <MiniStat label="Sandbox runs" value={findings.length * 2} />
-      </div>
+
+      {/* Findings first if any */}
       {findings.length > 0 && (
-        <div className="px-8 pb-8">
+        <div className="px-8 pt-6">
           <div className="text-2xs uppercase tracking-wider text-paper-500 mono mb-3">
-            Findings in this sweep
+            Findings promoted ({findings.length})
           </div>
-          <ul className="space-y-2">
+          <ul className="space-y-2 mb-6">
             {findings.map((f) => (
               <li
                 key={f.id}
@@ -257,13 +286,146 @@ function SelectedSweepPane({
           </ul>
         </div>
       )}
-      {findings.length === 0 && (
-        <div className="px-8 py-12 text-center text-paper-500 text-sm">
-          <IconCheck size={24} /> Clean sweep — no findings promoted.
+
+      {/* Sweep summary — always visible so 0-finding sweeps aren't opaque */}
+      <div className="px-8 pb-6">
+        <div className="text-2xs uppercase tracking-wider text-paper-500 mono mb-3">
+          Sweep summary
+        </div>
+        <div className="grid grid-cols-3 gap-3 mb-4">
+          <MiniStat
+            label="Verified"
+            value={verified.length}
+            accent={verified.length > 0}
+          />
+          <MiniStat label="Sandbox runs" value={sandboxRuns} />
+          <MiniStat
+            label="Coverage"
+            value={taxonomy?.total ?? 0}
+            sub="classes checked"
+          />
+        </div>
+
+        {/* 0-finding explainer */}
+        {findings.length === 0 && (
+          <div className="border border-accent/30 bg-accent-soft/60 rounded-lg p-4 mb-4 flex items-start gap-3">
+            <div className="h-8 w-8 rounded-full bg-accent grid place-items-center text-white shrink-0">
+              <IconCheck size={16} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-sm text-paper-900 font-medium">
+                Clean sweep — nothing was promoted.
+              </div>
+              <div className="text-xs text-paper-700 mt-1 leading-relaxed">
+                Recon scanned this target and{" "}
+                <span className="mono">
+                  {events.filter((e) => e.type === "agent.spawned").length}
+                </span>{" "}
+                agent{events.filter((e) => e.type === "agent.spawned").length === 1 ? "" : "s"}{" "}
+                ran across{" "}
+                <span className="mono">
+                  {taxonomy?.total ?? "—"}
+                </span>{" "}
+                vulnerability classes.
+                {sweep.repo_name.includes("leaky") && (
+                  <>
+                    {" "}
+                    Note: this fixture is a{" "}
+                    <span className="mono">redaction test target</span> — a Flask file full of
+                    hardcoded credentials. The 'secrets' detector needs the taxonomy classes
+                    below in the active Profile to fire.
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Phase timeline — always visible so the user sees what happened */}
+      <div className="px-8 pb-6">
+        <div className="text-2xs uppercase tracking-wider text-paper-500 mono mb-3">
+          Phase timeline
+        </div>
+        <div className="border border-paper-300 rounded-lg bg-white shadow-card p-4">
+          <ul className="space-y-2">
+            {timeline.map((step, i) => (
+              <li key={i} className="flex items-center gap-3 text-sm">
+                <div
+                  className={`h-6 w-6 rounded-full grid place-items-center shrink-0 ${
+                    step.ok
+                      ? "bg-accent-soft text-accent"
+                      : "bg-paper-200 text-paper-500"
+                  }`}
+                >
+                  {step.ok ? (
+                    <IconCheck size={12} />
+                  ) : (
+                    <span className="h-1.5 w-1.5 rounded-full bg-paper-500" />
+                  )}
+                </div>
+                <span className="text-paper-800 flex-1 capitalize">{step.phase}</span>
+                <span className="mono text-2xs text-paper-500 tabular-nums">
+                  {step.duration.toFixed(2)}s
+                </span>
+              </li>
+            ))}
+            {timeline.length === 0 && (
+              <li className="text-2xs italic text-paper-500">No timeline available yet.</li>
+            )}
+          </ul>
+        </div>
+      </div>
+
+      {/* Class coverage — what Spotlight looked for */}
+      {taxonomy && (
+        <div className="px-8 pb-8">
+          <div className="text-2xs uppercase tracking-wider text-paper-500 mono mb-3">
+            What Spotlight looked for
+          </div>
+          <div className="border border-paper-300 rounded-lg bg-white shadow-card p-4">
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              {Object.entries(taxonomy.counts_by_surface).map(([surface, n]) => (
+                <div
+                  key={surface}
+                  className="flex items-center gap-2 px-2 py-1.5 rounded bg-paper-100 border border-paper-200"
+                >
+                  <span className="mono text-2xs uppercase tracking-wider text-paper-500">
+                    {surface}
+                  </span>
+                  <span className="ml-auto mono tabular-nums text-paper-800 font-semibold">
+                    {n}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div className="mt-3 text-2xs text-paper-500">
+              {taxonomy.total} vulnerability classes total — CWE + OWASP Top 10 + OWASP LLM
+              Top 10 + secret-shape detectors.
+            </div>
+          </div>
         </div>
       )}
     </section>
   );
+}
+
+type TimelineStep = { phase: string; ts: number; duration: number; ok: boolean };
+
+function buildTimeline(events: SweepEvents): TimelineStep[] {
+  const phaseEvents = events.filter((e) => e.type === "sweep.phase.changed");
+  const steps: TimelineStep[] = [];
+  for (let i = 0; i < phaseEvents.length; i++) {
+    const e = phaseEvents[i];
+    const nextTs = i + 1 < phaseEvents.length ? phaseEvents[i + 1].ts : events[events.length - 1]?.ts ?? e.ts;
+    steps.push({
+      phase: String((e.payload as { phase?: string }).phase ?? "?"),
+      ts: e.ts,
+      duration: Math.max(0, nextTs - e.ts),
+      ok: true,
+    });
+  }
+  return steps;
 }
 
 function ActivityFeed({
@@ -396,7 +558,17 @@ function Stat({ label, value, accent }: { label: string; value: string; accent?:
   );
 }
 
-function MiniStat({ label, value, accent }: { label: string; value: number; accent?: boolean }) {
+function MiniStat({
+  label,
+  value,
+  accent,
+  sub,
+}: {
+  label: string;
+  value: number;
+  accent?: boolean;
+  sub?: string;
+}) {
   return (
     <div className="rounded-lg border border-paper-300 bg-white p-3 shadow-card">
       <div className="text-2xs uppercase tracking-wider text-paper-500 mono mb-1">{label}</div>
@@ -407,6 +579,7 @@ function MiniStat({ label, value, accent }: { label: string; value: number; acce
       >
         {value}
       </div>
+      {sub && <div className="text-2xs text-paper-500 mono mt-0.5">{sub}</div>}
     </div>
   );
 }
