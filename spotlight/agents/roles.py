@@ -6,8 +6,10 @@ patch; the Verifier re-runs the PoC in a fresh context.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -88,32 +90,40 @@ class Reproducer:
         if cls != "sqli":
             return {"result": "inconclusive", "reason": f"no Phase-1 PoC for class={cls}"}
         # Load the app in-process and hit it with a classic SQLi payload.
-        script = f"""
-import sys, importlib.util, json, traceback
-spec = importlib.util.spec_from_file_location('vuln_app', {str(repo_path / 'app.py')!r})
-mod = importlib.util.module_from_spec(spec)
-try:
-    spec.loader.exec_module(mod)
-    client = mod.app.test_client()
-    # Classic tautology payload — if reflected into SQL, returns all rows.
-    payload = "' OR '1'='1"
-    resp = client.get(f"/accounts/{{payload}}")
-    body = resp.get_data(as_text=True)
-    # Vulnerable: returns >1 row for a random username. Fixed: returns [].
-    import json as _j
-    rows = _j.loads(body)
-    exploited = len(rows) > 0
-    print(json.dumps({{"status": resp.status_code, "rows": rows, "exploited": exploited}}))
-except Exception as e:
-    print(json.dumps({{"error": repr(e), "traceback": traceback.format_exc()}}))
-"""
-        proc = subprocess.run(
-            [sys.executable, "-c", script],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            cwd=str(repo_path),
-        )
+        # Fix (regression 2026-07-16): the previous impl built an inline python
+        # script via nested f-strings and used the raw payload "' OR '1'='1"
+        # directly in a URL path. On Werkzeug 3.1.x (Flask 3.1.3, Railway's
+        # image) unencoded quotes/spaces in the test-client path fail routing
+        # and the response body is a 404 HTML page, breaking JSON parsing.
+        # We now: (a) write the PoC to a tempfile so there is no shell/f-string
+        # escaping surface, (b) pass the payload via env, and (c) URL-encode it
+        # before hitting the route so Werkzeug decodes it back correctly.
+        app_path = str(repo_path / "app.py")
+        payload = "' OR '1'='1"
+        script = _POC_SCRIPT_TEMPLATE
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(script)
+            script_path = f.name
+        try:
+            proc = subprocess.run(
+                [sys.executable, script_path],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=str(repo_path),
+                env={
+                    **os.environ,
+                    "SPOTLIGHT_POC_APP_PATH": app_path,
+                    "SPOTLIGHT_POC_PAYLOAD": payload,
+                },
+            )
+        finally:
+            try:
+                os.unlink(script_path)
+            except OSError:
+                pass
         stdout = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else "{}"
         import json as _j
 
@@ -129,6 +139,33 @@ except Exception as e:
             "stderr": proc.stderr,
             "raw": data,
         }
+
+
+_POC_SCRIPT_TEMPLATE = r"""
+import importlib.util, json, os, sys, traceback
+from urllib.parse import quote
+
+app_path = os.environ["SPOTLIGHT_POC_APP_PATH"]
+payload = os.environ["SPOTLIGHT_POC_PAYLOAD"]
+try:
+    spec = importlib.util.spec_from_file_location("vuln_app", app_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    client = mod.app.test_client()
+    # URL-encode the payload so Werkzeug 3.x accepts the path; the route
+    # handler receives the decoded value, so the SQLi tautology reaches the
+    # vulnerable query unchanged.
+    resp = client.get("/accounts/" + quote(payload, safe=""))
+    body = resp.get_data(as_text=True)
+    try:
+        rows = json.loads(body)
+    except Exception:
+        rows = []
+    exploited = isinstance(rows, list) and len(rows) > 0
+    print(json.dumps({"status": resp.status_code, "rows": rows, "exploited": exploited}))
+except Exception as e:
+    print(json.dumps({"error": repr(e), "traceback": traceback.format_exc()}))
+"""
 
 
 @dataclass
@@ -189,30 +226,30 @@ class Verifier:
         if not remediation.get("applied"):
             return {"result": "no-patch", "independent_verifier": True}
         patched_path = Path(remediation["patched_path"])
-        # Re-run the PoC against the patched file.
-        script = f"""
-import sys, importlib.util, json, traceback
-spec = importlib.util.spec_from_file_location('patched_app', {str(patched_path)!r})
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
-client = mod.app.test_client()
-payload = "' OR '1'='1"
-resp = client.get(f"/accounts/{{payload}}")
-body = resp.get_data(as_text=True)
-import json as _j
-try:
-    rows = _j.loads(body)
-except Exception:
-    rows = []
-exploited = len(rows) > 0
-print(json.dumps({{"status": resp.status_code, "rows": rows, "exploited": exploited}}))
-"""
-        proc = subprocess.run(
-            [sys.executable, "-c", script],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        # Re-run the PoC against the patched file. Same tempfile + env-var +
+        # URL-encoded payload approach as the Reproducer (see fix note above).
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(_POC_SCRIPT_TEMPLATE)
+            script_path = f.name
+        try:
+            proc = subprocess.run(
+                [sys.executable, script_path],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env={
+                    **os.environ,
+                    "SPOTLIGHT_POC_APP_PATH": str(patched_path),
+                    "SPOTLIGHT_POC_PAYLOAD": "' OR '1'='1",
+                },
+            )
+        finally:
+            try:
+                os.unlink(script_path)
+            except OSError:
+                pass
         import json as _j
 
         try:

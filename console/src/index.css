@@ -28,3 +28,30 @@ body {
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover { background: rgba(30, 25, 15, 0.25); }
+
+/* Motion primitives */
+@keyframes fade-in { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+@keyframes pop { from { opacity: 0; transform: scale(0.98) translateY(-4px); } to { opacity: 1; transform: none; } }
+@keyframes slide-in-right { from { opacity: 0; transform: translateX(6px); } to { opacity: 1; transform: none; } }
+@keyframes shimmer { 0% { background-position: -400px 0; } 100% { background-position: 400px 0; } }
+
+.animate-fade-in { animation: fade-in 220ms ease-out; }
+.animate-pop { animation: pop 160ms ease-out; }
+.animate-slide-in-right { animation: slide-in-right 200ms ease-out; }
+
+/* Skeleton loading shimmer */
+.skeleton {
+  background: linear-gradient(90deg, #efece6 0px, #f6f4f0 200px, #efece6 400px);
+  background-size: 800px 100%;
+  animation: shimmer 1.4s linear infinite;
+  border-radius: 4px;
+}
+
+/* Focus ring baseline for the app */
+button:focus-visible, a:focus-visible, [role="button"]:focus-visible {
+  outline: 2px solid #3c8f5c66;
+  outline-offset: 1px;
+}
+
+/* Tabular numerals for anything with .tabular-nums */
+.tabular-nums { font-variant-numeric: tabular-nums; }

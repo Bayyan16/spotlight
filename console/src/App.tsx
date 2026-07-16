@@ -1,10 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { NavRail, type NavKey } from "./components/NavRail";
 import { TopBar } from "./components/TopBar";
 import { FindingsList } from "./components/FindingsList";
 import { FindingDetail } from "./components/FindingDetail";
 import { LiveSweepPanel } from "./components/LiveSweepPanel";
 import { SweepsHistory } from "./components/SweepsHistory";
+import { CommandPalette } from "./components/CommandPalette";
+import { Cmul8Mark } from "./components/Cmul8Mark";
+import { IconPlay } from "./components/Icons";
 import {
   getFindings,
   listTargets,
@@ -14,6 +17,8 @@ import {
   type SweepEvent,
   type Target,
 } from "./lib/api";
+
+const NAV_ORDER: NavKey[] = ["home", "sweeps", "findings", "paths", "warden", "attestations"];
 
 export default function App() {
   const [nav, setNav] = useState<NavKey>("home");
@@ -25,6 +30,7 @@ export default function App() {
   const [running, setRunning] = useState(false);
   const [activeFinding, setActiveFinding] = useState<string | null>(null);
   const [historyRefresh, setHistoryRefresh] = useState(0);
+  const [palette, setPalette] = useState(false);
 
   useEffect(() => {
     listTargets().then(setTargets).catch(() => setTargets([]));
@@ -45,6 +51,40 @@ export default function App() {
     });
     return () => ws.close();
   }, [sweepId]);
+
+  // Keyboard shortcuts — Codex/Linear-style
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null;
+      const inField =
+        target &&
+        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+
+      // ⌘K / Ctrl+K → command palette
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPalette((p) => !p);
+        return;
+      }
+
+      if (inField) return;
+
+      // Number keys 1..6 → nav
+      if (e.key >= "1" && e.key <= "6") {
+        const idx = parseInt(e.key, 10) - 1;
+        if (idx >= 0 && idx < NAV_ORDER.length) setNav(NAV_ORDER[idx]);
+      }
+      // ⌘Enter → start sweep
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !running) {
+        e.preventDefault();
+        onStart();
+      }
+      // Esc → close palette
+      if (e.key === "Escape") setPalette(false);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [running]);
 
   async function onStart(customRepo?: string) {
     setEvents([]);
@@ -73,13 +113,14 @@ export default function App() {
     setNav("findings");
   }
 
-  const showFindings = nav === "findings" && findings.length > 0;
-  const showLive = nav === "sweeps";
-  const detail = activeFinding ? findings.find((f) => f.id === activeFinding) ?? null : null;
+  const detail = useMemo(
+    () => (activeFinding ? findings.find((f) => f.id === activeFinding) ?? null : null),
+    [activeFinding, findings]
+  );
 
   return (
     <div className="h-screen w-screen flex bg-paper-50 text-paper-900 overflow-hidden">
-      <NavRail active={nav} onSelect={setNav} />
+      <NavRail active={nav} onSelect={setNav} sweeping={running} />
 
       <div className="flex-1 min-w-0 flex flex-col">
         <TopBar
@@ -89,9 +130,10 @@ export default function App() {
           onTarget={setSelected}
           targets={targets}
           sweepId={sweepId}
+          onOpenPalette={() => setPalette(true)}
         />
 
-        <div className="flex-1 min-h-0 flex overflow-hidden">
+        <div key={nav} className="flex-1 min-h-0 flex overflow-hidden animate-fade-in">
           {nav === "home" && (
             <SweepsHistory onOpen={openHistoricalSweep} refreshSignal={historyRefresh} />
           )}
@@ -109,7 +151,7 @@ export default function App() {
                   target={selected}
                 />
               )}
-              {sweepId && <LiveSweepPanel events={events} />}
+              {sweepId && <LiveSweepPanel events={events} running={running} />}
               {!sweepId && <EmptySweep onStart={() => onStart()} />}
             </>
           )}
@@ -131,6 +173,15 @@ export default function App() {
           )}
         </div>
       </div>
+
+      <CommandPalette
+        open={palette}
+        onClose={() => setPalette(false)}
+        onNavigate={setNav}
+        onStartSweep={() => onStart()}
+        onPickTarget={setSelected}
+        targets={targets}
+      />
     </div>
   );
 }
@@ -138,7 +189,15 @@ export default function App() {
 function EmptyDetail() {
   return (
     <div className="flex-1 min-w-0 grid place-items-center bg-paper-50">
-      <div className="text-paper-500 text-sm">Select a finding to see its evidence.</div>
+      <div className="text-center">
+        <div className="opacity-40 mb-3 grid place-items-center">
+          <Cmul8Mark size={44} />
+        </div>
+        <div className="text-paper-500 text-sm">Select a finding to see its evidence.</div>
+        <div className="text-paper-400 text-2xs mono uppercase tracking-wider mt-1">
+          j / k to navigate · enter to open
+        </div>
+      </div>
     </div>
   );
 }
@@ -147,6 +206,12 @@ function EmptySweep({ onStart }: { onStart: () => void }) {
   return (
     <div className="flex-1 min-w-0 grid place-items-center bg-paper-50">
       <div className="text-center max-w-md px-6">
+        <div className="mb-6 flex justify-center">
+          <div className="relative">
+            <Cmul8Mark size={72} />
+            <div className="absolute -inset-6 rounded-full bg-accent/5 blur-2xl -z-10" />
+          </div>
+        </div>
         <h1 className="text-2xl text-paper-900 font-semibold tracking-tight mb-2">
           The AI security engineer
         </h1>
@@ -157,10 +222,16 @@ function EmptySweep({ onStart }: { onStart: () => void }) {
         </p>
         <button
           onClick={onStart}
-          className="mt-6 inline-flex items-center gap-2 px-4 py-2 rounded bg-accent text-white text-sm uppercase tracking-wider mono hover:brightness-95"
+          className="mt-6 inline-flex items-center gap-2 px-4 py-2 rounded bg-accent text-white text-sm uppercase tracking-wider mono hover:brightness-95 hover:scale-[1.02] active:scale-[0.98] transition-transform shadow-card"
         >
-          ▸ Start your first Sweep
+          <IconPlay />
+          Start your first Sweep
         </button>
+        <div className="mt-4 text-2xs mono uppercase tracking-wider text-paper-500">
+          <kbd className="border border-paper-300 rounded px-1 py-0.5 bg-white mr-1">⌘</kbd>
+          <kbd className="border border-paper-300 rounded px-1 py-0.5 bg-white">↵</kbd>{" "}
+          <span className="ml-1">to start</span>
+        </div>
       </div>
     </div>
   );
@@ -170,6 +241,9 @@ function ComingSoonPane({ label }: { label: string }) {
   return (
     <div className="flex-1 min-w-0 grid place-items-center bg-paper-50">
       <div className="text-center">
+        <div className="opacity-30 mb-3 grid place-items-center">
+          <Cmul8Mark size={48} />
+        </div>
         <div className="text-2xs uppercase tracking-wider text-paper-500 mono mb-1">{label}</div>
         <div className="text-paper-700 text-sm">Ships in Phase 2/3.</div>
       </div>

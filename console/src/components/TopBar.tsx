@@ -9,6 +9,7 @@ export function TopBar({
   onTarget,
   targets,
   sweepId,
+  onOpenPalette,
 }: {
   running: boolean;
   onStart: (customRepo?: string) => void;
@@ -16,6 +17,7 @@ export function TopBar({
   onTarget: (t: string) => void;
   targets: Target[];
   sweepId: string | null;
+  onOpenPalette: () => void;
 }) {
   const [mode, setMode] = useState<"fixture" | "git">("fixture");
   const [gitUrl, setGitUrl] = useState("");
@@ -45,6 +47,15 @@ export function TopBar({
       </div>
 
       <div className="ml-auto flex items-center gap-2">
+        <button
+          onClick={onOpenPalette}
+          className="flex items-center gap-2 px-2 py-1 rounded border border-paper-300 bg-paper-100 hover:bg-white text-2xs mono text-paper-500 hover:text-paper-800 transition-colors"
+          title="Command palette (⌘K)"
+        >
+          <span>Search…</span>
+          <kbd className="border border-paper-300 rounded px-1 bg-white">⌘K</kbd>
+        </button>
+
         {/* Segmented control: fixture vs git URL */}
         <div className="flex border border-paper-300 rounded overflow-hidden bg-paper-100">
           <button
