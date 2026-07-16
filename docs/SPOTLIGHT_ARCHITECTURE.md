@@ -88,61 +88,318 @@ Read this list once. Everything else in the doc references these names.
 
 ## 2 · The architecture at a glance
 
+Read these diagrams in order. Each one zooms into a piece of the previous.
+
+### 2.1 · The full stack — top-down
+
 ```
-┌───────────────────────────────────────────────────────────────────────────┐
-│                            Spotlight Console (SPA)                         │
-│    Board / Live / Findings / Exploit Paths / Warden / Attestations         │
-└──────────────────┬─────────────────────────────────┬──────────────────────┘
-                   │  REST                         WebSocket
-                   ▼                                 ▼
-┌───────────────────────────────────────────────────────────────────────────┐
-│                        FastAPI Gateway                                     │
-│    /sweeps  /findings/{id}/presence  /taxonomy  /attestations/{id}         │
-└──────────────────┬────────────────────────────────────────────────────────┘
-                   │  spawns
-                   ▼
-┌───────────────────────────────────────────────────────────────────────────┐
-│                    Orchestrator (Quorum Protocol)                          │
-│  ─────────────────────────────────────────────────────────────────────    │
-│  Recon → Investigate (parallel) → Reduce+Chain → Reproduce                 │
-│        → Remediate → Verify → Attest                                       │
-│                                                                            │
-│  Wraps every phase in:                                                     │
-│    Warden  (capability tokens, injection detection, egress policy)        │
-│    Consensus Kernel  (independence check + adjudicator)                    │
-│    Budget guard  (tokens + wall-clock cap)                                 │
-│    Non-repudiation ledger  (signs every action)                            │
-└───┬───────────┬────────┬──────────┬───────────┬──────────┬───────────────┘
-    │           │        │          │           │          │
-    ▼           ▼        ▼          ▼           ▼          ▼
-  Recon    Invest.   Reducer    Repro       Remedi.     Verifier
-           +Cog.     +Chainer   (Modal      (git ops)   (Modal
-           (×K)                 sandbox)                sandbox,
-                                                        fresh ctx)
-
-                    ▼
-       Postgres (state) · MinIO/Object store (artifacts) · Redis (queue)
-                    ▼
-                Attestation (JSON + Markdown + PDF)
+        ┌───────────────────────────────────────────────────────────────┐
+USER →  │          Spotlight Console  (React · Tailwind SPA)            │
+        │  Board · Live · Findings · Presence · Attestations · Warden   │
+        └───────────────▲──────────────────────────────▲────────────────┘
+                        │ REST                         │ WebSocket
+                        │ (curl/fetch)                 │ (event stream)
+        ┌───────────────┴──────────────────────────────┴────────────────┐
+        │        FastAPI  (spotlight/api/app.py)                        │
+        │  /sweeps  /findings/{id}/presence  /paths/{id}  /taxonomy     │
+        │  /attestations/{id}?format=json|md|pdf  /profiles  /verify-key│
+        └───────────────────────────────┬───────────────────────────────┘
+                                        │ spawns background thread
+                                        ▼
+┌───────────────────────────────────────────────────────────────────────┐
+│    Orchestrator  (spotlight/orchestrator/orchestrator.py)             │
+│    ─────────────────────────────────────────────────────────────      │
+│    Phase state machine · budget guard · fan-out                       │
+└───┬───────────┬───────────┬───────────┬───────────┬───────────┬──────┘
+    │           │           │           │           │           │
+    ▼           ▼           ▼           ▼           ▼           ▼
+┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────────┐
+│ AGENTS │ │ WARDEN │ │CONSEN- │ │SANDBOX │ │REDACT- │ │NON-REPUDI- │
+│        │ │        │ │  SUS   │ │        │ │  ION   │ │  ATION     │
+│ Recon  │ │inject. │ │ tier + │ │ Modal  │ │3 choke-│ │ Ed25519 +  │
+│ Invest.│ │detect. │ │adjud.  │ │block_  │ │points  │ │ chain of   │
+│ Cogn.  │ │backdoor│ │indep.  │ │network │ │secrets │ │ custody +  │
+│ Reduce │ │check   │ │check   │ │= true  │ │scrubbed│ │ signed     │
+│ Chainer│ │capabil.│ │        │ │        │ │        │ │ commits    │
+│ Repro. │ │envelope│ │        │ │        │ │        │ │            │
+│ Remed. │ │        │ │        │ │        │ │        │ │            │
+│ Verif. │ │        │ │        │ │        │ │        │ │            │
+└────────┘ └────────┘ └────────┘ └────────┘ └────────┘ └────────────┘
+    │           │           │           │           │           │
+    └───────────┴───────────┴───────────┴───────────┴───────────┘
+                                │
+                                ▼
+        ┌──────────────────────────────────────────────────┐
+        │  Storage:  Postgres (state) · Object store       │
+        │  (repo checkouts + PoC logs) · Redis (queue)     │
+        └───────────────────────┬──────────────────────────┘
+                                ▼
+        ┌──────────────────────────────────────────────────┐
+        │  Reporter  →  Attestation (JSON · Markdown · PDF) │
+        └──────────────────────────────────────────────────┘
+                                │
+                                ▼
+                          ATTESTATION
 ```
 
-### The layers
+Six modules make up the "swarm-defense" and "epistemics" control plane
+(Warden, Consensus, Sandbox, Redaction, Non-repudiation, plus the
+underlying Taxonomy catalog). Every agent runs *through* these — no
+agent gets to bypass them.
 
-- **Console** (`console/`): React + Tailwind SPA. Board (compact scan list + area chart), Live Sweep (phase tracker + swarm grid + event log + threat model panel), Findings inbox, Finding detail with confidence dial + evidence + presence + sandbox card + chain of custody.
-- **API** (`spotlight/api/`): FastAPI. REST endpoints + a WebSocket hub for live event streaming.
-- **Orchestrator** (`spotlight/orchestrator/`): the pipeline. State machine, event bus, phase transitions, budget guard.
-- **Agents** (`spotlight/agents/`): the workers. Recon, Investigator, CognitionAnalyst, Reducer, Chainer, Reproducer, Remediator, Verifier. Each has ONE job.
-- **sg-core** (`spotlight/sg_core/`): the code-graph substrate. AST parser, taint propagation, source→sink reachability, sanitizer detection. Runs on Python + JS/TS.
-- **Cognition** (`spotlight/cognition/`): the agentic-surface scanner. LangChain / OpenAI / Anthropic / vector-store patterns.
-- **Sandbox** (`spotlight/sandbox/`): Modal-backed isolated runner. `CapabilityToken` type carries the per-job security policy.
-- **Warden** (`spotlight/warden/`): control plane. Injection detector, backdoor-check, envelope wrap, capability issuance.
-- **Consensus** (`spotlight/consensus/`): promotion decision + adjudicator for disagreements.
-- **Redaction** (`spotlight/redaction/`): scrubs live-looking secrets at three chokepoints (before model, before event, before API response).
-- **Non-repudiation** (`spotlight/non_repudiation/`): Ed25519 signer + chain of custody.
-- **Taxonomy** (`spotlight/taxonomy.py`): 67 canonical vulnerability classes with CWE + OWASP mappings.
-- **Reporter** (`spotlight/reporter/`): renders the Attestation (JSON, Markdown, PDF).
-- **Git ops** (`spotlight/git_ops/`): clone + branch + commit + `gh pr create`.
-- **Store** (`spotlight/store/`): SQLAlchemy models + Postgres.
+
+### 2.2 · The Sweep pipeline — what each phase does
+
+```
+    ┌─────────┐   Reads every .py/.js/.ts file. Builds Code
+    │  RECON  │   Graph (AST + taint propagation). Runs the
+    │         │   Cognition Scanner. Emits data-flow slices.
+    └────┬────┘   Warden scans README + comments for prompt
+         │       injection attempts against Spotlight itself.
+         ▼           OUTPUT: threat_model, signals, warden_flags
+    ┌─────────┐
+    │INVESTI- │   ThreadPoolExecutor spawns K Investigators in
+    │  GATE   │   parallel (K = Profile.max_agents). Each judges
+    │         │   ONE data-flow slice through the LLM: is this
+    └────┬────┘   a real vuln? Cognition Analyst does the same
+         │       for agentic-surface signals.
+         ▼           OUTPUT: candidates
+    ┌─────────┐
+    │ REDUCE  │   Dedupe by (file, function, class). Then the
+    │ + CHAIN │   Chainer looks for cross-surface chains:
+    │         │   LLM01 + LLM06 + SSRF → one ExploitPath.
+    └────┬────┘   secrets + any → "credential + primary" pair.
+         │           OUTPUT: reduced findings, exploit_paths
+         ▼
+       ┌─┴─────────────────────────────────┐
+       │  Per-finding loop (repeats N×):   │
+       │                                    │
+       │  ┌─────────┐                       │
+       │  │REPRODUCE│  Modal sandbox +      │
+       │  │         │  egress off + PoC     │
+       │  └────┬────┘  script. Confirmed?   │
+       │       ▼                            │
+       │  ┌─────────┐  Minimal patch.       │
+       │  │REMEDIATE│  If open_prs on →     │
+       │  │         │  real gh pr create.   │
+       │  └────┬────┘                       │
+       │       ▼                            │
+       │  ┌─────────┐  Different agent,     │
+       │  │ VERIFY  │  fresh context, new   │
+       │  │         │  sandbox. Re-run PoC. │
+       │  └────┬────┘  Warden backdoor scan.│
+       │       ▼                            │
+       │  ┌─────────┐  Consensus Kernel:    │
+       │  │CONSENSUS│  independence check + │
+       │  │         │  adjudicator. Sets    │
+       │  └────┬────┘  tier + confidence.   │
+       │       │                            │
+       └───────┼────────────────────────────┘
+               ▼
+          ┌─────────┐
+          │ ATTEST  │   Reporter assembles the Attestation.
+          │         │   JSON · Markdown · PDF.
+          └────┬────┘   Persists to Postgres + object store.
+               ▼
+       sweep.finished → Console updates
+```
+
+
+### 2.3 · The agent roster — inputs, outputs, sandboxing
+
+```
+  ┌──────────────────────────────────────────────────────────────┐
+  │ AGENT         │ READS              │ WRITES     │ SANDBOX?   │
+  ├───────────────┼────────────────────┼────────────┼────────────┤
+  │ Recon         │ repo (RO)          │ threat_    │ no         │
+  │               │ Code Graph         │ model,     │ (host      │
+  │               │                    │ signals    │  scanner)  │
+  ├───────────────┼────────────────────┼────────────┼────────────┤
+  │ Investigator  │ Code Graph slice   │ candidate  │ no         │
+  │ (× K parallel)│ (RO)               │ .json      │ (LLM only) │
+  ├───────────────┼────────────────────┼────────────┼────────────┤
+  │ Cognition     │ Agentic-surface    │ candidate  │ no         │
+  │ Analyst (× J) │ signals (RO)       │ .json      │ (LLM only) │
+  ├───────────────┼────────────────────┼────────────┼────────────┤
+  │ Reducer +     │ candidates         │ findings,  │ no         │
+  │ Chainer       │                    │ exploit_   │            │
+  │               │                    │ paths      │            │
+  ├───────────────┼────────────────────┼────────────┼────────────┤
+  │ Reproducer    │ finding + repo (RO)│ repro/*    │ YES        │
+  │               │                    │ .json      │ Modal +    │
+  │               │                    │            │ egress OFF │
+  ├───────────────┼────────────────────┼────────────┼────────────┤
+  │ Remediator    │ finding + repo     │ patch +    │ no host    │
+  │               │ (write to branch)  │ diff +     │ (git ops   │
+  │               │                    │ (opt) PR   │  on host)  │
+  ├───────────────┼────────────────────┼────────────┼────────────┤
+  │ Verifier      │ patched repo       │ verify/*   │ YES        │
+  │ (INDEPENDENT) │ (fresh tempdir,    │ .json,     │ Modal +    │
+  │               │ fresh context)     │ backdoor   │ egress OFF │
+  │               │                    │ report     │            │
+  └──────────────────────────────────────────────────────────────┘
+    Every agent runs under a Warden-issued CapabilityToken:
+    egress_allowed=False by default · CPU/mem/time cap ·
+    RO/RW path scoping · max_output_bytes · max_exec_calls.
+```
+
+
+### 2.4 · The Consensus Kernel decision tree
+
+```
+                             evidence[]
+                                 │
+                                 ▼
+                     ┌───────────────────────┐
+                     │ Independence dedup:   │
+                     │ (modality, model,     │
+                     │  context_id) unique   │
+                     └───────────┬───────────┘
+                                 │
+                                 ▼
+                     ┌───────────────────────┐
+                     │ class is 'secrets'    │──yes──► VERIFIED
+                     │ AND static_fact       │        (0.95)
+                     └───────────┬───────────┘        no PoC needed
+                                 │no
+                                 ▼
+                     ┌───────────────────────┐
+                     │ reproduced AND        │──yes──► VERIFIED
+                     │ static_fact           │        (0.93)
+                     └───────────┬───────────┘
+                                 │no
+                                 ▼
+                     ┌───────────────────────┐
+                     │ reproduced (alone)    │──yes──► VERIFIED
+                     └───────────┬───────────┘        (0.85)
+                                 │no
+                                 ▼
+                     ┌───────────────────────┐
+                     │ static_fact AND       │──yes──► VERIFIED
+                     │ not_applicable_repro  │        (0.90)
+                     │ (static-only class)   │        NB: e.g. secrets
+                     └───────────┬───────────┘
+                                 │no
+                                 ▼
+                     ┌───────────────────────┐
+                     │ ≥ 2 independent       │──yes──► HIGH-
+                     │ corroborators incl.   │        CONFIDENCE
+                     │ static_fact           │        (0.70)
+                     └───────────┬───────────┘
+                                 │no
+                                 ▼
+                     ┌───────────────────────┐
+                     │ single-source,        │──yes──► NEEDS
+                     │ ambiguous             │        REVIEW
+                     └───────────┬───────────┘        (0.40)
+                                 │no
+                                 ▼
+                              HELD
+                       (suppressed from
+                        the main inbox)
+
+    ── ADJUDICATOR ──
+    Triggered when evidence items DISAGREE (one says vuln, one says
+    not). A fresh-context LLM reads both positions and takes a side.
+    Its rationale is stored on consensus.adjudication.
+```
+
+
+### 2.5 · The cross-surface Exploit Path (the demo money-shot)
+
+```
+    ┌──────────────────────────────────────────────────────────┐
+    │                    ExploitPath EP-0001                    │
+    │  title: "prompt-injection → agent-tool → SSRF → exfil"    │
+    │  cross_surface: TRUE   ·   severity: critical             │
+    └──────────────────────────────────────────────────────────┘
+                                │
+             ┌──────────────────┼──────────────────┐
+             ▼                  ▼                  ▼
+        ┌─────────┐        ┌─────────┐        ┌─────────┐
+        │ step 1  │ enables│ step 2  │ enables│ step 3  │
+        │         ├───────►│         ├───────►│         │
+        │ LLM01   │        │ LLM06   │        │ CWE-918 │
+        │ prompt- │        │excessive│        │  SSRF   │
+        │injection│        │ agency  │        │ (code)  │
+        │(agentic)│        │(agentic)│        │         │
+        │         │        │         │        │         │
+        │ readme  │        │ tool =  │        │ fetch() │
+        │ smuggle │        │ req.get │        │ to      │
+        │ payload │        │ (no     │        │ attacker│
+        │         │        │ allow-  │        │ URL     │
+        │         │        │ list)   │        │         │
+        └─────────┘        └─────────┘        └─────────┘
+        SPOT-0003          SPOT-0004          SPOT-0005
+        cognition          cognition          code
+
+    The Chainer emits one ExploitPath per matching chain.
+    Every step's finding_id is preserved so the analyst can drill
+    into each individual promoted finding.
+```
+
+
+### 2.6 · Event bus + WebSocket fan-out
+
+```
+    Orchestrator (single writer)
+         │
+         │  bus.emit(sweep_id, type, actor, payload={...})
+         │  ► REDACTION applied here (chokepoint b)
+         ▼
+    ┌───────────────────────────────────────────────┐
+    │      EventBus (in-memory + persisted)         │
+    │  append-only log · seq counter · WS replay    │
+    └────────┬───────────────────────┬──────────────┘
+             │ sync                  │ async queues
+             ▼                       ▼
+        Persist to               WebSocket hub
+        Postgres                 ────────────
+        events table                    │
+                                        ▼
+                             ┌──────────────────────┐
+                             │  Console clients     │
+                             │  (Live Sweep view)   │
+                             │                      │
+                             │ replay from          │
+                             │ Last-Event-ID on     │
+                             │ reconnect            │
+                             └──────────────────────┘
+
+    Event types (24+):
+      sweep.{started, phase.changed, phase.illegal, budget.exceeded,
+             finished, failed}
+      agent.{spawned, status, tool.call, finished}
+      recon.threat_model
+      candidate.{raised, corroborated}
+      finding.{promoted, held}
+      path.composed
+      repro.{started, result}
+      sandbox.{spawned, result, egress.denied}
+      remediation.opened
+      verify.result
+      warden.{injection.flagged, budget.tripped, capability.denied}
+      attestation.written
+```
+
+
+### The layers, expanded
+
+- **Console** (`console/`) — React + Tailwind SPA. Board (compact scan list + area chart), Live Sweep (phase tracker + swarm grid + event log + **Threat Model panel** with untrusted-source ← / high-impact-sink → chips), Findings inbox, Finding detail with confidence dial + evidence + **Presence panel** (cross-surface reach across other sweeps) + sandbox card + Attestation link.
+- **API** (`spotlight/api/`) — FastAPI. `/sweeps`, `/findings/{id}/presence`, `/paths/{sweep_id}`, `/taxonomy`, `/attestations/{id}?format=json|md|pdf`, `/profiles`, WebSocket hub for the live event stream.
+- **Orchestrator** (`spotlight/orchestrator/`) — the pipeline. Phase state machine (rejects backwards jumps as `sweep.phase.illegal`), budget guard (tokens + wall-clock caps → `sweep.budget.exceeded` → graceful jump to Attest), fan-out via `ThreadPoolExecutor`. Includes the **Chainer** (`chainer.py`) that composes cross-surface Exploit Paths.
+- **Agents** (`spotlight/agents/`) — Recon, Investigator, CognitionAnalyst, Reducer, Reproducer, Remediator, Verifier. Each has ONE job, an issued CapabilityToken, and a strict output schema.
+- **sg-core** (`spotlight/sg_core/`) — the code-graph substrate. AST parser, transitive taint propagation, source→sink reachability, sanitizer detection for parameterized queries + HTML escape. **Runs on Python + JS/TS/JSX/TSX**. Also hosts the **hardcoded-secrets scanner** which walks the tree using the redaction detectors.
+- **Cognition** (`spotlight/cognition/`) — the agentic-surface scanner. Detects prompt-injection surface (LLM01), excessive agency (LLM06), improper output handling (LLM05), system-prompt leak (LLM07), RAG-store weaknesses (LLM08), denial-of-wallet (LLM10). Works over LangChain / OpenAI / Anthropic patterns in Python + JS/TS.
+- **Consensus** (`spotlight/consensus/`) — the promotion decision layer. `ConsensusKernel.promote(candidate, evidence[]) → TierDecision`. Independence check (same-model×2 = one vote). **Adjudicator** — a fresh-context LLM step when evidence items disagree.
+- **Sandbox** (`spotlight/sandbox/`) — Modal-backed isolated runner. `CapabilityToken` carries per-job security policy. Subprocess fallback for dev/tests.
+- **Warden** (`spotlight/warden/`) — control plane. **Injection detector** (bidi tricks, HTML-comment smuggling, zero-width, YAML role: override, "ignore your instructions" variants). **Backdoor scan** on every fix diff (TLS-verify disabled, auth removed, test skipped, permission widened, secret logged, new outbound URL to non-local host, precision-guarded against re-emitting removed content). Envelope wrap for target-derived text. Capability token issuance.
+- **Redaction** (`spotlight/redaction/`) — scrubs secrets at three chokepoints: (a) before model prompt sent, (b) before event bus write, (c) before API response leaves the process. 11 detector kinds.
+- **Non-repudiation** (`spotlight/non_repudiation/`) — Ed25519 signer, `ChainOfCustody` helper, `Signed-off-by-agent` git commit trailers, `/verify-key` endpoint. Workspace key persisted as `SPOTLIGHT_SIGNING_KEY` Railway secret.
+- **Taxonomy** (`spotlight/taxonomy.py`) — 67 canonical vulnerability classes with CWE + OWASP + OWASP-LLM mappings across 5 surfaces (code, agentic, secrets, crypto, config).
+- **Reporter** (`spotlight/reporter/`) — assembles the Attestation. Renders JSON + Markdown + PDF (via reportlab). Sections: meta, target, profile, threat_model, findings, exploit_paths, warden, chain_of_custody, sandbox_proofs, metrics.
+- **Git ops** (`spotlight/git_ops/`) — clone at pinned SHA, scratch branch per finding, `stage_and_commit` with `Signed-off-by-agent` trailer, `open_pr` via `gh` shell-out.
+- **Store** (`spotlight/store/`) — SQLAlchemy models. `SweepRow` (with `threat_model` and `exploit_paths` JSONB), `FindingRow`, `EventRow`. Postgres in prod, SQLite in tests, in-memory fallback when `DATABASE_URL` is unset.
 
 ---
 

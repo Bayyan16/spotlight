@@ -249,9 +249,12 @@ def _scan_denial_of_wallet(path: Path, text: str) -> list[CognitionFinding]:
             body_src = ""
         if not any(s in body_src for s in rules.LLM_SINK_NEEDLES):
             continue
-        if any(k in body_src for k in rules.BUDGET_KNOB_NEEDLES):
+        # Look for budget knobs in EITHER the loop body OR the enclosing
+        # function — a `max_iterations=5` on the LLMChain ctor outside the
+        # loop still gates the loop, so we shouldn't fire.
+        fn_body = _enclosing_function_body(text, tree, node) or body_src
+        if any(k in fn_body for k in rules.BUDGET_KNOB_NEEDLES):
             continue
-        fn_name = _enclosing_function_name(tree, node) or "<module>"
         out.append(
             CognitionFinding(
                 file=str(path),
