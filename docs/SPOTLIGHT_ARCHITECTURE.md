@@ -509,6 +509,98 @@ The public key is served at `/verify-key`. Anyone can verify the chain of custod
 - Exploit Paths view `edge` label — renders "enables" verbatim instead of the actual edge description (why step-N enables step-N+1). Cosmetic.
 - Chart data density — the Board area chart aggregates by day; sparse sweep activity looks flat. Add a per-hour zoom option for demo days.
 
+*Phase 4 · Zero-Day Discovery Engine (~4–8 weeks, model-training heavy)*
+
+**Design principle: adversarial independence at every judgment.**
+
+The pipeline through Phase 3 is defensive-in-depth: many bounded roles, each with one job, a Consensus Kernel that counts independent evidence. That gets us high precision on *known* vulnerability classes. Zero-day recall — finding vulns nobody has named yet — requires a different design axis: an **adversarial multi-agent harness** where every judgment is contested by a differently-motivated agent, and the sweep only ships a finding when the Red agents exhaust and the Blue agents survive.
+
+Every Phase-4 tranche below folds into that harness. None replace the existing pipeline — they add adversarial and analytical modalities that the Consensus Kernel counts alongside `static_analysis_fact`, `dynamic_reproduction`, `independent_agent`, and `external_signal`.
+
+New modalities the Consensus Kernel gains in Phase 4:
+- `adversarial_red` — a Red agent that succeeded at exploiting the property
+- `adversarial_blue` — a Blue agent that failed to defend
+- `property_violation` — an SMT-checked property that failed
+- `fuzz_reproduction` — a coverage-guided fuzz seed that triggered the sink
+- `analogical_cve` — a semantically-similar historical CVE the model retrieved (grounding, not gating — the finding stands or falls on other evidence)
+
+**D1 · Adversarial Red/Blue harness** — new `Red` role proposes concrete exploit strategies against a candidate; new `Blue` role proposes defenses. Iterated up to N rounds under a per-finding budget. Different model families required (Red = Model A, Blue = Model B) so Consensus can count them independently. A finding promotes only when Red exhausts its strategies AND Blue's last defense survived. Signed transcript lands on the chain of custody as the "adversarial dialogue" evidence bundle. This is the design-level unlock — every finding becomes an argued case, not a pattern match.
+
+**D2 · Property Reasoner (LLM + SMT hybrid)** — new `Prober` role generates safety properties from the code graph (`"no user-controlled string reaches any subprocess call without going through allow-listed sanitizer S"`). An SMT solver (Z3) attempts to prove or disprove the property against symbolic execution of the code path. The LLM helps translate ambiguous code into SMT constraints; the solver is the source of truth. Property violations emit `property_violation` evidence — deterministic, signable, and independent of the LLM. Unlocks zero-days that pattern-matchers can't articulate.
+
+**D3 · Fuzzing-coupled Reproducer** — replace the SQLi-only PoC template with a per-class fuzzer harness. Model proposes structural seeds ("this endpoint expects a JSON blob with an `email` field"); a coverage-guided mutator (AFL/libFuzzer-style, driven by Modal container hooks) generates variants; each variant runs in a fresh sandbox with a capability token. Findings gain `fuzz_reproduction` evidence with the exact seed that fired. Unlocks: SSRF with non-obvious parameterization, CMDI behind base64 wrappers, deserialization gadgets in obscure JSON paths — the zero-days that vanilla tautologies can't reach.
+
+**D4 · Federated Investigator fine-tune (T1-safe)** — LoRA-adapter pipeline that fine-tunes the Investigator on each customer's own sweep history (slice → verdict rows). No raw data leaves the customer's VPC — only the LoRA weight delta ships, and only after their compliance officer signs off on a per-adapter approval flow. Adapters are cryptographically fingerprinted; the Consensus Kernel records which adapter judged which slice. Unlocks: cross-customer signal without cross-customer data exposure. Every install gets smarter at *its own* codebase's zero-day patterns.
+
+**D5 · CVE analogical reasoning (upgrade from Phase-3 badge)** — Phase-3 adds a `cve[]` field for known-exploited badging. Phase-4 adds a vector-store retrieval layer: when the Investigator reasons about a novel slice, it retrieves the K most semantically-similar historical CVEs and includes them in the prompt as *analogies*, not gates. `"This resembles CVE-2019-11358 (jQuery prototype pollution) in the shape of the tainted assignment — worth checking whether the same class of miss exists here."` The finding does not require a CVE match to promote; the retrieval is grounding for reasoning. Emits `analogical_cve` evidence for the Consensus Kernel's provenance trail.
+
+**D6 · Agentic surface inference (LLM-inferred + rule-validated)** — today the AgenticScanner is rule-based, so it only catches the LLM01/05/06 patterns we hand-authored. Phase-4 adds a two-lane design mirroring Chainer + HypothesisProposer (Tranche B5): a model *proposes* agentic surfaces ("this function looks like it's dispatching LLM tool calls without an allow-list"), rules *validate* every claim before it counts. Verified proposals land as new AgenticScanner rules; unverified ones surface as hypotheses. Unlocks: novel agentic attack surfaces that current OWASP-LLM taxonomy hasn't named yet.
+
+**D7 · Reproducer template auto-generation per class** — fine-tune a `TemplateWriter` role on `(finding, verified-fix, working PoC)` triples from the sweep history (the gold-label set that grows for free — every Verifier `repro-now-blocked` outcome is one row). Auto-generates PoC templates for classes the current pipeline marks as `inconclusive`: CMDI, SSRF, XSS, deserialization, path traversal. Emits `fuzz_reproduction` or `dynamic_reproduction` evidence with the template lineage in the sandbox capability token.
+
+**How the harness composes for zero-day recall**
+
+A typical Phase-4 zero-day sweep for a novel SSRF-through-agentic-tool chain:
+
+```
+Recon → CodeGraph + Semgrep + AgenticScanner (LLM-inferred surfaces from D6)
+   ↓
+Investigator (with D4 fine-tuned adapter + D5 analogical CVE retrieval)
+   ↓
+Prober (D2) generates: "does any user-controlled URL reach requests.get()?"
+   ↓ property violated
+Chainer (rules) + HypothesisProposer (existing B5)
+   ↓
+Red agent (D1) proposes: "chain LLM01 injection → tool.fetch(attacker_url)"
+Blue agent (D1) proposes defenses: sanitizer, allow-list, egress firewall
+   ↓ iterated 3 rounds; Red succeeds twice, Blue's third defense holds
+Reproducer (D3) fuzzes the endpoint with mutated payloads
+   ↓ fires, exploit confirmed
+Remediator + Verifier (existing)
+   ↓
+Consensus Kernel counts:
+   - static_analysis_fact (CodeGraph)
+   - external_signal (Semgrep miss — that's fine, it's a zero-day)
+   - property_violation (Prober)
+   - adversarial_red (Red's second-round success)
+   - adversarial_blue (Blue's third-round defense that held after patch)
+   - fuzz_reproduction (D3's fired seed)
+   - independent_agent (Investigator + Verifier fresh contexts)
+   - analogical_cve (CVE-2020-XXXX cited as shape-similar)
+   → 8 independent modalities, tier=verified, confidence 0.96
+```
+
+The Consensus decision is now a **cryptographically-signed argument**, not a scanner alert. That's the artifact a bank auditor cannot get anywhere else, for a vulnerability that has no CVE number.
+
+**What Phase-4 unlocks vs. what it does not**
+
+Unlocks:
+- Novel zero-days in customer code, especially the AI/LLM surface where taxonomies haven't caught up.
+- Auditable "we argued this exploit through Red and Blue agents and Red won" narratives.
+- Zero-day recall on classes without hand-written Chainer rules or Reproducer templates.
+- Analogical reasoning from historical CVEs without falsely gating on CVE-match.
+
+Does not unlock:
+- Novel bug *classes* (Log4Shell before disclosure) — still requires research, not scanning.
+- Memory-corruption / hardware / side-channel zero-days — different tooling category.
+- Vulns in code Spotlight doesn't have source for.
+
+**Phase-4 order + dependencies**
+
+```
+D6 (agentic surface inference)      → independent, can start first
+D5 (CVE analogical reasoning)       → needs Phase-3 CVE ingestion landed
+D2 (property reasoner)              → independent, high research risk
+D3 (fuzz-coupled reproducer)        → needs Modal sandbox hooks upgraded
+D1 (adversarial harness)            → needs D2 or D3 to feed Red proposals
+D4 (federated fine-tune)            → needs 3+ T1 reference customers first
+D7 (template auto-gen)              → needs D3 + D4 gold-label pipeline
+```
+
+Suggested cut points: D1 + D2 + D6 = the minimum-viable Zero-Day Discovery Engine (~4 weeks). D3 + D5 = expand recall (~2 weeks). D4 + D7 = compounding-advantage tier (~2 weeks + ongoing).
+
+---
+
 ### Deliberately deferred (not on the roadmap)
 
 - **Semantic DLP** — different product category, routed to CMUL8 adjacent-product backlog.
