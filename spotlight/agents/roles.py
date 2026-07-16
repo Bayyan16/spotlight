@@ -58,10 +58,18 @@ class Recon:
         try:
             from spotlight.signals import SemgrepAdapter
 
-            semgrep_matches = SemgrepAdapter().scan(repo_path)
-            semgrep_signals = [m.as_slice_dict() for m in semgrep_matches]
-            signals = signals + semgrep_signals
-        except Exception:
+            adapter = SemgrepAdapter()
+            available = adapter.available()
+            print(f"[recon] semgrep available: {available}")
+            if available:
+                semgrep_matches = adapter.scan(repo_path)
+                semgrep_signals = [m.as_slice_dict() for m in semgrep_matches]
+                print(f"[recon] semgrep matches: {len(semgrep_matches)}")
+                signals = signals + semgrep_signals
+            else:
+                semgrep_signals = []
+        except Exception as exc:
+            print(f"[recon] semgrep failed: {exc!r}")
             semgrep_signals = []
         threat_model = self.model.complete(
             role="recon",
