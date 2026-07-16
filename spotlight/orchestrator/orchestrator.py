@@ -96,6 +96,44 @@ def _promote_tier_legacy(finding: dict[str, Any], repro: dict[str, Any] | None) 
     return "needs-review", 0.4, "single-source, unreproduced"
 
 
+def _merge_semgrep_into_slices(
+    slices: list[dict[str, Any]], semgrep_signals: list[dict[str, Any]]
+) -> None:
+    """Fold Semgrep matches into the sg-core slices they corroborate.
+
+    Matching rule: same file (basename) + same class + ±3 lines from the
+    slice's sink line. When they match, append a `signal:semgrep:<check_id>`
+    entry to the slice's `reason` string, which the Investigator forwards
+    into evidence_used. Loose enough to catch scoring drift, tight enough
+    to reject unrelated coincidences.
+
+    Semgrep matches with NO corresponding sg-core slice remain as their own
+    entries in the signals list (they retain `external_signal: True`), so
+    the Investigator still judges them — recall stays intact.
+    """
+    import os
+
+    for sig in list(semgrep_signals):
+        sig_file = os.path.basename(sig["file"])
+        sig_line = int(sig["sink"]["line"])
+        sig_class = sig["sink"]["class"]
+        sig_check = sig["sink"]["callee"]
+        for sl in slices:
+            if sl.get("external_signal"):
+                continue
+            if os.path.basename(sl["file"]) != sig_file:
+                continue
+            if sl["sink"]["class"] != sig_class:
+                continue
+            slice_line = int(sl["sink"]["line"])
+            if abs(slice_line - sig_line) > 3:
+                continue
+            marker = f"signal:semgrep:{sig_check}"
+            if marker not in sl.get("reason", ""):
+                sl["reason"] = f"{sl.get('reason', '')} · {marker}"
+            break
+
+
 def _build_evidence(
     candidate: dict[str, Any],
     repro: dict[str, Any] | None,
@@ -135,6 +173,24 @@ def _build_evidence(
                 origin={"tool": "agentic-scanner", "context_id": f"{sweep_id}:agentic"},
                 result="confirmed",
                 detail=evidence_used,
+            )
+        )
+    # Signal Adapter — Semgrep. When any evidence_used entry starts with
+    # `signal:semgrep:` we've got an INDEPENDENT external tool flagging
+    # the same location. Different rule-authoring convention, different
+    # engine, different vendor — the Consensus Kernel treats this as a
+    # first-class independent corroborator per PRD §8.1.
+    semgrep_hits = [
+        e for e in evidence_used
+        if isinstance(e, str) and "signal:semgrep" in e
+    ]
+    if semgrep_hits:
+        evidence.append(
+            EvidenceItem(
+                modality="external_signal",
+                origin={"tool": "semgrep", "context_id": f"{sweep_id}:semgrep"},
+                result="confirmed",
+                detail=semgrep_hits,
             )
         )
     # The Investigator's own verdict counts as an independent-agent vote for
@@ -337,6 +393,14 @@ class Orchestrator:
         self._advance_phase("investigate")
         candidates: list[dict[str, Any]] = []
         slices = recon_out["signals"]
+
+        # Signal Adapter merge — Semgrep hits at the same (file, line) as a
+        # sg-core slice are folded INTO that slice's `reason` so the
+        # Investigator sees them as one signal and _build_evidence attributes
+        # the semgrep marker as an independent external corroborator.
+        semgrep_signals = recon_out.get("semgrep_signals", []) or []
+        _merge_semgrep_into_slices(slices, semgrep_signals)
+
         allowed_classes = set(self.profile.classes)
         active_slices = [
             s for s in slices if s["sink"]["class"] in allowed_classes

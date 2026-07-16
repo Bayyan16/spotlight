@@ -50,6 +50,19 @@ class Recon:
         agentic_signals = [
             f.to_dict() for f in AgenticScanner().scan(repo_path, code_files)
         ]
+        # Signal Adapter: Semgrep. Best-effort — never crashes the sweep.
+        # When semgrep isn't installed, `scan` returns []. Each match lands
+        # in `signals` alongside the sg-core slices; the Consensus Kernel
+        # treats it as an INDEPENDENT external signal (§8.1) when a
+        # sg-core slice AND a semgrep match land at the same (file, line).
+        try:
+            from spotlight.signals import SemgrepAdapter
+
+            semgrep_matches = SemgrepAdapter().scan(repo_path)
+            semgrep_signals = [m.as_slice_dict() for m in semgrep_matches]
+            signals = signals + semgrep_signals
+        except Exception:
+            semgrep_signals = []
         threat_model = self.model.complete(
             role="recon",
             prompt="classify stack and threat model",
@@ -70,6 +83,7 @@ class Recon:
             "warden_flags": warden_flags,
             "wrapped_docs": wrapped_docs,
             "agentic_signals": agentic_signals,
+            "semgrep_signals": semgrep_signals,
         }
 
 
