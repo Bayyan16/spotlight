@@ -683,35 +683,62 @@ The public key is served at `/verify-key`. Anyone can verify the chain of custod
 
 ## 12 · What's built vs. what's not
 
-### Built (as of 2026-07-16)
+### Shipped (2026-07-16, `main`)
 
-- All of Phase 1 + Phase 1.5.
-- **Tranche A** — real swarm, Modal sandbox, JS/TS, redaction pipeline, git ops, budget guards + phase state machine. **Complete.**
-- **Tranche B batch 1** — Warden v1 (injection detector + backdoor scan + envelope wrap), Threat-model UI, Cross-surface presence, Non-repudiation ledger. **Complete.**
-- **Tranche B batch 2** — Consensus Kernel v1 with adjudicator, Agentic Sweep + Analyst (OWASP LLM Top 10), Cross-surface Exploit Path Chainer, Attestation v2 Reporter (JSON + Markdown + PDF). **Complete.**
-- **Console UI** — Board (cleanui1 aesthetic + area chart + 4 KPI pills), Live Sweep (phase tracker + swarm grid + event log + Threat Model panel), Findings inbox, Finding detail with Presence + Sandbox + Threat model + Audit + **Attestation export buttons**, **Exploit Paths view** (cross-surface highlighted), **Warden view**, Command palette (⌘K), keyboard shortcuts (1-6 for nav, ⌘↵ for Start Sweep). **Complete.**
-- **Backend depth** — 346 backend tests + 11 frontend tests, all passing on `main`. Live at https://spotlight-api-production-ff76.up.railway.app/.
+**Phase 1 · Vertical slice** — the whole pipeline against one Python target with one class (SQLi). Recon → Investigate → Reduce → Reproduce → Remediate → Verify → Attest. Attestation JSON on disk. **✓**
 
-### Deliberately mocked (still)
+**Phase 1.5 · Persistence, real model, JS/TS** — Railway Postgres, Moonshot Kimi real LLM inference, JS/TS coverage in sg-core, Modal sandbox, 67-class taxonomy, hardcoded-secrets detector, Board UI, area-chart dashboard, cognition→agentic + kitchen-sink→acme-bank renames, borderless cleanui1 aesthetic. **✓**
 
-- **No fine-tuned model.** We use Moonshot Kimi (T0 hosted). Provider abstraction ready for T1 swap.
-- **Multi-tenant auth**: none. Single workspace for the demo.
-- **Real T1 self-hosted model path**: Phase 3.
-- **Eval harness with precision + recall on labeled corpora**: Phase 3.
-- **First-scan wizard, review threads, delta view, watch-mode**: Tranche C (Phase 2).
-- **RBI-compliance Attestation export**: Phase 3 (Reporter already emits the base — needs the RBI heading mapping).
+**Phase 2 · Swarm · Safety · Agentic · Bank-grade**
 
-### Small gaps to close
+*Tranche A · Real swarm & real sandbox* — Quorum orchestrator (state machine + budget guards), parallel Investigator fan-out, Modal isolated sandbox (egress-off), git ops + `gh pr create`, JS/TS + Node fixtures, redaction pipeline (3 chokepoints). **✓ All 6 items.**
 
-- SQLi reproduction on acme-bank returns `not-reproduced` (Modal image doesn't preinstall LangChain, so the guarded `try/except ImportError` slows the container's cold start enough to nudge the 60s PoC timeout). Fix by either shortening the PoC's app-import path or preinstalling `langchain` in the Modal image. Same fix applies to any target that imports non-pinned deps.
-- Chain of custody is signed but not yet automatically populated per-finding by the orchestrator — the field lands in the Attestation as an empty stub. Wire lands in the next micro-pass.
-- Exploit Paths view doesn't yet render the `edge` label (why step-N enables step-N+1) prominently — it just says "enables". Cosmetic.
+*Tranche B · Safety, epistemics, cognition — batch 1* — Warden v1 (injection detector + backdoor scan + envelope), Threat-model UI panel, Cross-surface Presence (bank wedge), Non-repudiation ledger (Ed25519 signed chain of custody + `Signed-off-by-agent` git trailer). **✓ 4 items.**
 
-### Deliberately deferred
+*Tranche B · batch 2* — Consensus Kernel v1 with independence check + Adjudicator, Agentic Sweep + Analyst (OWASP LLM Top 10 rule packs), Cross-surface Exploit Path Chainer, Attestation v2 Reporter (JSON + Markdown + PDF). **✓ 4 items.**
 
-- Semantic DLP (adjacent product idea, not scoped).
-- HSM-backed signing (software Ed25519 sufficient for MVP).
-- Real T1 sovereign model deployment.
+**Console UI (Phase 2 slice)** — Board with borderless cleanui1 aesthetic (4 KPI pills + big area chart + Devin-style tabs + no-card table), Live Sweep (phase tracker + swarm grid + event log + Threat Model panel), Findings inbox, Finding detail with Confidence dial + Presence + Sandbox + Threat model + Attestation export buttons (PDF · MD · JSON), Exploit Paths view (cross-surface highlighted), Warden view, Command palette (⌘K), keyboard shortcuts. **✓**
+
+**Depth** — 346 backend tests + 11 frontend tests, all green. Live at https://spotlight-api-production-ff76.up.railway.app.
+
+**Infra hardening this week** — additive schema migration runner (`_migrate_schema` — the `sweeps.exploit_paths` column drift bug is now fixed and future ALTERs are one-liners in `_ADDITIVE_MIGRATIONS`). Orphan-cleanup on startup. Redaction-persistence fixture pollution fixed.
+
+---
+
+### Not yet shipped
+
+*Tranche C · Devin-parity product surface (Phase 2 finish, ~5–7 days)*
+- **C1** First-scan onboarding wizard (devin1 modal spec: `Single repo` / `All repos` tabs + Scan Profile + Auto Scan + Interactive mode toggle)
+- **C2** Interactive mode — pause after Recon, present the threat model to the user, accept edits, resume
+- **C3** Plain-language "why this matters" per finding — ≤120 words, no jargon, includes concrete blast radius
+- **C4** Per-finding review thread — accept / false-positive-with-reason / risk-accept-until, every state change signed into chain of custody
+- **C5** PR-diff comparison view with the Warden backdoor-check panel underneath
+- **C6** Delta view between two sweeps — new / resolved / still-open
+- **C7** Watch-mode — GitHub push webhook triggers an incremental sweep, results comment on the PR
+- **C8** Sortable findings inbox with saved filters (persisted per Profile)
+
+*Phase 3 · Console v2 + Eval + Compliance + Demo (~1 week)*
+- **Full FastAPI hardening** — WebSocket hub with `Last-Event-ID` resume, contract tests for every route
+- **Console v2** — production-grade polish on every view, motion, focus rings, keyboard
+- **Provider abstraction + T1 self-hosted path** — same eval harness against Moonshot + a self-hosted open-weights model, quality delta measured not asserted
+- **Eval harness (`spotlight/eval`)** — positive + negative + injection corpora, auto-scores precision + recall + FP rate + reproduction rate + self-defense rate, drift check, calibration. Runs in CI, blocks merges on regression.
+- **CVE / CISA KEV ingestion** — nightly pull, findings gain a `cve[]` field + "known-exploited" badge
+- **RBI-compliance Attestation export** — findings mapped to specific RBI/2016-17/226 + ReBIT baseline codes for RFP-shaped audit reports
+- **Deploy pipeline** — Railway preview environment per PR, GitHub Actions runs the eval harness on push
+- **Recorded demo** — the two-pillar money shot (code Exploit Path + Agentic Exploit Path + Warden trap + fix PR + Attestation export)
+
+*Small refinements sitting between Tranche B and Tranche C*
+- Chain of custody per-finding population — the Ed25519 signing + `ChainOfCustody` class exist but aren't yet automatically populated by the orchestrator's per-finding loop. Field lands in the Attestation as an empty stub.
+- `acme-bank` SQLi cold-start — LangChain import fails in the Modal image; the guarded `try/except` slows cold start enough to nudge the 60 s PoC timeout, so tier lands at `high-confidence` instead of `verified`. Fix either by shortening the PoC's app-import path or preinstalling `langchain` in the Modal image.
+- Exploit Paths view `edge` label — renders "enables" verbatim instead of the actual edge description (why step-N enables step-N+1). Cosmetic.
+- Chart data density — the Board area chart aggregates by day; sparse sweep activity looks flat. Add a per-hour zoom option for demo days.
+
+### Deliberately deferred (not on the roadmap)
+
+- **Semantic DLP** — different product category, routed to CMUL8 adjacent-product backlog.
+- **HSM-backed signing** — software Ed25519 is sufficient for MVP.
+- **Multi-tenant auth** — single workspace for demo; adds after design-partner signs.
+- **Full Alembic migration framework** — the `_ADDITIVE_MIGRATIONS` registry covers ADD COLUMN cases; when we need real column type changes or renames, Alembic goes in.
 
 ---
 
