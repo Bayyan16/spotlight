@@ -21,6 +21,7 @@ dependencies = [
     "modal>=1.0",
     "cryptography>=42",
     "reportlab>=4",
+    "semgrep>=1.100",
 ]
 
 [project.optional-dependencies]
