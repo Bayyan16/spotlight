@@ -45,6 +45,24 @@ app.add_middleware(
 @app.on_event("startup")
 def _startup() -> None:
     init_schema()
+    _mark_orphaned_running_as_failed()
+
+
+def _mark_orphaned_running_as_failed() -> None:
+    """Any sweep still marked 'running' from a previous container instance is
+    an orphan — the process that owned it is dead. Mark them 'failed' on
+    startup so they don't pollute the history."""
+    if not store_enabled():
+        return
+    try:
+        with get_session() as sess:
+            rows = sess.query(SweepRow).filter(SweepRow.status == "running").all()
+            for r in rows:
+                r.status = "failed"
+                if r.finished_at is None:
+                    r.finished_at = datetime.now(timezone.utc)
+    except Exception as exc:
+        print(f"[startup] orphan cleanup failed: {exc!r}")
 
 
 # In-memory registries — used when DATABASE_URL isn't set (tests), *and* as a
@@ -87,13 +105,21 @@ def start_sweep(req: SweepRequest) -> dict:
     orch = Orchestrator(bus=bus)
 
     def _worker():
+        result = None
         try:
             result = orch.run(repo_path)
             SWEEPS[result.sweep_id] = result
             _persist_sweep(result, source=source, repo_name=repo_path.name)
+        except Exception as exc:
+            # Mark the row as failed so it doesn't pollute history.
+            try:
+                if bus.all():
+                    fid = bus.all()[0].sweep_id
+                    _mark_sweep_failed(fid, repr(exc)[:200])
+            except Exception:
+                pass
         finally:
-            # Clean up any cloned git workdir once the sweep is done.
-            wd = _git_workdirs.pop(result.sweep_id if "result" in locals() else "", None)
+            wd = _git_workdirs.pop(result.sweep_id if result else "", None)
             if wd and wd.exists():
                 shutil.rmtree(wd, ignore_errors=True)
 
@@ -142,6 +168,19 @@ def _resolve_repo(repo: str) -> tuple[Path, str]:
             return alt, "fixture"
         raise HTTPException(404, f"repo not found: {repo}")
     return p, "fixture"
+
+
+def _mark_sweep_failed(sweep_id: str, reason: str) -> None:
+    if not store_enabled():
+        return
+    try:
+        with get_session() as sess:
+            row = sess.get(SweepRow, sweep_id)
+            if row:
+                row.status = "failed"
+                row.finished_at = datetime.now(timezone.utc)
+    except Exception:
+        pass
 
 
 def _persist_sweep_header(sweep_id: str, repo_path: Path, source: str) -> None:
@@ -283,6 +322,20 @@ def delete_sweep(sweep_id: str) -> dict:
             if row:
                 sess.delete(row)  # cascade deletes findings + events
     return {"deleted": sweep_id}
+
+
+@app.post("/sweeps/cleanup")
+def cleanup_sweeps(status: str = "failed") -> dict:
+    """Bulk-delete sweeps with the given status. Handy for clearing orphans
+    from prior container restarts."""
+    if not store_enabled():
+        return {"deleted": 0}
+    with get_session() as sess:
+        rows = sess.query(SweepRow).filter(SweepRow.status == status).all()
+        n = len(rows)
+        for r in rows:
+            sess.delete(r)
+    return {"deleted": n, "status": status}
 
 
 @app.get("/sweeps/{sweep_id}/events")

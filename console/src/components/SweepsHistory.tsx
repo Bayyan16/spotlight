@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { deleteSweep, listSweeps, type SweepSummary } from "../lib/api";
+import { cleanupSweeps, deleteSweep, listSweeps, type SweepSummary } from "../lib/api";
 import { Cmul8Mark } from "./Cmul8Mark";
 import { IconPlay } from "./Icons";
 
@@ -45,6 +45,20 @@ export function SweepsHistory({
           <Stat label="Total" value={rollup.total} />
           <Stat label="Verified" value={rollup.verified} accent="accent" />
           <Stat label="Findings" value={rollup.totalFindings} />
+          {rollup.failed > 0 && (
+            <button
+              onClick={async () => {
+                if (!confirm(`Clear ${rollup.failed} failed sweep${rollup.failed === 1 ? "" : "s"}?`)) return;
+                await cleanupSweeps("failed");
+                const fresh = await listSweeps();
+                setRows(Array.isArray(fresh) ? fresh : []);
+              }}
+              className="text-2xs mono uppercase tracking-wider px-2 py-1 rounded border border-paper-300 hover:border-sev-critical hover:text-sev-critical text-paper-600 transition-colors"
+              title="Delete sweeps stuck in a failed state (e.g. killed mid-run by a deploy)"
+            >
+              Clear {rollup.failed} failed
+            </button>
+          )}
         </div>
       </header>
 
@@ -230,6 +244,7 @@ function summarize(rows: SweepSummary[]) {
   const safe = Array.isArray(rows) ? rows : [];
   const total = safe.length;
   const verified = safe.filter((r) => r.status === "finished").length;
+  const failed = safe.filter((r) => r.status === "failed").length;
   const totalFindings = safe.reduce((s, r) => s + (r.findings_count || 0), 0);
   // We don't have a per-severity breakdown from /sweeps; approximate:
   // treat each finding as "high" for now — Phase 2 will thread severity into
@@ -243,7 +258,7 @@ function summarize(rows: SweepSummary[]) {
     medium: (sev.medium / sum) * 100,
     low: (sev.low / sum) * 100,
   };
-  return { total, verified, totalFindings, sev, sevPct };
+  return { total, verified, failed, totalFindings, sev, sevPct };
 }
 
 function relativeTime(iso: string): string {
