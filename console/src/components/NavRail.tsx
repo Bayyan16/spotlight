@@ -43,12 +43,7 @@ export function NavRail({
         </a>
       </div>
 
-      <div className="px-4 pb-3 flex items-center gap-2 text-2xs text-paper-500 mono uppercase tracking-wider">
-        <kbd className="border border-paper-300 rounded px-1 py-0.5 bg-white text-paper-600">⌘K</kbd>
-        <span className="text-paper-400">command</span>
-      </div>
-
-      <div className="px-4 pb-1 text-2xs uppercase tracking-wider text-paper-500 mono">Workspace</div>
+      <div className="px-4 pb-1 pt-2 text-2xs uppercase tracking-wider text-paper-500 mono">Workspace</div>
       <nav className="px-2 space-y-0.5 text-sm">
         <NavItem k="home" active={active} onSelect={onSelect} icon={<IconHome />} label="Sweeps history" shortcut="1" />
         <NavItem

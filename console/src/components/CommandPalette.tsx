@@ -98,7 +98,7 @@ export function CommandPalette({
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-paper-900/25 backdrop-blur-sm animate-fade-in grid place-items-start pt-[15vh]"
+      className="fixed inset-0 z-50 bg-paper-900/25 backdrop-blur-sm animate-fade-in flex items-start justify-center pt-[15vh]"
       onClick={onClose}
     >
       <div

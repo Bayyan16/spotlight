@@ -10,6 +10,7 @@ import { Cmul8Mark } from "./components/Cmul8Mark";
 import { IconPlay } from "./components/Icons";
 import {
   getFindings,
+  listSweeps,
   listTargets,
   openSweepStream,
   startSweep,
@@ -30,11 +31,18 @@ export default function App() {
   const [running, setRunning] = useState(false);
   const [activeFinding, setActiveFinding] = useState<string | null>(null);
   const [historyRefresh, setHistoryRefresh] = useState(0);
+  const [historyCount, setHistoryCount] = useState<number>(0);
   const [palette, setPalette] = useState(false);
 
   useEffect(() => {
     listTargets().then(setTargets).catch(() => setTargets([]));
   }, []);
+
+  useEffect(() => {
+    listSweeps()
+      .then((s) => setHistoryCount(Array.isArray(s) ? s.length : 0))
+      .catch(() => setHistoryCount(0));
+  }, [historyRefresh]);
 
   useEffect(() => {
     if (!sweepId) return;
@@ -152,7 +160,14 @@ export default function App() {
                 />
               )}
               {sweepId && <LiveSweepPanel events={events} running={running} />}
-              {!sweepId && <EmptySweep onStart={() => onStart()} />}
+              {!sweepId && (
+                <EmptySweep
+                  onStart={() => onStart()}
+                  onViewHistory={() => setNav("home")}
+                  hasHistory={historyCount > 0}
+                  historyCount={historyCount}
+                />
+              )}
             </>
           )}
 
@@ -202,7 +217,52 @@ function EmptyDetail() {
   );
 }
 
-function EmptySweep({ onStart }: { onStart: () => void }) {
+function EmptySweep({
+  onStart,
+  onViewHistory,
+  hasHistory,
+  historyCount,
+}: {
+  onStart: () => void;
+  onViewHistory: () => void;
+  hasHistory: boolean;
+  historyCount: number;
+}) {
+  if (hasHistory) {
+    return (
+      <div className="flex-1 min-w-0 grid place-items-center bg-paper-50">
+        <div className="text-center max-w-md px-6">
+          <div className="mb-5 flex justify-center opacity-80">
+            <Cmul8Mark size={40} />
+          </div>
+          <h1 className="text-lg text-paper-900 font-semibold tracking-tight">Ready for the next sweep</h1>
+          <p className="text-sm text-paper-600 mt-1">
+            Nothing running right now. Pick a target from the top bar or paste a git URL.
+          </p>
+          <div className="mt-5 flex items-center justify-center gap-2">
+            <button
+              onClick={onStart}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-accent text-white text-xs uppercase tracking-wider mono hover:brightness-95 hover:scale-[1.02] active:scale-[0.98] transition-transform shadow-card"
+            >
+              <IconPlay />
+              New sweep
+            </button>
+            <button
+              onClick={onViewHistory}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded border border-paper-300 text-paper-700 hover:text-paper-900 hover:border-paper-400 text-xs uppercase tracking-wider mono transition-colors"
+            >
+              History · {historyCount}
+            </button>
+          </div>
+          <div className="mt-4 text-2xs mono uppercase tracking-wider text-paper-500">
+            <kbd className="border border-paper-300 rounded px-1 py-0.5 bg-white mr-1">⌘</kbd>
+            <kbd className="border border-paper-300 rounded px-1 py-0.5 bg-white">↵</kbd>
+            <span className="ml-1">start</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="flex-1 min-w-0 grid place-items-center bg-paper-50">
       <div className="text-center max-w-md px-6">
