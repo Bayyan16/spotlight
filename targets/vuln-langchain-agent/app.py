@@ -1,4 +1,4 @@
-"""Vulnerable LangChain-style agent — seeded target for the Cognition Sweep.
+"""Vulnerable LangChain-style agent — seeded target for the Agentic Sweep.
 
 Three planted OWASP-LLM Top-10 weaknesses:
 

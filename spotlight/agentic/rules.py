@@ -1,6 +1,6 @@
-"""Regex + heuristic patterns for the Cognition Sweep (OWASP LLM Top 10).
+"""Regex + heuristic patterns for the Agentic Sweep (OWASP LLM Top 10).
 
-These are the source→sink and shape patterns that CognitionScanner walks over.
+These are the source→sink and shape patterns that AgenticScanner walks over.
 Each entry pairs:
 
   * a compiled regex or lightweight matcher

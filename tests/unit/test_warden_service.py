@@ -92,8 +92,8 @@ def test_issue_capability_verifier_carries_token_id():
 
 def test_issue_capability_generic_role_gets_safe_defaults():
     warden = WardenService()
-    tok = warden.issue_capability("cognition-analyst", finding_id=None)
-    assert tok.agent_role == "cognition-analyst"
+    tok = warden.issue_capability("agentic-analyst", finding_id=None)
+    assert tok.agent_role == "agentic-analyst"
     assert tok.egress_allowed is False
     assert hasattr(tok, "token_id")
 

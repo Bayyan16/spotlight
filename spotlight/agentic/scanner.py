@@ -1,11 +1,11 @@
-"""CognitionScanner — the top-level entrypoint for the Cognition Sweep.
+"""AgenticScanner — the top-level entrypoint for the Agentic Sweep.
 
 Runs `find_agentic_dataflow` (the AST-driven prompt-injection / output-handling
 / excessive-agency detector) AND additional regex-scoped detectors for the
 patterns that don't need a full data-flow slice (system-prompt-leak,
 rag-surface, denial-of-wallet).
 
-Returns a list of `CognitionFinding` — a thin wrapper around AgenticDataFlow
+Returns a list of `AgenticFinding` — a thin wrapper around AgenticDataFlow
 that's what Recon merges into `agentic_signals`.
 """
 from __future__ import annotations
@@ -21,7 +21,7 @@ from .dataflow import AgenticDataFlow, find_agentic_dataflow
 
 
 @dataclass
-class CognitionFinding:
+class AgenticFinding:
     """One agentic signal — same shape as AgenticDataFlow, plus a `slice`
     accessor so the orchestrator's Investigator fan-out can consume it
     identically to a classic sg_core slice."""
@@ -38,7 +38,7 @@ class CognitionFinding:
     surface: str = "agentic"
 
     @classmethod
-    def from_dataflow(cls, df: AgenticDataFlow) -> "CognitionFinding":
+    def from_dataflow(cls, df: AgenticDataFlow) -> "AgenticFinding":
         return cls(
             file=df.file,
             function=df.function,
@@ -67,19 +67,19 @@ class CognitionFinding:
         ).to_dict()
 
 
-class CognitionScanner:
+class AgenticScanner:
     """Run the OWASP-LLM rule packs over a target repo.
 
     Usage:
-        scanner = CognitionScanner()
+        scanner = AgenticScanner()
         findings = scanner.scan(repo_path, code_files)
 
     `code_files` is the pre-filtered file list Recon already computed —
     passing it in avoids a second rglob walk.
     """
 
-    def scan(self, repo_path: Path, code_files: list[Path]) -> list[CognitionFinding]:
-        results: list[CognitionFinding] = []
+    def scan(self, repo_path: Path, code_files: list[Path]) -> list[AgenticFinding]:
+        results: list[AgenticFinding] = []
 
         # 1) AST data-flow rules: LLM01 prompt injection, LLM05 output
         #    handling, LLM06 excessive agency.
@@ -90,7 +90,7 @@ class CognitionScanner:
                 # `reachable_slices`. We keep them out of `agentic_signals`
                 # so the orchestrator fan-out doesn't waste budget on them.
                 continue
-            results.append(CognitionFinding.from_dataflow(df))
+            results.append(AgenticFinding.from_dataflow(df))
 
         # 2) File-level regex rules that don't need dataflow.
         for f in code_files:
@@ -126,15 +126,15 @@ _SYSTEM_MSG_BLOCKS = re.compile(
 )
 
 
-def _scan_system_prompt_leak(path: Path, text: str) -> list[CognitionFinding]:
-    out: list[CognitionFinding] = []
+def _scan_system_prompt_leak(path: Path, text: str) -> list[AgenticFinding]:
+    out: list[AgenticFinding] = []
     for m in _SYSTEM_MSG_BLOCKS.finditer(text):
         content = m.group("content1") or m.group("content2") or m.group("content3") or ""
         line = text.count("\n", 0, m.start()) + 1
         for pat in rules.SECRET_LITERAL_PATTERNS:
             if pat.search(content):
                 out.append(
-                    CognitionFinding(
+                    AgenticFinding(
                         file=str(path),
                         function="<module>",
                         source="system-prompt literal",
@@ -158,7 +158,7 @@ def _scan_system_prompt_leak(path: Path, text: str) -> list[CognitionFinding]:
         if any(u in expr for u in rules.UNTRUSTED_PY):
             line = text.count("\n", 0, m.start()) + 1
             out.append(
-                CognitionFinding(
+                AgenticFinding(
                     file=str(path),
                     function="<module>",
                     source="request.* (untrusted)",
@@ -176,8 +176,8 @@ def _scan_system_prompt_leak(path: Path, text: str) -> list[CognitionFinding]:
 # LLM08 — RAG surface: vector store loaded from an env-var URL not on allowlist
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _scan_rag_surface(path: Path, text: str) -> list[CognitionFinding]:
-    out: list[CognitionFinding] = []
+def _scan_rag_surface(path: Path, text: str) -> list[AgenticFinding]:
+    out: list[AgenticFinding] = []
     for needle in rules.VECTOR_STORE_NEEDLES:
         # Look for the ctor call block with balanced-ish args.
         idx = 0
@@ -196,7 +196,7 @@ def _scan_rag_surface(path: Path, text: str) -> list[CognitionFinding]:
                 continue
             line = text.count("\n", 0, i) + 1
             out.append(
-                CognitionFinding(
+                AgenticFinding(
                     file=str(path),
                     function="<module>",
                     source="env-var URL (unpinned)",
@@ -230,11 +230,11 @@ def _capture_call_block(text: str, open_paren_idx: int) -> str:
 # LLM10 — denial of wallet: LLM call inside a loop with no budget knob
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _scan_denial_of_wallet(path: Path, text: str) -> list[CognitionFinding]:
+def _scan_denial_of_wallet(path: Path, text: str) -> list[AgenticFinding]:
     """AST-walk: any `for`/`while` whose body contains an LLM sink call AND
     no rate-limit / max-iter / sleep marker.
     """
-    out: list[CognitionFinding] = []
+    out: list[AgenticFinding] = []
     try:
         tree = ast.parse(text, filename=str(path))
     except Exception:
@@ -257,7 +257,7 @@ def _scan_denial_of_wallet(path: Path, text: str) -> list[CognitionFinding]:
             continue
         fn_name = _enclosing_function_name(tree, node) or "<module>"
         out.append(
-            CognitionFinding(
+            AgenticFinding(
                 file=str(path),
                 function=fn_name,
                 source="loop",
@@ -292,8 +292,8 @@ def _enclosing_function_body(text: str, tree: ast.Module, target: ast.AST) -> st
     return None
 
 
-def _dedup(items: list[CognitionFinding]) -> list[CognitionFinding]:
-    seen: dict[tuple, CognitionFinding] = {}
+def _dedup(items: list[AgenticFinding]) -> list[AgenticFinding]:
+    seen: dict[tuple, AgenticFinding] = {}
     for f in items:
         key = (f.file, f.function, f.class_, f.line, f.sink)
         if key not in seen:

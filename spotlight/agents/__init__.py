@@ -1,5 +1,5 @@
 from .roles import (
-    CognitionAnalyst,
+    AgenticAnalyst,
     Investigator,
     Reducer,
     Remediator,
@@ -11,7 +11,7 @@ from .roles import (
 __all__ = [
     "Recon",
     "Investigator",
-    "CognitionAnalyst",
+    "AgenticAnalyst",
     "Reducer",
     "Reproducer",
     "Remediator",

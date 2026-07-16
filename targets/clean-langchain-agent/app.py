@@ -2,7 +2,7 @@
 
 Each of the three planted issues in the vulnerable fixture has an escaped /
 scope-restricted / validated equivalent here. If the scanner fires on this
-file, the Cognition rule packs are too loose and need tightening.
+file, the Agentic rule packs are too loose and need tightening.
 """
 from __future__ import annotations
 

@@ -120,13 +120,14 @@ export function FindingDetail({ finding, sweepId }: { finding: Finding; sweepId?
 
         {finding.evidence.threat_model && (
           <Panel title="Threat model in effect">
-            <div className="mb-3 text-xs text-paper-700">
-              This finding was judged under the threat model{" "}
-              <span className="mono uppercase tracking-wider text-2xs text-accent bg-accent-soft border border-accent/30 rounded px-1.5 py-0.5 mx-0.5">
+            <div className="mb-3 text-xs text-paper-700 leading-relaxed">
+              Judged under the{" "}
+              <span className="mono uppercase tracking-wider text-2xs text-accent bg-accent-soft border border-accent/30 rounded px-1.5 py-0.5">
                 {finding.evidence.threat_model.profile}
               </span>{" "}
-              (author:{" "}
-              <span className="mono">{finding.evidence.threat_model.author}</span>).
+              profile. The threat model below was authored by{" "}
+              <span className="mono">{finding.evidence.threat_model.author}</span> at Recon time —
+              it describes *what could go wrong at this repo*.
               {finding.evidence.threat_model.stack?.language && (
                 <>
                   {" "}Stack detected:{" "}

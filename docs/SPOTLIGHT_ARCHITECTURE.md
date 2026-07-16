@@ -153,7 +153,7 @@ agent gets to bypass them.
 ```
     ┌─────────┐   Reads every .py/.js/.ts file. Builds Code
     │  RECON  │   Graph (AST + taint propagation). Runs the
-    │         │   Cognition Scanner. Emits data-flow slices.
+    │         │   Agentic Scanner. Emits data-flow slices.
     └────┬────┘   Warden scans README + comments for prompt
          │       injection attempts against Spotlight itself.
          ▼           OUTPUT: threat_model, signals, warden_flags
@@ -161,7 +161,7 @@ agent gets to bypass them.
     │INVESTI- │   ThreadPoolExecutor spawns K Investigators in
     │  GATE   │   parallel (K = Profile.max_agents). Each judges
     │         │   ONE data-flow slice through the LLM: is this
-    └────┬────┘   a real vuln? Cognition Analyst does the same
+    └────┬────┘   a real vuln? Agentic Analyst does the same
          │       for agentic-surface signals.
          ▼           OUTPUT: candidates
     ┌─────────┐
@@ -218,7 +218,7 @@ agent gets to bypass them.
   │ Investigator  │ Code Graph slice   │ candidate  │ no         │
   │ (× K parallel)│ (RO)               │ .json      │ (LLM only) │
   ├───────────────┼────────────────────┼────────────┼────────────┤
-  │ Cognition     │ Agentic-surface    │ candidate  │ no         │
+  │ Agentic     │ Agentic-surface    │ candidate  │ no         │
   │ Analyst (× J) │ signals (RO)       │ .json      │ (LLM only) │
   ├───────────────┼────────────────────┼────────────┼────────────┤
   │ Reducer +     │ candidates         │ findings,  │ no         │
@@ -331,7 +331,7 @@ agent gets to bypass them.
         │         │        │ list)   │        │         │
         └─────────┘        └─────────┘        └─────────┘
         SPOT-0003          SPOT-0004          SPOT-0005
-        cognition          cognition          code
+        agentic          agentic          code
 
     The Chainer emits one ExploitPath per matching chain.
     Every step's finding_id is preserved so the analyst can drill
@@ -388,9 +388,9 @@ agent gets to bypass them.
 - **Console** (`console/`) — React + Tailwind SPA. Board (compact scan list + area chart), Live Sweep (phase tracker + swarm grid + event log + **Threat Model panel** with untrusted-source ← / high-impact-sink → chips), Findings inbox, Finding detail with confidence dial + evidence + **Presence panel** (cross-surface reach across other sweeps) + sandbox card + Attestation link.
 - **API** (`spotlight/api/`) — FastAPI. `/sweeps`, `/findings/{id}/presence`, `/paths/{sweep_id}`, `/taxonomy`, `/attestations/{id}?format=json|md|pdf`, `/profiles`, WebSocket hub for the live event stream.
 - **Orchestrator** (`spotlight/orchestrator/`) — the pipeline. Phase state machine (rejects backwards jumps as `sweep.phase.illegal`), budget guard (tokens + wall-clock caps → `sweep.budget.exceeded` → graceful jump to Attest), fan-out via `ThreadPoolExecutor`. Includes the **Chainer** (`chainer.py`) that composes cross-surface Exploit Paths.
-- **Agents** (`spotlight/agents/`) — Recon, Investigator, CognitionAnalyst, Reducer, Reproducer, Remediator, Verifier. Each has ONE job, an issued CapabilityToken, and a strict output schema.
+- **Agents** (`spotlight/agents/`) — Recon, Investigator, AgenticAnalyst, Reducer, Reproducer, Remediator, Verifier. Each has ONE job, an issued CapabilityToken, and a strict output schema.
 - **sg-core** (`spotlight/sg_core/`) — the code-graph substrate. AST parser, transitive taint propagation, source→sink reachability, sanitizer detection for parameterized queries + HTML escape. **Runs on Python + JS/TS/JSX/TSX**. Also hosts the **hardcoded-secrets scanner** which walks the tree using the redaction detectors.
-- **Cognition** (`spotlight/cognition/`) — the agentic-surface scanner. Detects prompt-injection surface (LLM01), excessive agency (LLM06), improper output handling (LLM05), system-prompt leak (LLM07), RAG-store weaknesses (LLM08), denial-of-wallet (LLM10). Works over LangChain / OpenAI / Anthropic patterns in Python + JS/TS.
+- **Agentic** (`spotlight/agentic/`) — the agentic-surface scanner. Detects prompt-injection surface (LLM01), excessive agency (LLM06), improper output handling (LLM05), system-prompt leak (LLM07), RAG-store weaknesses (LLM08), denial-of-wallet (LLM10). Works over LangChain / OpenAI / Anthropic patterns in Python + JS/TS.
 - **Consensus** (`spotlight/consensus/`) — the promotion decision layer. `ConsensusKernel.promote(candidate, evidence[]) → TierDecision`. Independence check (same-model×2 = one vote). **Adjudicator** — a fresh-context LLM step when evidence items disagree.
 - **Sandbox** (`spotlight/sandbox/`) — Modal-backed isolated runner. `CapabilityToken` carries per-job security policy. Subprocess fallback for dev/tests.
 - **Warden** (`spotlight/warden/`) — control plane. **Injection detector** (bidi tricks, HTML-comment smuggling, zero-width, YAML role: override, "ignore your instructions" variants). **Backdoor scan** on every fix diff (TLS-verify disabled, auth removed, test skipped, permission widened, secret logged, new outbound URL to non-local host, precision-guarded against re-emitting removed content). Envelope wrap for target-derived text. Capability token issuance.
@@ -417,7 +417,7 @@ Numbered so you can follow it.
 - Walks the repo, gathering all `.py`, `.js`, `.ts`, `.jsx`, `.tsx` files (skipping `node_modules`, `.venv`, `dist`).
 - Builds a **Code Graph**: AST parse, taint propagation. It computes every source→sink flow slice. For each source (`req.params.username`, `request.args.get("q")`, function params, `req.body.foo`), it traces where it flows. When it hits a dangerous sink (`cursor.execute`, `child_process.exec`, `eval`, `db.query`, `.innerHTML`, `fetch()`), it emits a **DataFlowSlice**.
 - Marks slices as **sanitized** when the flow goes through a known-safe pattern (parameterized SQL query, HTML escape function). Sanitized slices are NOT emitted as signals.
-- Runs the **Cognition scanner** in parallel: detects LangChain / OpenAI / RAG / tool patterns.
+- Runs the **Agentic scanner** in parallel: detects LangChain / OpenAI / RAG / tool patterns.
 - Calls the LLM (Moonshot Kimi) to classify the stack and produce a **threat model** describing untrusted sources + high-impact sinks + detected framework.
 - **Warden runs an injection detector** on every top-of-file comment and every `README.md` — if the target itself is trying to prompt-inject Spotlight ("ignore your instructions"), we catch it and refuse.
 - Emits `agent.finished` and `recon.threat_model` events.
@@ -688,7 +688,7 @@ The public key is served at `/verify-key`. Anyone can verify the chain of custod
 - All of Phase 1 + Phase 1.5.
 - **Tranche A** — real swarm, Modal sandbox, JS/TS, redaction pipeline, git ops, budget guards + phase state machine. **Complete.**
 - **Tranche B batch 1** — Warden v1 (injection detector + backdoor scan + envelope wrap), Threat-model UI, Cross-surface presence, Non-repudiation ledger. **Complete.**
-- **Tranche B batch 2** — Consensus Kernel v1 with adjudicator, Cognition Sweep + Analyst (OWASP LLM Top 10), Cross-surface Exploit Path Chainer, Attestation v2 Reporter (JSON + Markdown + PDF). **Complete.**
+- **Tranche B batch 2** — Consensus Kernel v1 with adjudicator, Agentic Sweep + Analyst (OWASP LLM Top 10), Cross-surface Exploit Path Chainer, Attestation v2 Reporter (JSON + Markdown + PDF). **Complete.**
 - **Console UI** — Board (cleanui1 aesthetic + area chart + 4 KPI pills), Live Sweep (phase tracker + swarm grid + event log + Threat Model panel), Findings inbox, Finding detail with Presence + Sandbox + Threat model + Audit + **Attestation export buttons**, **Exploit Paths view** (cross-surface highlighted), **Warden view**, Command palette (⌘K), keyboard shortcuts (1-6 for nav, ⌘↵ for Start Sweep). **Complete.**
 - **Backend depth** — 346 backend tests + 11 frontend tests, all passing on `main`. Live at https://spotlight-api-production-ff76.up.railway.app/.
 
@@ -727,7 +727,7 @@ Every fixture ships with a `ground_truth.json` declaring the expected findings s
 | `clean-node-api` | Precision negative for JS | 0 findings |
 | `leaky-app` | Redaction pipeline test target · hardcoded creds | 2 verified secrets |
 | `injected-readme` | Warden self-defense fixture · README injection payload | 0 code findings + ≥2 Warden flags |
-| `vuln-langchain-agent` | Cognition Sweep baseline · LangChain agent with 3 issues | 3 findings (LLM01, LLM05, LLM06) |
+| `vuln-langchain-agent` | Agentic Sweep baseline · LangChain agent with 3 issues | 3 findings (LLM01, LLM05, LLM06) |
 | `clean-langchain-agent` | Precision negative for the agentic surface | 0 findings |
 | `kitchen-sink` | **The demo** — all surfaces at once | 6 findings + 6 exploit paths + 4 Warden flags |
 
@@ -763,9 +763,9 @@ Every fixture ships with a `ground_truth.json` declaring the expected findings s
 
 **Chainer** — the component (`spotlight/orchestrator/chainer.py`) that composes candidates into ExploitPaths. Rules: `LLM01+LLM06` → cross-surface, `LLM05+eval/cmdi` → same-surface, `secrets+any` → credential+primary pairing.
 
-**Cognition Analyst** — the agent that scans the agentic surface.
+**Agentic Analyst** — the agent that scans the agentic surface.
 
-**Cognition Scanner** — the sg-core sibling (`spotlight/cognition/`) that recognizes LangChain / OpenAI / Anthropic / RAG patterns statically and emits AgenticDataFlow slices.
+**Agentic Scanner** — the sg-core sibling (`spotlight/agentic/`) that recognizes LangChain / OpenAI / Anthropic / RAG patterns statically and emits AgenticDataFlow slices.
 
 **Consensus Kernel** — the promotion decision layer.
 

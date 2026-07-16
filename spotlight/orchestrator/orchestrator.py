@@ -124,15 +124,15 @@ def _build_evidence(
                 detail=evidence_used,
             )
         )
-    # Tranche B3 — cognition sweep slices count as static-analysis facts too.
-    # The CognitionScanner produces AST-derived agentic slices with the same
+    # Tranche B3 — agentic sweep slices count as static-analysis facts too.
+    # The AgenticScanner produces AST-derived agentic slices with the same
     # "reachable from source to sink" semantics as the code-graph; the
     # ConsensusKernel treats them identically for tier decisions.
-    if "cognition:agentic-source->llm-sink" in evidence_used:
+    if "agentic:source->llm-sink" in evidence_used:
         evidence.append(
             EvidenceItem(
                 modality="static_analysis_fact",
-                origin={"tool": "cognition-scanner", "context_id": f"{sweep_id}:cognition"},
+                origin={"tool": "agentic-scanner", "context_id": f"{sweep_id}:agentic"},
                 result="confirmed",
                 detail=evidence_used,
             )
@@ -342,7 +342,7 @@ class Orchestrator:
             s for s in slices if s["sink"]["class"] in allowed_classes
         ] if allowed_classes else slices
 
-        # Agentic slices from the Cognition Sweep. Recon puts them on
+        # Agentic slices from the Agentic Sweep. Recon puts them on
         # `agentic_signals`; the Investigator prompt reads the same
         # `source`/`sink` sub-object shape as a classic slice, but each
         # agentic slice carries a `surface: "agentic"` marker so the model
@@ -380,7 +380,7 @@ class Orchestrator:
 
         def _investigate_agentic(idx_slice):
             """Same Investigator, different slice shape. The worker name
-            uses `cog-N` so the Console can visually separate cognition
+            uses `cog-N` so the Console can visually separate agentic
             work from classic AppSec fan-out."""
             idx, slice_ = idx_slice
             emit(
@@ -396,7 +396,7 @@ class Orchestrator:
                 return None
             existing = judgment.get("evidence_used", []) or []
             judgment["evidence_used"] = [
-                "cognition:agentic-source->llm-sink",
+                "agentic:source->llm-sink",
                 slice_.get("reason", ""),
                 *existing,
             ]

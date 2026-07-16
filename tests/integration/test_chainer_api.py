@@ -42,7 +42,7 @@ def _run_sweep(client: TestClient, repo: str) -> str:
 
 
 def test_paths_endpoint_returns_empty_list_when_no_chains():
-    """vuln-bank-api produces exactly one SQLi finding — no cognition,
+    """vuln-bank-api produces exactly one SQLi finding — no agentic,
     no secrets → no chains. Endpoint must return `[]`, not 404."""
     client = TestClient(app)
     sweep_id = _run_sweep(client, "vuln-bank-api")

@@ -1,7 +1,7 @@
 """Agentic data-flow slice helper.
 
 Mirrors the shape of `sg_core.DataFlowSlice` so downstream Investigator /
-Consensus code can treat cognition findings and classic-code findings
+Consensus code can treat agentic findings and classic-code findings
 identically. The only extra fields we add are:
 
   * `class_` — canonical taxonomy id (e.g. "prompt-injection")
@@ -79,7 +79,7 @@ def _source_text(source: str, node: ast.AST) -> str:
 
 
 def find_agentic_dataflow(files: list[Path]) -> list[AgenticDataFlow]:
-    """Walk every Python file and emit AgenticDataFlow slices for cognition
+    """Walk every Python file and emit AgenticDataFlow slices for agentic
     surface. Non-Python files are skipped (JS/TS agentic surface is a Phase-3
     upgrade — LangChain-JS support). Files that can't be parsed are skipped
     silently so a malformed target can't nuke the whole sweep.

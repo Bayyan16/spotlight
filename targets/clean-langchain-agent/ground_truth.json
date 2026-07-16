@@ -15,5 +15,5 @@
       "reason": "llm_response.content is validated against _ALLOWED_ANSWERS, never shell-executed"
     }
   ],
-  "notes": "Precision negative — zero cognition findings expected."
+  "notes": "Precision negative — zero agentic findings expected."
 }

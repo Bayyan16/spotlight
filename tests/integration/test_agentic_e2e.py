@@ -1,4 +1,4 @@
-"""End-to-end Cognition Sweep integration tests.
+"""End-to-end Agentic Sweep integration tests.
 
 Runs a full Orchestrator sweep over the vuln-langchain-agent fixture and
 asserts:
@@ -60,7 +60,7 @@ def test_clean_langchain_agent_produces_zero_agentic_findings(tmp_path):
 
 
 def test_recon_output_carries_agentic_signals(tmp_path):
-    """The Cognition Sweep runs inside Recon; its output must land on
+    """The Agentic Sweep runs inside Recon; its output must land on
     `agentic_signals` so the orchestrator's fan-out can consume it."""
     from spotlight.agents import Recon
     from spotlight.agents.model import MockModelClient
@@ -77,12 +77,12 @@ def test_recon_output_carries_agentic_signals(tmp_path):
         assert sig.get("owasp_llm")
 
 
-def test_cognition_analyst_role_returns_findings():
-    """CognitionAnalyst is no longer a placeholder — it wraps the scanner
+def test_agentic_analyst_role_returns_findings():
+    """AgenticAnalyst is no longer a placeholder — it wraps the scanner
     and returns real dict findings the orchestrator can consume."""
-    from spotlight.agents import CognitionAnalyst
+    from spotlight.agents import AgenticAnalyst
 
-    findings = CognitionAnalyst().run(VULN)
-    assert findings, "CognitionAnalyst should return non-empty findings for the vuln fixture"
+    findings = AgenticAnalyst().run(VULN)
+    assert findings, "AgenticAnalyst should return non-empty findings for the vuln fixture"
     classes = {f["class_"] for f in findings}
     assert "prompt-injection" in classes

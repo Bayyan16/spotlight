@@ -73,7 +73,7 @@ def test_chainer_stable_across_reducer_output_shape():
             "severity": "high",
             "repo": "acme",
             "location": {"file": "acme/README.md", "line": 5, "function": "prompt"},
-            "evidence_used": ["cognition:agentic-source->llm-sink"],
+            "evidence_used": ["agentic:agentic-source->llm-sink"],
         },
         {
             "id": "CAND-2",

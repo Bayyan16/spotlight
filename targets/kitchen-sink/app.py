@@ -27,7 +27,7 @@ import requests
 from flask import Flask, jsonify, request
 
 # LangChain imports are guarded so the module loads even in a stripped
-# sandbox (Spotlight's Modal Reproducer). The Cognition scanner does STATIC
+# sandbox (Spotlight's Modal Reproducer). The Agentic scanner does STATIC
 # text analysis — the mere presence of the import + usage names is what
 # triggers detection. Runtime is independent.
 try:

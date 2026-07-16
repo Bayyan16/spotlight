@@ -1,4 +1,4 @@
-"""CognitionScanner unit tests — OWASP LLM Top 10 rule packs.
+"""AgenticScanner unit tests — OWASP LLM Top 10 rule packs.
 
 Two-level coverage:
 
@@ -18,8 +18,8 @@ from pathlib import Path
 
 import pytest
 
-from spotlight.cognition import CognitionFinding, CognitionScanner, find_agentic_dataflow
-from spotlight.cognition import rules
+from spotlight.agentic import AgenticFinding, AgenticScanner, find_agentic_dataflow
+from spotlight.agentic import rules
 
 ROOT = Path(__file__).resolve().parents[2]
 VULN_FIXTURE = ROOT / "targets" / "vuln-langchain-agent"
@@ -35,7 +35,7 @@ def _py_files(root: Path) -> list[Path]:
 
 
 def test_vuln_fixture_produces_three_classes():
-    findings = CognitionScanner().scan(VULN_FIXTURE, _py_files(VULN_FIXTURE))
+    findings = AgenticScanner().scan(VULN_FIXTURE, _py_files(VULN_FIXTURE))
     classes = {f.class_ for f in findings}
     assert "prompt-injection" in classes, (
         f"expected prompt-injection; got classes={classes} findings={[f.__dict__ for f in findings]}"
@@ -50,14 +50,14 @@ def test_vuln_fixture_produces_three_classes():
 
 
 def test_vuln_fixture_owasp_llm_codes_are_set():
-    findings = CognitionScanner().scan(VULN_FIXTURE, _py_files(VULN_FIXTURE))
+    findings = AgenticScanner().scan(VULN_FIXTURE, _py_files(VULN_FIXTURE))
     codes = {f.owasp_llm for f in findings if f.owasp_llm}
     for expected in ("LLM01", "LLM05", "LLM06"):
         assert expected in codes, f"missing {expected} in {codes}"
 
 
 def test_clean_fixture_produces_zero_findings():
-    findings = CognitionScanner().scan(CLEAN_FIXTURE, _py_files(CLEAN_FIXTURE))
+    findings = AgenticScanner().scan(CLEAN_FIXTURE, _py_files(CLEAN_FIXTURE))
     assert findings == [], (
         "clean fixture leaked findings: "
         + str([f.__dict__ for f in findings])
@@ -65,7 +65,7 @@ def test_clean_fixture_produces_zero_findings():
 
 
 def test_findings_are_serializable_and_carry_surface_agentic():
-    findings = CognitionScanner().scan(VULN_FIXTURE, _py_files(VULN_FIXTURE))
+    findings = AgenticScanner().scan(VULN_FIXTURE, _py_files(VULN_FIXTURE))
     for f in findings:
         d = f.to_dict()
         assert d["surface"] == "agentic"
@@ -78,10 +78,10 @@ def test_findings_are_serializable_and_carry_surface_agentic():
 # Per-rule positive / negative tests
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _scan_snippet(snippet: str, tmp_path: Path, name: str = "snippet.py") -> list[CognitionFinding]:
+def _scan_snippet(snippet: str, tmp_path: Path, name: str = "snippet.py") -> list[AgenticFinding]:
     p = tmp_path / name
     p.write_text(textwrap.dedent(snippet))
-    return CognitionScanner().scan(tmp_path, [p])
+    return AgenticScanner().scan(tmp_path, [p])
 
 
 def test_prompt_injection_fires_on_raw_input(tmp_path):
@@ -299,7 +299,7 @@ def test_is_sanitized_detects_common_wrappers():
 def test_agentic_dataflow_shape_matches_dataflowslice():
     """The AgenticDataFlow.to_dict must be a superset of DataFlowSlice.to_dict
     so the Investigator can consume both identically."""
-    findings = CognitionScanner().scan(VULN_FIXTURE, _py_files(VULN_FIXTURE))
+    findings = AgenticScanner().scan(VULN_FIXTURE, _py_files(VULN_FIXTURE))
     assert findings, "expected at least one finding"
     d = findings[0].to_dict()
     # Classic DataFlowSlice contract
@@ -316,7 +316,7 @@ def test_agentic_dataflow_shape_matches_dataflowslice():
 
 
 def test_agentic_dataflow_is_import_stable():
-    from spotlight.cognition import AgenticDataFlow
+    from spotlight.agentic import AgenticDataFlow
 
     df = AgenticDataFlow(
         file="x.py", function="f", source="req.args", sink="chain.invoke",
@@ -444,7 +444,7 @@ def test_scanner_survives_unparseable_file(tmp_path):
         "def go():\n"
         "    LLMChain().invoke({'input': request.args.get('q')})\n"
     )
-    findings = CognitionScanner().scan(tmp_path, [bad, good])
+    findings = AgenticScanner().scan(tmp_path, [bad, good])
     classes = {f.class_ for f in findings}
     assert "prompt-injection" in classes
 
@@ -452,7 +452,7 @@ def test_scanner_survives_unparseable_file(tmp_path):
 def test_scanner_ignores_non_python_files(tmp_path):
     js = tmp_path / "app.js"
     js.write_text("const q = req.body.q; chain.invoke({input: q});\n")
-    findings = CognitionScanner().scan(tmp_path, [js])
+    findings = AgenticScanner().scan(tmp_path, [js])
     # JS/TS agentic surface is Phase-3 scope — MVP scanner ignores non-py.
     assert findings == []
 
@@ -471,18 +471,18 @@ def test_scanner_dedupes_identical_findings(tmp_path):
     assert len(pi) == 1, f"expected 1 dedup'd finding; got {len(pi)}"
 
 
-def test_cognition_finding_carries_line_number(tmp_path):
-    findings = CognitionScanner().scan(VULN_FIXTURE, _py_files(VULN_FIXTURE))
+def test_agentic_finding_carries_line_number(tmp_path):
+    findings = AgenticScanner().scan(VULN_FIXTURE, _py_files(VULN_FIXTURE))
     assert all(f.line > 0 for f in findings), "every finding must carry a line number"
 
 
 def test_owasp_llm_codes_are_llm_prefixed(tmp_path):
-    findings = CognitionScanner().scan(VULN_FIXTURE, _py_files(VULN_FIXTURE))
+    findings = AgenticScanner().scan(VULN_FIXTURE, _py_files(VULN_FIXTURE))
     for f in findings:
         assert f.owasp_llm.startswith("LLM"), f"bad owasp_llm code {f.owasp_llm!r} on {f.class_}"
 
 
 def test_reason_string_is_non_empty(tmp_path):
-    findings = CognitionScanner().scan(VULN_FIXTURE, _py_files(VULN_FIXTURE))
+    findings = AgenticScanner().scan(VULN_FIXTURE, _py_files(VULN_FIXTURE))
     for f in findings:
         assert f.reason, f"reason is empty on {f.__dict__}"

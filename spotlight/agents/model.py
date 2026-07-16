@@ -44,7 +44,7 @@ class MockModelClient:
             slice_ = context["slice"]
             cls = slice_["sink"]["class"]
             # CWE table covers the code-surface classes AND the agentic classes
-            # the Cognition Sweep emits. If the class isn't here we fall back
+            # the Agentic Sweep emits. If the class isn't here we fall back
             # to CWE-693 (protection mechanism failure) rather than KeyError.
             cwe_by_class = {
                 "sqli": "CWE-89",

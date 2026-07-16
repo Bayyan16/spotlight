@@ -1,6 +1,6 @@
 """Cross-Surface Exploit Path Chainer — Tranche B4.
 
-Composes reduced Investigator/CognitionAnalyst candidates into ExploitPath
+Composes reduced Investigator/AgenticAnalyst candidates into ExploitPath
 objects: linear chains of steps that model how one weakness lets an
 attacker reach the next.
 
@@ -10,14 +10,14 @@ The killer chain we're demoing:
                                      →  SSRF (CWE-918)
                                      →  data exfil
 
-No scanner today composes across surfaces (agentic cognition and code)
+No scanner today composes across surfaces (agentic and code)
 because they don't share a data model. Spotlight does because Recon +
-Investigator + CognitionAnalyst all emit the same candidate dict; the
+Investigator + AgenticAnalyst all emit the same candidate dict; the
 Chainer keys off `class` / `cwe` / repo path / function name.
 
 Chaining rules (§ Phase-2 tranche B4 spec):
 
-  1. cognition → code
+  1. agentic → code
      `prompt-injection` (LLM01) + `excessive-agency` (LLM06) on the same
      repo → chain. If the excessive-agency tool is `requests.get`/`fetch`
      and there's an `ssrf` code finding, extend the chain to 3 steps.
@@ -44,7 +44,7 @@ from typing import Any
 
 
 # Canonical class labels we key off. Kept in one place so a rename in the
-# Investigator/CognitionAnalyst doesn't quietly break the chainer.
+# Investigator/AgenticAnalyst doesn't quietly break the chainer.
 _LLM01_CLASSES = {"prompt-injection", "indirect-prompt-injection", "llm01"}
 _LLM05_CLASSES = {"output-handling", "insecure-output-handling", "llm05"}
 _LLM06_CLASSES = {"excessive-agency", "over-permissioned-tool", "llm06"}
@@ -69,7 +69,7 @@ def _cand_surface(c: dict[str, Any]) -> str:
     surf = _norm(c.get("surface"))
     if surf:
         return surf
-    # Cognition candidates carry `surface`; code candidates from the
+    # Agentic candidates carry `surface`; code candidates from the
     # Investigator don't set one — infer from class.
     cls = _cand_class(c)
     if cls in _LLM01_CLASSES | _LLM05_CLASSES | _LLM06_CLASSES:
@@ -78,7 +78,7 @@ def _cand_surface(c: dict[str, Any]) -> str:
 
 
 def _cand_repo(c: dict[str, Any]) -> str:
-    """Which repo does this candidate live in? Uses `repo` if the cognition
+    """Which repo does this candidate live in? Uses `repo` if the agentic
     analyst set it, else derives from the file location's top segment."""
     if c.get("repo"):
         return str(c["repo"])
@@ -199,7 +199,7 @@ class Chainer:
                 "rationale": rationale,
             })
 
-        # ── Rule 1: cognition → code ────────────────────────────────
+        # ── Rule 1: agentic → code ────────────────────────────────
         # LLM01 + LLM06 (same repo); optionally extend to SSRF.
         llm01s = find(_LLM01_CLASSES)
         llm06s = find(_LLM06_CLASSES)

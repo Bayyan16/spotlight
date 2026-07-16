@@ -16,7 +16,7 @@ ordered on the path. They aren't just checking the ExploitPath shape.
 Coverage:
   * cross-surface 3-step chain (LLM01 + LLM06(requests.get) + SSRF)
   * cross-surface 2-step chain (LLM01 + LLM06 without SSRF)
-  * secrets-pairing when no cognition candidates exist
+  * secrets-pairing when no agentic candidates exist
   * deterministic id + step ordering across repeated calls
   * agentic-first step ordering
   * bank-material fixture scenario used by the demo money-shot
@@ -29,7 +29,7 @@ from spotlight.orchestrator.chainer import Chainer
 # ── candidate fixtures ──────────────────────────────────────────────────
 
 def _pi_cand(repo: str = "app") -> dict:
-    """A prompt-injection candidate from the CognitionAnalyst."""
+    """A prompt-injection candidate from the AgenticAnalyst."""
     return {
         "id": "PI-1",
         "surface": "agentic",
@@ -148,7 +148,7 @@ def _oh_cand(repo: str = "app", function: str = "handle_message") -> dict:
     }
 
 
-# ── rule 1 — cognition → code (3 steps: LLM01 + LLM06 + SSRF) ──────────
+# ── rule 1 — agentic → code (3 steps: LLM01 + LLM06 + SSRF) ──────────
 
 def test_llm01_llm06_ssrf_makes_three_step_cross_surface_path():
     """The demo money-shot: prompt-injection + over-permissioned
@@ -247,7 +247,7 @@ def test_llm05_plus_cmdi_needs_matching_function_name():
 # ── rule 3 — secrets → any ──────────────────────────────────────────────
 
 def test_only_code_findings_produces_secrets_pairing_path():
-    """No cognition findings, but a secret + a primary vuln in the same
+    """No agentic findings, but a secret + a primary vuln in the same
     repo → the chainer still emits a secrets-pairing path."""
     cands = [_secrets_cand(), _sqli_cand()]
     paths = Chainer().compose(cands)
@@ -302,7 +302,7 @@ def test_deterministic_ordering_across_repeat_calls():
 def test_agentic_first_step_ordering():
     """Even if callers pass code candidates before agentic ones, the
     chainer sorts agentic first so the UI story reads left-to-right:
-    cognition surfaces the injection, then code amplifies it."""
+    agentic surfaces the injection, then code amplifies it."""
     cands = [_ssrf_cand(), _ea_cand(tool="requests.get"), _pi_cand()]
     paths = Chainer().compose(cands)
     assert len(paths) == 1
@@ -315,7 +315,7 @@ def test_agentic_first_step_ordering():
 def test_fixture_scenario_three_candidates_produce_one_cross_surface_path():
     """Synthetic bank-fixture: exactly 3 hand-crafted candidates
     (prompt-injection, excessive-agency, ssrf) go in, exactly ONE
-    ExploitPath spanning cognition→code comes out. `cross_surface=True`.
+    ExploitPath spanning agentic→code comes out. `cross_surface=True`.
     `reproduced=False` (composition doesn't run PoCs — that's a later
     tranche)."""
     candidates = [
