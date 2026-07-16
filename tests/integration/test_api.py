@@ -21,7 +21,10 @@ def test_healthz():
     client = TestClient(app)
     r = client.get("/healthz")
     assert r.status_code == 200
-    assert r.json() == {"ok": True, "service": "spotlight-api"}
+    body = r.json()
+    assert body["ok"] is True
+    assert body["service"] == "spotlight-api"
+    assert body["storage"] in {"memory", "postgres"}
 
 
 def test_list_targets_includes_fixtures():

@@ -33,8 +33,24 @@ export type Finding = {
   audit: Record<string, unknown>;
 };
 
+export type SweepSummary = {
+  sweep_id: string;
+  repo_name: string;
+  source: string;
+  status: string;
+  findings_count: number;
+  started_at: string | null;
+  finished_at: string | null;
+};
+
 export async function listTargets(): Promise<Target[]> {
   const r = await fetch(`${BASE}/targets`);
+  return r.json();
+}
+
+export async function listSweeps(): Promise<SweepSummary[]> {
+  const r = await fetch(`${BASE}/sweeps`);
+  if (!r.ok) return [];
   return r.json();
 }
 
@@ -44,8 +60,15 @@ export async function startSweep(repo: string): Promise<{ sweep_id: string }> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ repo, surfaces: ["code"] }),
   });
-  if (!r.ok) throw new Error(`start_sweep failed: ${r.status}`);
+  if (!r.ok) {
+    const err = await r.text();
+    throw new Error(`start_sweep failed: ${r.status} ${err.slice(0, 200)}`);
+  }
   return r.json();
+}
+
+export async function deleteSweep(id: string): Promise<void> {
+  await fetch(`${BASE}/sweeps/${id}`, { method: "DELETE" });
 }
 
 export async function getSweep(id: string): Promise<{ status: string; findings_count?: number }> {

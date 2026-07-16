@@ -4,6 +4,7 @@ import { TopBar } from "./components/TopBar";
 import { FindingsList } from "./components/FindingsList";
 import { FindingDetail } from "./components/FindingDetail";
 import { LiveSweepPanel } from "./components/LiveSweepPanel";
+import { SweepsHistory } from "./components/SweepsHistory";
 import {
   getFindings,
   listTargets,
@@ -15,7 +16,7 @@ import {
 } from "./lib/api";
 
 export default function App() {
-  const [nav, setNav] = useState<NavKey>("sweeps");
+  const [nav, setNav] = useState<NavKey>("home");
   const [targets, setTargets] = useState<Target[]>([]);
   const [selected, setSelected] = useState<string>("vuln-bank-api");
   const [sweepId, setSweepId] = useState<string | null>(null);
@@ -23,6 +24,7 @@ export default function App() {
   const [findings, setFindings] = useState<Finding[]>([]);
   const [running, setRunning] = useState(false);
   const [activeFinding, setActiveFinding] = useState<string | null>(null);
+  const [historyRefresh, setHistoryRefresh] = useState(0);
 
   useEffect(() => {
     listTargets().then(setTargets).catch(() => setTargets([]));
@@ -34,6 +36,7 @@ export default function App() {
       setEvents((prev) => [...prev, e]);
       if (e.type === "sweep.finished") {
         setRunning(false);
+        setHistoryRefresh((n) => n + 1);
         getFindings(sweepId).then((fs) => {
           setFindings(fs);
           if (fs.length > 0) setActiveFinding(fs[0].id);
@@ -43,19 +46,31 @@ export default function App() {
     return () => ws.close();
   }, [sweepId]);
 
-  async function onStart() {
+  async function onStart(customRepo?: string) {
     setEvents([]);
     setFindings([]);
     setActiveFinding(null);
     setRunning(true);
     setNav("sweeps");
     try {
-      const { sweep_id } = await startSweep(selected);
+      const repo = customRepo ?? selected;
+      const { sweep_id } = await startSweep(repo);
       setSweepId(sweep_id);
     } catch (err) {
       setRunning(false);
       alert(`Failed to start sweep: ${err}`);
     }
+  }
+
+  function openHistoricalSweep(id: string) {
+    setSweepId(id);
+    setEvents([]);
+    setActiveFinding(null);
+    getFindings(id).then((fs) => {
+      setFindings(fs);
+      if (fs.length > 0) setActiveFinding(fs[0].id);
+    });
+    setNav("findings");
   }
 
   const showFindings = nav === "findings" && findings.length > 0;
@@ -77,25 +92,41 @@ export default function App() {
         />
 
         <div className="flex-1 min-h-0 flex overflow-hidden">
-          {(showFindings || (nav === "sweeps" && findings.length > 0)) && (
-            <FindingsList
-              findings={findings}
-              active={activeFinding}
-              onSelect={(id) => {
-                setActiveFinding(id);
-                setNav("findings");
-              }}
-              target={selected}
-            />
+          {nav === "home" && (
+            <SweepsHistory onOpen={openHistoricalSweep} refreshSignal={historyRefresh} />
           )}
 
-          {nav === "findings" && detail && <FindingDetail finding={detail} />}
-          {nav === "findings" && !detail && <EmptyDetail />}
+          {nav === "sweeps" && (
+            <>
+              {findings.length > 0 && (
+                <FindingsList
+                  findings={findings}
+                  active={activeFinding}
+                  onSelect={(id) => {
+                    setActiveFinding(id);
+                    setNav("findings");
+                  }}
+                  target={selected}
+                />
+              )}
+              {sweepId && <LiveSweepPanel events={events} />}
+              {!sweepId && <EmptySweep onStart={() => onStart()} />}
+            </>
+          )}
 
-          {showLive && !detail && sweepId && <LiveSweepPanel events={events} />}
-          {showLive && !sweepId && <EmptySweep onStart={onStart} />}
+          {nav === "findings" && (
+            <>
+              <FindingsList
+                findings={findings}
+                active={activeFinding}
+                onSelect={(id) => setActiveFinding(id)}
+                target={selected}
+              />
+              {detail ? <FindingDetail finding={detail} /> : <EmptyDetail />}
+            </>
+          )}
 
-          {(nav === "home" || nav === "paths" || nav === "warden" || nav === "attestations") && (
+          {(nav === "paths" || nav === "warden" || nav === "attestations") && (
             <ComingSoonPane label={nav} />
           )}
         </div>

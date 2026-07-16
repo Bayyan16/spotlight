@@ -70,10 +70,10 @@ beforeEach(() => {
 });
 
 describe("App", () => {
-  it("renders the empty state with the CTA", async () => {
+  it("renders the sweeps-history default view with CMUL8 brand + Start Sweep CTA", async () => {
     render(<App />);
-    expect(screen.getByText(/The AI security engineer/i)).toBeInTheDocument();
-    expect(screen.getAllByText(/Start your first Sweep|Start Sweep/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/CMUL8/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Start Sweep/i).length).toBeGreaterThan(0);
   });
 
   it("loads targets into the selector", async () => {
