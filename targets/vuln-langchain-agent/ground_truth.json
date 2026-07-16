@@ -1,0 +1,40 @@
+{
+  "target": "vuln-langchain-agent",
+  "expected_findings": [
+    {
+      "id": "GT-COG-001",
+      "class": "prompt-injection",
+      "owasp_llm": "LLM01",
+      "surface": "agentic",
+      "file": "app.py",
+      "function": "ask",
+      "trigger": "GET /ask?q=<prompt-injection payload>",
+      "expected_state": "candidate",
+      "expected_tier": "high-confidence"
+    },
+    {
+      "id": "GT-COG-002",
+      "class": "excessive-agency",
+      "owasp_llm": "LLM06",
+      "surface": "agentic",
+      "file": "app.py",
+      "function": "build_agent",
+      "trigger": "agent decides to fetch http://169.254.169.254/latest/meta-data/",
+      "expected_state": "candidate",
+      "expected_tier": "high-confidence"
+    },
+    {
+      "id": "GT-COG-003",
+      "class": "output-handling",
+      "owasp_llm": "LLM05",
+      "surface": "agentic",
+      "file": "app.py",
+      "function": "run_llm_shell",
+      "trigger": "prompt-inject the assistant to return `rm -rf ~`",
+      "expected_state": "candidate",
+      "expected_tier": "high-confidence"
+    }
+  ],
+  "negative_expectations": [],
+  "notes": "Three planted OWASP-LLM Top-10 weaknesses. Fix approach: (1) escape user input before invoke, (2) allowlist tool URLs / drop shell tools, (3) never eval/exec/subprocess a model output."
+}

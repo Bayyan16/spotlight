@@ -39,6 +39,10 @@ class SweepRow(Base):
     model: Mapped[str] = mapped_column(String(64), default="mock")
     threat_model: Mapped[Any] = mapped_column(JsonType, nullable=True)
     signals: Mapped[Any] = mapped_column(JsonType, nullable=True)
+    # Tranche B4 — cross-surface exploit paths composed from candidates.
+    # JSONB list of ExploitPath dicts; empty list when the Chainer finds no
+    # matching pair. Nullable=True so old rows (pre-B4) load cleanly.
+    exploit_paths: Mapped[Any] = mapped_column(JsonType, nullable=True, default=list)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     findings_count: Mapped[int] = mapped_column(Integer, default=0)

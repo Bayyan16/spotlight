@@ -1,0 +1,19 @@
+{
+  "target": "clean-langchain-agent",
+  "expected_findings": [],
+  "negative_expectations": [
+    {
+      "class": "prompt-injection",
+      "reason": "sanitize_user_input() wraps request.args.get before chain.invoke"
+    },
+    {
+      "class": "excessive-agency",
+      "reason": "Tool description names an allowlist / _fetch_url_scoped host-checks"
+    },
+    {
+      "class": "output-handling",
+      "reason": "llm_response.content is validated against _ALLOWED_ANSWERS, never shell-executed"
+    }
+  ],
+  "notes": "Precision negative — zero cognition findings expected."
+}

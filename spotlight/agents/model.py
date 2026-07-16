@@ -42,25 +42,51 @@ class MockModelClient:
 
         if role == "investigator":
             slice_ = context["slice"]
+            cls = slice_["sink"]["class"]
+            # CWE table covers the code-surface classes AND the agentic classes
+            # the Cognition Sweep emits. If the class isn't here we fall back
+            # to CWE-693 (protection mechanism failure) rather than KeyError.
+            cwe_by_class = {
+                "sqli": "CWE-89",
+                "cmdi": "CWE-78",
+                "ssrf": "CWE-918",
+                "eval": "CWE-95",
+                "prompt-injection": "CWE-77",
+                "excessive-agency": "CWE-269",
+                "output-handling": "CWE-79",
+                "system-prompt-leak": "CWE-540",
+                "rag-surface": "CWE-345",
+                "denial-of-wallet": "CWE-400",
+            }
+            is_agentic = slice_.get("surface") == "agentic"
+            root_cause = (
+                f"Untrusted `{slice_['source']['name']}` (from "
+                f"{slice_['source']['origin']}) flows into {slice_['sink']['callee']} "
+                "via string concatenation."
+            )
+            recommendation = "Use a parameterized query; do not concatenate user input into SQL."
+            if is_agentic:
+                root_cause = (
+                    f"Agentic surface: {slice_.get('reason', '')} "
+                    f"({slice_['source']['origin']} → {slice_['sink']['callee']})."
+                )
+                recommendation = (
+                    "Sanitize user input before it reaches the LLM; scope tool "
+                    "permissions; validate model output before executing it."
+                )
             return {
                 "verdict": "candidate",
-                "class": slice_["sink"]["class"],
-                "cwe": {"sqli": "CWE-89", "cmdi": "CWE-78", "ssrf": "CWE-918", "eval": "CWE-95"}[
-                    slice_["sink"]["class"]
-                ],
-                "title": f"{slice_['sink']['class'].upper()} in {slice_['function']}",
+                "class": cls,
+                "cwe": cwe_by_class.get(cls, "CWE-693"),
+                "title": f"{cls.upper()} in {slice_['function']}",
                 "severity": "high",
                 "location": {
                     "file": slice_["file"],
                     "line": slice_["sink"]["line"],
                     "function": slice_["function"],
                 },
-                "root_cause": (
-                    f"Untrusted `{slice_['source']['name']}` (from "
-                    f"{slice_['source']['origin']}) flows into {slice_['sink']['callee']} "
-                    "via string concatenation."
-                ),
-                "recommendation": "Use a parameterized query; do not concatenate user input into SQL.",
+                "root_cause": root_cause,
+                "recommendation": recommendation,
                 "evidence_used": ["codegraph:source->sink reachable", slice_["reason"]],
             }
 

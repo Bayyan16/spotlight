@@ -26,8 +26,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from spotlight.agents import Investigator, Recon, Reducer, Remediator, Reproducer, Verifier
 from spotlight.agents.model import MockModelClient, ModelClient
 from spotlight.agents.moonshot import maybe_from_env
+from spotlight.consensus import ConsensusKernel, EvidenceItem
 from spotlight.profiles import Profile, get_profile
 
+from .chainer import Chainer
 from .events import EventBus, EventType
 
 
@@ -56,19 +58,27 @@ class SweepResult:
     findings: list[dict[str, Any]]
     attestations: list[dict[str, Any]]
     events_log: list[dict[str, Any]] = field(default_factory=list)
+    # Tranche B4 — cross-surface exploit paths composed from reduced
+    # candidates. Empty when the Chainer finds no matching pair.
+    exploit_paths: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _finding_id(i: int) -> str:
     return f"SPOT-{i:04d}"
 
 
-def _promote_tier(finding: dict[str, Any], repro: dict[str, Any] | None) -> tuple[str, float, str]:
-    """Consensus Kernel v0 (§8.2) — reproduction + independent corroborator = verified.
+def _promote_tier_legacy(finding: dict[str, Any], repro: dict[str, Any] | None) -> tuple[str, float, str]:
+    """DEPRECATED (Phase 2 Tranche B2) — kept as a rollback for the old
+    orchestrator-inline promotion path.
 
-    Special case: static-fact classes (like `secrets`, where the finding IS the
-    static evidence and there's no PoC to run) are promoted directly to
-    `verified` on static-fact alone. The repro result will be 'not-applicable'
-    in that case."""
+    The canonical logic now lives in `spotlight.consensus.ConsensusKernel`.
+    Do not add new callers. This function stays here so we can toggle back
+    quickly if the kernel misbehaves in a live sweep — nothing more.
+
+    Original semantics: Consensus Kernel v0 (§8.2) — reproduction +
+    independent corroborator = verified. Static-fact classes (`secrets`,
+    `hardcoded-secret`) with a static_fact go straight to `verified` at 0.95.
+    """
     static_fact = "codegraph:source->sink reachable" in finding.get("evidence_used", [])
     reproduced = bool(repro and repro.get("result") == "confirmed")
     not_applicable = bool(repro and repro.get("result") == "not-applicable")
@@ -84,6 +94,61 @@ def _promote_tier(finding: dict[str, Any], repro: dict[str, Any] | None) -> tupl
     if static_fact:
         return "high-confidence", 0.7, "static-analysis fact without reproduction"
     return "needs-review", 0.4, "single-source, unreproduced"
+
+
+def _build_evidence(
+    candidate: dict[str, Any],
+    repro: dict[str, Any] | None,
+    model_family: str,
+    sweep_id: str,
+) -> list[EvidenceItem]:
+    """Construct the evidence list the ConsensusKernel expects from the data
+    the orchestrator already has: the Investigator's evidence_used array and
+    the Reproducer's result.
+
+    - `static_analysis_fact` when sg-core marked the slice reachable
+      (the "codegraph:source->sink reachable" sentinel in evidence_used).
+    - `independent_agent` for the Investigator's own opinion, keyed on the
+      model family + a per-finding context id so a same-model re-run wouldn't
+      double-count.
+    - `dynamic_reproduction` for the Reproducer, always its own modality.
+    """
+    evidence: list[EvidenceItem] = []
+    evidence_used = candidate.get("evidence_used", []) or []
+    if "codegraph:source->sink reachable" in evidence_used:
+        evidence.append(
+            EvidenceItem(
+                modality="static_analysis_fact",
+                origin={"tool": "sg-core", "context_id": f"{sweep_id}:codegraph"},
+                result="confirmed",
+                detail=evidence_used,
+            )
+        )
+    # The Investigator's own verdict counts as an independent-agent vote for
+    # the model that produced it. Two passes of the same model in the same
+    # sweep would share the (family, context_id) key and collapse to one.
+    evidence.append(
+        EvidenceItem(
+            modality="independent_agent",
+            origin={
+                "model_family": model_family,
+                "context_id": f"{sweep_id}:investigator:{candidate.get('title', '')}",
+                "role": "investigator",
+            },
+            result="confirmed",
+            detail=candidate.get("root_cause"),
+        )
+    )
+    if repro is not None:
+        evidence.append(
+            EvidenceItem(
+                modality="dynamic_reproduction",
+                origin={"tool": "reproducer", "context_id": f"{sweep_id}:repro"},
+                result=repro.get("result", "inconclusive"),
+                detail=repro.get("notes"),
+            )
+        )
+    return evidence
 
 
 def _extract_usage_tokens(payload: Any) -> int | None:
@@ -264,6 +329,17 @@ class Orchestrator:
             s for s in slices if s["sink"]["class"] in allowed_classes
         ] if allowed_classes else slices
 
+        # Agentic slices from the Cognition Sweep. Recon puts them on
+        # `agentic_signals`; the Investigator prompt reads the same
+        # `source`/`sink` sub-object shape as a classic slice, but each
+        # agentic slice carries a `surface: "agentic"` marker so the model
+        # (and downstream logic) can differentiate.
+        agentic_signals = recon_out.get("agentic_signals", []) or []
+        active_agentic = [
+            a for a in agentic_signals
+            if not allowed_classes or a.get("class_") in allowed_classes
+        ]
+
         halted = False
 
         def _investigate(idx_slice):
@@ -287,6 +363,36 @@ class Orchestrator:
             ]
             emit(EventType.AGENT_FINISHED, f"inv-{idx}", verdict="candidate")
             emit(EventType.CANDIDATE_RAISED, f"inv-{idx}", candidate=judgment)
+            return judgment
+
+        def _investigate_agentic(idx_slice):
+            """Same Investigator, different slice shape. The worker name
+            uses `cog-N` so the Console can visually separate cognition
+            work from classic AppSec fan-out."""
+            idx, slice_ = idx_slice
+            emit(
+                EventType.AGENT_SPAWNED,
+                "orchestrator",
+                role="investigator",
+                slice=slice_,
+                worker=f"cog-{idx}",
+            )
+            judgment = Investigator(self.model).run(slice_)
+            if not judgment:
+                emit(EventType.AGENT_FINISHED, f"cog-{idx}", verdict="reject")
+                return None
+            existing = judgment.get("evidence_used", []) or []
+            judgment["evidence_used"] = [
+                "cognition:agentic-source->llm-sink",
+                slice_.get("reason", ""),
+                *existing,
+            ]
+            # Carry the surface marker so the consensus / finding record
+            # keeps the code-vs-agentic split.
+            judgment["surface"] = "agentic"
+            judgment["owasp_llm"] = slice_.get("owasp_llm", "")
+            emit(EventType.AGENT_FINISHED, f"cog-{idx}", verdict="candidate")
+            emit(EventType.CANDIDATE_RAISED, f"cog-{idx}", candidate=judgment)
             return judgment
 
         # Budget check before each spawn batch so a runaway model can't keep
@@ -316,15 +422,60 @@ class Orchestrator:
                     self._account_usage(judgment)
                 idx += 1
 
+        # Now the agentic fan-out — same budget guard, same parallelism cap.
+        aidx = 0
+        while aidx < len(active_agentic) and not halted:
+            breach = self._budget_breach()
+            if breach:
+                self._emit_budget_breach(*breach)
+                halted = True
+                break
+            remaining = list(enumerate(active_agentic))[aidx:]
+            max_workers = max(1, min(self.profile.max_agents, max(1, len(remaining))))
+            if max_workers > 1 and len(remaining) > 1:
+                with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                    for judgment in pool.map(_investigate_agentic, remaining):
+                        if judgment:
+                            candidates.append(judgment)
+                            self._account_usage(judgment)
+                aidx = len(active_agentic)
+            else:
+                pair = remaining[0]
+                judgment = _investigate_agentic(pair)
+                if judgment:
+                    candidates.append(judgment)
+                    self._account_usage(judgment)
+                aidx += 1
+
         # 3. Reduce
         self._advance_phase("reduce")
         reduced = Reducer().run(candidates) if candidates else []
+
+        # 3b. Chain — compose reduced candidates into cross-surface
+        #     ExploitPath objects (Tranche B4). Runs regardless of whether
+        #     the budget later busts on the Reproduce loop; the paths are
+        #     derived purely from candidate metadata and cost ~nothing.
+        #     The Chainer keys step.finding_id off candidate titles because
+        #     it runs BEFORE the finding loop assigns SPOT-XXXX ids — we
+        #     rewrite the step ids inside the finding loop below once each
+        #     candidate has its concrete finding id.
+        exploit_paths = Chainer().compose(reduced) if reduced else []
+        cand_key_to_path_and_step: dict[str, list[tuple[dict, dict]]] = {}
+        for ep in exploit_paths:
+            for step in ep["steps"]:
+                key = step.get("finding_id") or ""
+                if not key:
+                    continue
+                cand_key_to_path_and_step.setdefault(key, []).append((ep, step))
 
         # If the budget already busted, jump straight to Attest with partial
         # findings (empty here — nothing survived the halt).
         if halted or self._budget_breach() is not None:
             self._advance_phase("attest")
-            return self._finalize(sweep_id, repo_path, out_dir, recon_out, findings=[])
+            return self._finalize(
+                sweep_id, repo_path, out_dir, recon_out,
+                findings=[], exploit_paths=exploit_paths,
+            )
 
         # 4. Reproduce → Remediate → Verify per finding.
         findings: list[dict[str, Any]] = []
@@ -396,7 +547,13 @@ class Orchestrator:
                         commit_sha=pr_info.get("commit_sha"),
                     )
 
-            tier, confidence, tier_reason = _promote_tier(cand, repro)
+            evidence = _build_evidence(cand, repro, self.model.family, sweep_id)
+            decision = ConsensusKernel().promote(
+                cand, evidence, model=self.model, code_graph_slice=cand.get("location")
+            )
+            tier = decision.tier
+            confidence = decision.confidence
+            tier_reason = decision.rationale
             cls_ = cand.get("class", "")
             if cls_ in ("secrets", "hardcoded-secret") and tier == "verified":
                 # Static-fact classes don't have a "fix" per se — the user has
@@ -408,19 +565,33 @@ class Orchestrator:
             else:
                 state = "candidate"
 
+            # If this candidate participated in an ExploitPath, tag the
+            # finding and rewrite the step's placeholder id to the real
+            # SPOT-XXXX so the UI can link both directions.
+            cand_key = cand.get("id") or cand.get("finding_id") or cand.get("title") or ""
+            exploit_path_id: str | None = None
+            for ep, step in cand_key_to_path_and_step.get(cand_key, []):
+                step["finding_id"] = fid
+                if exploit_path_id is None:
+                    exploit_path_id = ep["id"]
+
             finding = {
                 "id": fid,
-                "surface": "code",
+                "surface": cand.get("surface", "code"),
                 "title": cand["title"],
                 "severity": cand["severity"],
                 "class": cand["class"],
                 "cwe": cand["cwe"],
+                # For agentic findings we surface the OWASP-LLM code so the
+                # UI + attestation can render the LLM01..LLM10 chip. Empty
+                # for code-surface findings.
+                "owasp_llm": cand.get("owasp_llm", ""),
                 "location": cand["location"],
                 "state": state,
                 "tier": tier,
                 "confidence": confidence,
                 "owner": "unassigned",
-                "exploit_path": None,
+                "exploit_path": exploit_path_id,
                 "evidence": {
                     "detected_by": ["investigator-1", "codegraph:source->sink reachable"],
                     "corroboration": [
@@ -462,9 +633,11 @@ class Orchestrator:
                 },
                 "consensus": {
                     "tier": tier,
-                    "independent_corroborators": 2 if repro["result"] == "confirmed" else 1,
+                    "confidence": confidence,
+                    "independent_corroborators": decision.independent_corroborators,
                     "decision": "promote" if tier in ("verified", "high-confidence") else "hold",
                     "rationale": tier_reason,
+                    "adjudication": decision.adjudication,
                 },
                 "audit": {
                     "model": self.model.family,
@@ -481,9 +654,27 @@ class Orchestrator:
             (out_dir / f"verify_{fid}.json").write_text(json.dumps(verify, indent=2))
             emit(EventType.FINDING_PROMOTED, "consensus", finding=fid, tier=tier)
 
+        # 4b. Emit one path.composed event per composed ExploitPath. We do
+        #     this AFTER the finding loop so step.finding_id references have
+        #     been rewritten from candidate placeholders to SPOT-XXXX ids.
+        for ep in exploit_paths:
+            emit(
+                EventType.PATH_COMPOSED,
+                "chainer",
+                path_id=ep["id"],
+                title=ep["title"],
+                severity=ep["severity"],
+                cross_surface=ep["cross_surface"],
+                steps=len(ep["steps"]),
+                step_finding_ids=[s["finding_id"] for s in ep["steps"]],
+            )
+
         # 5. Attest
         self._advance_phase("attest")
-        return self._finalize(sweep_id, repo_path, out_dir, recon_out, findings)
+        return self._finalize(
+            sweep_id, repo_path, out_dir, recon_out, findings,
+            exploit_paths=exploit_paths,
+        )
 
     # ── finalization ──────────────────────────────────────────────────
     def _finalize(
@@ -493,6 +684,7 @@ class Orchestrator:
         out_dir: Path,
         recon_out: dict[str, Any],
         findings: list[dict[str, Any]],
+        exploit_paths: list[dict[str, Any]] | None = None,
     ) -> SweepResult:
         """Write attestation + supporting artifacts; return the SweepResult.
 
@@ -502,14 +694,17 @@ class Orchestrator:
         """
         if self._current_phase != "attest":
             self._advance_phase("attest")
+        exploit_paths = exploit_paths or []
         attestation = {
             "sweep_id": sweep_id,
             "repo": str(repo_path),
             "findings": findings,
             "threat_model": recon_out.get("threat_model", {}),
+            "exploit_paths": exploit_paths,
         }
         (out_dir / "attestation.json").write_text(json.dumps(attestation, indent=2))
         (out_dir / "findings.json").write_text(json.dumps(findings, indent=2))
+        (out_dir / "exploit_paths.json").write_text(json.dumps(exploit_paths, indent=2))
         (out_dir / "threat_model.json").write_text(
             json.dumps(recon_out.get("threat_model", {}), indent=2)
         )
@@ -520,10 +715,6 @@ class Orchestrator:
             sweep_id, EventType.ATTESTATION_WRITTEN, "reporter",
             path=str(out_dir / "attestation.json"),
         )
-        self.bus.emit(
-            sweep_id, EventType.SWEEP_FINISHED, "orchestrator",
-            findings=len(findings),
-        )
 
         result = SweepResult(
             sweep_id=sweep_id,
@@ -533,7 +724,51 @@ class Orchestrator:
             findings=findings,
             attestations=[attestation],
             events_log=[e.to_dict() for e in self.bus.replay(sweep_id)],
+            exploit_paths=exploit_paths,
         )
+
+        # Tranche B6: emit rich attestation + Markdown + PDF via Reporter.
+        # Any failure here MUST NOT fail the sweep — the customer's findings
+        # already landed. Log and continue.
+        try:
+            from spotlight.reporter import (
+                PdfRenderError,
+                Reporter,
+                render_json,
+                render_markdown,
+                render_pdf,
+            )
+
+            rich = Reporter().assemble(
+                result,
+                warden_events=[
+                    e for e in result.events_log
+                    if e.get("type", "").startswith("warden.")
+                    or e.get("type") == "sandbox.egress.denied"
+                ],
+                chain_of_custody={"entries": [], "signature_verified": None},
+            )
+            (out_dir / "attestation.json").write_text(render_json(rich))
+            md = render_markdown(rich)
+            (out_dir / "report.md").write_text(md)
+            # Overwrite the in-memory attestation so downstream consumers
+            # (API, tests) see the rich version.
+            result.attestations = [rich]
+            try:
+                pdf_bytes = render_pdf(md)
+                (out_dir / "report.pdf").write_bytes(pdf_bytes)
+            except PdfRenderError as pdf_exc:
+                # Lean deploy without reportlab — log + move on.
+                print(f"[reporter] PDF skipped: {pdf_exc}", flush=True)
+        except Exception as exc:
+            print(f"[reporter] rich report failed: {exc!r}", flush=True)
+
+        self.bus.emit(
+            sweep_id, EventType.SWEEP_FINISHED, "orchestrator",
+            findings=len(findings),
+        )
+        # Refresh events log so the persisted JSONL includes sweep.finished.
+        result.events_log = [e.to_dict() for e in self.bus.replay(sweep_id)]
         (out_dir / "events.jsonl").write_text(
             "\n".join(json.dumps(e) for e in result.events_log)
         )

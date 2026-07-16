@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from spotlight.cognition import CognitionScanner
 from spotlight.sandbox import CapabilityToken, SandboxResult, SandboxRunner, get_sandbox
 from spotlight.sg_core import CodeGraph, DataFlowSlice
 from spotlight.warden import WardenService
@@ -42,6 +43,13 @@ class Recon:
             for f in code_files
         )
         warden_flags, wrapped_docs = _warden_scan_recon_surface(repo_path, code_files)
+        # Cognition Sweep: OWASP-LLM rule packs. Runs alongside the classic
+        # code-graph slices; the orchestrator fans agentic slices out to the
+        # same Investigator (with a `surface: "agentic"` marker so the model
+        # prompt can differentiate).
+        agentic_signals = [
+            f.to_dict() for f in CognitionScanner().scan(repo_path, code_files)
+        ]
         threat_model = self.model.complete(
             role="recon",
             prompt="classify stack and threat model",
@@ -61,6 +69,7 @@ class Recon:
             "slices": [s.to_dict() for s in slices],
             "warden_flags": warden_flags,
             "wrapped_docs": wrapped_docs,
+            "agentic_signals": agentic_signals,
         }
 
 
@@ -242,10 +251,23 @@ class Investigator:
 
 
 class CognitionAnalyst:
-    """Placeholder — Phase 2 fills this in with OWASP-LLM rule packs."""
+    """OWASP-LLM Top-10 rule-pack analyst.
 
-    def run(self, *args, **kwargs) -> list[dict[str, Any]]:
-        return []
+    Thin wrapper over `CognitionScanner` so the roles module can be imported
+    without pulling the scanner in downstream contexts that only care about
+    Investigator / Reproducer. The scanner does the real work — the analyst
+    exists so the "Cognition Analyst" role in PRD §7 has a home.
+    """
+
+    def run(self, repo_path: Path, code_files: list[Path] | None = None) -> list[dict[str, Any]]:
+        if code_files is None:
+            code_files = []
+            for ext in ("*.py", "*.js", "*.ts", "*.jsx", "*.tsx"):
+                code_files.extend(
+                    p for p in repo_path.rglob(ext)
+                    if "node_modules" not in p.parts and ".venv" not in p.parts and "dist" not in p.parts
+                )
+        return [f.to_dict() for f in CognitionScanner().scan(repo_path, code_files)]
 
 
 class Reducer:

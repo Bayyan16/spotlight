@@ -14,9 +14,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import desc
@@ -249,6 +249,7 @@ def _persist_sweep(result: SweepResult, source: str, repo_name: str) -> None:
             row.status = "finished"
             row.threat_model = result.threat_model
             row.signals = result.signals
+            row.exploit_paths = result.exploit_paths
             row.finished_at = datetime.now(timezone.utc)
             row.findings_count = len(result.findings)
             sess.merge(row)
@@ -581,22 +582,91 @@ def get_pr_for_finding(finding_id: str) -> dict:
     }
 
 
-@app.get("/attestations/{sweep_id}")
-def get_attestation(sweep_id: str) -> dict:
+@app.get("/paths/{sweep_id}")
+def get_paths(sweep_id: str) -> list[dict]:
+    """Tranche B4 — return the ExploitPath list for a sweep.
+
+    Cross-surface chains like `LLM01 → LLM06 → SSRF` composed by the
+    Chainer after Reduce. Empty list when the Chainer found no matching
+    pair. Same in-memory-first fallback as `/sweeps/{sweep_id}/findings`.
+    """
     if sweep_id in SWEEPS:
-        return _redact_response(SWEEPS[sweep_id].attestations[0])
+        return _redact_response(SWEEPS[sweep_id].exploit_paths)
     if store_enabled():
         with get_session() as sess:
             row = sess.get(SweepRow, sweep_id)
-            if row:
-                findings = [f.payload for f in row.findings]
-                return _redact_response({
-                    "sweep_id": row.id,
-                    "repo": row.repo_path,
-                    "findings": findings,
-                    "threat_model": row.threat_model,
-                })
+            if row is not None:
+                return _redact_response(row.exploit_paths or [])
     raise HTTPException(404, "sweep not found")
+
+
+def _load_attestation_dict(sweep_id: str) -> dict | None:
+    """Fetch the assembled attestation dict for a sweep, or None if missing.
+
+    Prefers the in-memory hot cache (which the orchestrator wrote as the
+    rich v2 attestation) and falls back to the persistent store for older
+    sweeps that predate B6. In the fallback we reassemble via the Reporter
+    so the same shape ships regardless of storage tier.
+    """
+    if sweep_id in SWEEPS:
+        return SWEEPS[sweep_id].attestations[0]
+    if store_enabled():
+        with get_session() as sess:
+            row = sess.get(SweepRow, sweep_id)
+            if row is not None:
+                findings = [f.payload for f in row.findings]
+                # Best-effort re-assembly for legacy rows. Missing events
+                # log = warden block will show zero counts, which is the
+                # correct answer for a sweep that never had those signals.
+                from spotlight.orchestrator import SweepResult
+                from spotlight.reporter import Reporter
+
+                stub = SweepResult(
+                    sweep_id=row.id,
+                    repo_path=row.repo_path,
+                    threat_model=row.threat_model or {},
+                    signals=row.signals or [],
+                    findings=findings,
+                    attestations=[],
+                    events_log=[],
+                )
+                return Reporter().assemble(stub)
+    return None
+
+
+@app.get("/attestations/{sweep_id}")
+def get_attestation(
+    sweep_id: str,
+    format: str = Query(default="json", pattern="^(json|markdown|pdf)$"),
+):
+    """Return the attestation for a sweep in the requested format.
+
+    - ``json`` (default) — application/json, rich structured attestation.
+    - ``markdown`` — text/markdown; charset=utf-8, human-readable report.
+    - ``pdf`` — application/pdf, printable report. 503 if reportlab is not
+      installed in this deployment (lean image without the PDF dep).
+    """
+    attestation = _load_attestation_dict(sweep_id)
+    if attestation is None:
+        raise HTTPException(404, "sweep not found")
+    attestation = _redact_response(attestation)
+
+    if format == "json":
+        return attestation
+
+    from spotlight.reporter import PdfRenderError, render_markdown, render_pdf
+
+    markdown = render_markdown(attestation)
+    if format == "markdown":
+        return PlainTextResponse(
+            content=markdown, media_type="text/markdown; charset=utf-8"
+        )
+    # pdf
+    try:
+        pdf_bytes = render_pdf(markdown)
+    except PdfRenderError as exc:
+        raise HTTPException(503, f"pdf renderer unavailable: {exc}")
+    return Response(content=pdf_bytes, media_type="application/pdf")
 
 
 @app.websocket("/ws/sweeps/{sweep_id}")

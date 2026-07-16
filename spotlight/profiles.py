@@ -40,10 +40,21 @@ BALANCED = Profile(
     name="Balanced",
     description=(
         "The daily driver. Covers the OWASP-Top-10-shaped classes at real precision. "
-        "Parallel Investigators, medium budget, real reproduction where feasible."
+        "Parallel Investigators, medium budget, real reproduction where feasible. "
+        "Includes the top three OWASP-LLM classes so teams shipping AI features get "
+        "a baseline cognition sweep alongside their code sweep."
     ),
-    surfaces=["code"],
-    classes=["sqli", "cmdi", "ssrf", "eval", "xss", "authz", "secrets"],
+    surfaces=["code", "agentic"],
+    classes=[
+        "sqli", "cmdi", "ssrf", "eval", "xss", "authz", "secrets",
+        # Tranche B3 — top three cognition classes ship with Balanced so the
+        # daily driver catches prompt-injection / excessive-agency /
+        # output-handling on AI-enabled targets without needing the full
+        # Agentic profile.
+        "prompt-injection",
+        "excessive-agency",
+        "output-handling",
+    ],
     languages=["python", "javascript", "typescript"],
     model="moonshot",
     max_agents=6,
@@ -86,18 +97,30 @@ AGENTIC = Profile(
     name="Agentic",
     description=(
         "The AI-layer / agent-security sweep. OWASP LLM Top 10 + OWASP Agentic "
-        "Security categories. Prompt injection, excessive agency, RAG surface, "
-        "output handling. Skips classic AppSec — pair with Balanced for full "
-        "coverage."
+        "Security categories: prompt injection, sensitive-info disclosure, model "
+        "supply chain, data poisoning, output handling, excessive agency, "
+        "system-prompt leak, RAG surface, misinformation, denial of wallet, "
+        "plus agent-memory tampering, tool-permission drift, and uncapped agent "
+        "loops. Skips classic AppSec — pair with Balanced for full coverage."
     ),
     surfaces=["agentic"],
+    # All 13 agentic classes from the taxonomy — the full OWASP LLM Top 10
+    # plus the three Agentic Security Initiative categories that don't map
+    # 1:1 to LLM Top 10.
     classes=[
         "prompt-injection",
-        "excessive-agency",
+        "sensitive-info-disclosure",
+        "model-supply-chain",
+        "data-poisoning",
         "output-handling",
-        "rag-surface",
+        "excessive-agency",
         "system-prompt-leak",
+        "rag-surface",
+        "misinformation",
         "denial-of-wallet",
+        "agent-memory-tampering",
+        "tool-permission-drift",
+        "agent-loop",
     ],
     languages=["python", "javascript", "typescript"],
     model="moonshot",
