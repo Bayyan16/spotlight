@@ -56,6 +56,22 @@ export type Finding = {
       high_impact_sinks: string[];
       stack?: { language?: string; framework?: string };
     };
+    sandbox?: {
+      reproducer?: {
+        engine?: string;
+        duration_s?: number;
+        egress_attempts?: number;
+        egress_denied_hosts?: string[];
+        exit_code?: number;
+        capability_token?: Record<string, unknown>;
+      };
+      verifier?: {
+        engine?: string;
+        duration_s?: number;
+        exit_code?: number;
+        capability_token?: Record<string, unknown>;
+      };
+    };
   };
   consensus: { tier: string; independent_corroborators: number; decision: string; rationale: string };
   audit: Record<string, unknown>;

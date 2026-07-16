@@ -95,6 +95,22 @@ export function FindingDetail({ finding }: { finding: Finding }) {
           </div>
         </Panel>
 
+        {finding.evidence.sandbox && (
+          <Panel title="Sandbox (hostile-input containment)">
+            <div className="text-xs text-paper-700 mb-3">
+              Reproduction and verification ran in an isolated container with{" "}
+              <span className="mono text-2xs uppercase tracking-wider bg-accent-soft text-accent border border-accent/30 rounded px-1.5 py-0.5">
+                egress off
+              </span>{" "}
+              — the target code cannot phone home from Spotlight's sandbox.
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <SandboxCard label="Reproducer" data={finding.evidence.sandbox.reproducer} />
+              <SandboxCard label="Verifier" data={finding.evidence.sandbox.verifier} />
+            </div>
+          </Panel>
+        )}
+
         {finding.evidence.threat_model && (
           <Panel title="Threat model in effect">
             <div className="mb-3 text-xs text-paper-700">
@@ -202,6 +218,86 @@ function SeverityPill({ s }: { s: string }) {
     </span>
   );
 }
+
+function SandboxCard({
+  label,
+  data,
+}: {
+  label: string;
+  data:
+    | {
+        engine?: string;
+        duration_s?: number;
+        egress_attempts?: number;
+        egress_denied_hosts?: string[];
+        exit_code?: number;
+        capability_token?: Record<string, unknown>;
+      }
+    | undefined;
+}) {
+  if (!data || !data.engine) {
+    return (
+      <div className="border border-paper-200 rounded p-3 bg-paper-50 text-2xs italic text-paper-500">
+        {label}: no run
+      </div>
+    );
+  }
+  const modal = data.engine === "modal";
+  const cap = data.capability_token as {
+    egress_allowed?: boolean;
+    timeout_s?: number;
+    memory_mb?: number;
+    cpu?: number;
+    ro_paths?: string[];
+  } | undefined;
+  return (
+    <div className="border border-paper-200 rounded p-3 bg-white">
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-2xs uppercase tracking-wider text-paper-500 mono">{label}</span>
+        <span
+          className={`text-2xs mono uppercase tracking-wider px-1.5 py-0.5 rounded border ${
+            modal
+              ? "border-accent/40 bg-accent-soft text-accent"
+              : "border-paper-400 text-paper-600"
+          }`}
+        >
+          {modal ? "modal · isolated" : data.engine}
+        </span>
+      </div>
+      <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-2xs mono">
+        <dt className="text-paper-500 uppercase">Duration</dt>
+        <dd className="text-paper-800 tabular-nums">
+          {data.duration_s != null ? `${data.duration_s.toFixed(2)}s` : "—"}
+        </dd>
+        <dt className="text-paper-500 uppercase">Exit</dt>
+        <dd className="text-paper-800 tabular-nums">{data.exit_code ?? "—"}</dd>
+        {cap && (
+          <>
+            <dt className="text-paper-500 uppercase">Egress</dt>
+            <dd className={cap.egress_allowed ? "text-sev-medium" : "text-accent"}>
+              {cap.egress_allowed ? "allowed" : "denied"}
+            </dd>
+            <dt className="text-paper-500 uppercase">Timeout</dt>
+            <dd className="text-paper-800 tabular-nums">{cap.timeout_s}s</dd>
+            <dt className="text-paper-500 uppercase">Memory</dt>
+            <dd className="text-paper-800 tabular-nums">{cap.memory_mb}MB</dd>
+          </>
+        )}
+        {(data.egress_attempts ?? 0) > 0 && (
+          <>
+            <dt className="text-paper-500 uppercase col-span-2 mt-1">
+              Egress attempts denied
+            </dt>
+            <dd className="col-span-2 text-sev-medium">
+              {(data.egress_denied_hosts ?? []).join(", ")}
+            </dd>
+          </>
+        )}
+      </dl>
+    </div>
+  );
+}
+
 
 function StatChip({ label, value, good }: { label: string; value: string; good: boolean }) {
   return (

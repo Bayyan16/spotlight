@@ -134,6 +134,30 @@ class Orchestrator:
             emit(EventType.SWEEP_PHASE_CHANGED, "orchestrator", phase="reproduce", finding=fid)
             emit(EventType.REPRO_STARTED, "reproducer", finding=fid)
             repro = Reproducer().run(repo_path, cand)
+            sandbox_info = repro.get("sandbox", {})
+            if sandbox_info:
+                emit(
+                    EventType.SANDBOX_SPAWNED,
+                    "reproducer",
+                    finding=fid,
+                    engine=sandbox_info.get("engine"),
+                    capability_token=sandbox_info.get("capability_token"),
+                )
+                emit(
+                    EventType.SANDBOX_RESULT,
+                    "reproducer",
+                    finding=fid,
+                    engine=sandbox_info.get("engine"),
+                    duration_s=sandbox_info.get("duration_s"),
+                    exit_code=sandbox_info.get("exit_code"),
+                )
+                if sandbox_info.get("egress_attempts", 0) > 0:
+                    emit(
+                        EventType.SANDBOX_EGRESS_DENIED,
+                        "reproducer",
+                        finding=fid,
+                        hosts=sandbox_info.get("egress_denied_hosts", []),
+                    )
             emit(EventType.REPRO_RESULT, "reproducer", finding=fid, result=repro["result"])
 
             emit(EventType.SWEEP_PHASE_CHANGED, "orchestrator", phase="remediate", finding=fid)
@@ -180,6 +204,10 @@ class Orchestrator:
                     "verification": {
                         **verify,
                         "path": f"verify/{fid}.json",
+                    },
+                    "sandbox": {
+                        "reproducer": repro.get("sandbox", {}),
+                        "verifier": verify.get("sandbox", {}),
                     },
                     "threat_model": {
                         "author": "recon",

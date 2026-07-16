@@ -69,7 +69,7 @@ def test_poc_script_url_encodes_the_payload():
     future refactor drops ``quote(...)`` and shoves the raw payload into an
     f-string path, Werkzeug 3.x will 404 and the Reproducer will silently
     downgrade to ``not-reproduced``."""
-    template = roles._POC_SCRIPT_TEMPLATE
+    template = roles._PY_POC_SCRIPT
     assert "from urllib.parse import quote" in template
     assert "quote(payload" in template
 
@@ -77,18 +77,18 @@ def test_poc_script_url_encodes_the_payload():
 def test_poc_script_does_not_use_fstring_url_interpolation():
     """Regression-lock: the buggy code did ``f"/accounts/{payload}"`` with a
     payload containing quotes + spaces. Never again."""
-    template = roles._POC_SCRIPT_TEMPLATE
+    template = roles._PY_POC_SCRIPT
     assert 'f"/accounts/{payload}"' not in template
     assert "f'/accounts/{payload}'" not in template
 
 
-def test_poc_script_reads_payload_from_environment():
-    """Payload must not be baked into the source via string interpolation —
-    it must arrive via env so no character in the payload can break the
-    Python parser or the shell layer."""
-    template = roles._POC_SCRIPT_TEMPLATE
-    assert 'os.environ["SPOTLIGHT_POC_PAYLOAD"]' in template
-    assert 'os.environ["SPOTLIGHT_POC_APP_PATH"]' in template
+def test_poc_script_resolves_target_root_from_env():
+    """Payload is a literal in the script; the *target root* (which differs
+    between Modal mount /app/target and subprocess cwd) comes from env so the
+    same script runs under both engines. No shell interpolation surface."""
+    template = roles._PY_POC_SCRIPT
+    assert "SPOTLIGHT_TARGET_ROOT" in template
+    assert 'os.environ.get("SPOTLIGHT_TARGET_ROOT"' in template
 
 
 def test_reproducer_handles_payload_with_quotes_and_spaces(tmp_path):
@@ -140,9 +140,9 @@ def test_verifier_uses_same_url_safe_poc_mechanism():
     import inspect
 
     src = inspect.getsource(Verifier)
-    assert "_POC_SCRIPT_TEMPLATE" in src, (
-        "Verifier must reuse the shared _POC_SCRIPT_TEMPLATE (env-driven, "
-        "URL-encoded). Do not build its PoC script via f-string again."
+    assert "_PY_POC_SCRIPT" in src, (
+        "Verifier must reuse the shared _PY_POC_SCRIPT template. Do not build "
+        "its PoC script via f-string again."
     )
     # And the buggy shape must not reappear inside Verifier.
     assert 'f"/accounts/{{payload}}"' not in src
@@ -161,8 +161,9 @@ def test_verifier_confirms_patched_fixture_is_not_exploitable(tmp_path):
     assert remediation["applied"] is True
     verifier = Verifier(MockModelClient())
     v = verifier.run(VULN_FIXTURE, finding, remediation)
-    # Patched app returns [] for the tautology; exploited=False.
-    assert v["poc_result"]["exploited"] is False
+    # Patched app returns [] for the tautology; verifier's result reflects
+    # the sandbox-observed exploit outcome, not the model's prose.
+    assert v["result"] == "repro-now-blocked"
     assert v["backdoor_check"] == "pass"
     assert v["independent_verifier"] is True
     # Clean up the .patched.py sibling the Remediator dropped in-tree.

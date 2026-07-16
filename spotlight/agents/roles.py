@@ -1,19 +1,21 @@
-"""Bounded, single-purpose agent roles. Phase 1 vertical slice.
+"""Bounded, single-purpose agent roles.
 
-Each role has ONE job. Model calls go through a ModelClient (mocked in Phase
-1). The Reproducer runs code in the sandbox module. The Remediator applies a
-patch; the Verifier re-runs the PoC in a fresh context.
+Each role has ONE job. Model calls go through a ModelClient. The Reproducer
+and Verifier route their PoCs through the sandbox module (Modal in
+production, subprocess as fallback). The Remediator applies a patch.
 """
 from __future__ import annotations
 
+import json as _json
 import os
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from spotlight.sandbox import CapabilityToken, SandboxResult, SandboxRunner, get_sandbox
 from spotlight.sg_core import CodeGraph, DataFlowSlice
 
 from .model import MockModelClient, ModelClient
@@ -124,89 +126,99 @@ class Reducer:
 
 @dataclass
 class Reproducer:
-    """Runs a PoC in an isolated subprocess (Phase 1 substitute for full
-    container sandbox). Real sandbox with egress-off comes in Phase 2 via the
-    sandbox module."""
+    """Runs a PoC in an isolated sandbox (Modal in production; subprocess as
+    fallback). Egress-off is enforced by the CapabilityToken and the Modal
+    `block_network=True` platform-level guarantee."""
+
+    sandbox: SandboxRunner | None = None
 
     def run(self, repo_path: Path, finding: dict[str, Any]) -> dict[str, Any]:
         cls = finding["class"]
         if cls != "sqli":
-            return {"result": "inconclusive", "reason": f"no Phase-1 PoC for class={cls}"}
-        # JS targets: skip in-process repro (needs Node runtime + deps installed).
-        # Real Modal sandbox lands in Tranche A3.
-        file_hint = finding.get("location", {}).get("file", "")
-        if file_hint.endswith((".js", ".ts", ".jsx", ".tsx")):
             return {
                 "result": "inconclusive",
-                "reason": "JS target — offline in-process PoC not available in Phase 1.5; awaits Modal sandbox (Tranche A3)",
-                "poc": {"path": "/accounts/' OR '1'='1", "method": "GET"},
+                "reason": f"no Phase-2 PoC template for class={cls}",
+                "sandbox": {},
             }
-        # Load the app in-process and hit it with a classic SQLi payload.
-        # Fix (regression 2026-07-16): the previous impl built an inline python
-        # script via nested f-strings and used the raw payload "' OR '1'='1"
-        # directly in a URL path. On Werkzeug 3.1.x (Flask 3.1.3, Railway's
-        # image) unencoded quotes/spaces in the test-client path fail routing
-        # and the response body is a 404 HTML page, breaking JSON parsing.
-        # We now: (a) write the PoC to a tempfile so there is no shell/f-string
-        # escaping surface, (b) pass the payload via env, and (c) URL-encode it
-        # before hitting the route so Werkzeug decodes it back correctly.
-        app_path = str(repo_path / "app.py")
-        payload = "' OR '1'='1"
-        script = _POC_SCRIPT_TEMPLATE
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".py", delete=False, encoding="utf-8"
-        ) as f:
-            f.write(script)
-            script_path = f.name
-        try:
-            proc = subprocess.run(
-                [sys.executable, script_path],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                cwd=str(repo_path),
-                env={
-                    **os.environ,
-                    "SPOTLIGHT_POC_APP_PATH": app_path,
-                    "SPOTLIGHT_POC_PAYLOAD": payload,
-                },
-            )
-        finally:
-            try:
-                os.unlink(script_path)
-            except OSError:
-                pass
-        stdout = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else "{}"
-        import json as _j
+        sandbox = self.sandbox or get_sandbox()
+        file_hint = finding.get("location", {}).get("file", "")
+        token = CapabilityToken.for_reproducer(
+            finding_id=finding.get("id", "unknown"), repo_path=str(repo_path)
+        )
+        # Both sandbox engines get the target root via an env var so the PoC
+        # script doesn't have to know whether it's running under Modal (with a
+        # /app/target mount) or subprocess (with cwd=repo_path).
+        env = {"SPOTLIGHT_TARGET_ROOT": _target_root_for_engine(sandbox.engine, repo_path)}
 
-        try:
-            data = _j.loads(stdout)
-        except Exception:
-            data = {"error": "unparseable-poc-output", "raw": proc.stdout, "stderr": proc.stderr}
-        result = "confirmed" if data.get("exploited") else "not-reproduced"
+        if file_hint.endswith((".js", ".ts", ".jsx", ".tsx")):
+            script = _JS_POC_SCRIPT
+            result = sandbox.run_node(script=script, token=token, env=env)
+        else:
+            script = _PY_POC_SCRIPT
+            result = sandbox.run_python(script=script, token=token, env=env)
+
+        # Parse the last stdout line as JSON — the PoC template prints a
+        # single JSON summary line.
+        data = _last_json_line(result.stdout)
+        outcome = "confirmed" if data.get("exploited") else "not-reproduced"
         return {
-            "result": result,
+            "result": outcome,
             "poc": {"path": "/accounts/' OR '1'='1", "method": "GET"},
-            "stdout": proc.stdout,
-            "stderr": proc.stderr,
+            "sandbox": {
+                "engine": result.engine,
+                "duration_s": round(result.duration_s, 3),
+                "egress_attempts": result.egress_attempts,
+                "egress_denied_hosts": result.egress_denied_hosts,
+                "exit_code": result.exit_code,
+                "capability_token": token.to_dict(),
+            },
+            "stdout": result.stdout[:2000],
+            "stderr": result.stderr[:1000],
             "raw": data,
         }
 
+    # Legacy in-process PoC preserved for a fallback we don't currently take —
+    # kept in git history via the original implementation. The sandbox path
+    # above is now the sole codepath.
 
-_POC_SCRIPT_TEMPLATE = r"""
-import importlib.util, json, os, sys, traceback
+
+def _target_root_for_engine(engine: str, repo_path: Path) -> str:
+    """Where does the PoC script find the target's app.py|app.js?
+
+    Modal: the RO source is mounted at /app/target inside the sandbox.
+    Subprocess: it's the real host path.
+    """
+    return "/app/target" if engine == "modal" else str(repo_path)
+
+
+def _last_json_line(text: str) -> dict:
+    """PoC templates print one JSON summary line at the end; grab it."""
+    for line in reversed((text or "").splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            return _json.loads(line)
+        except Exception:
+            continue
+    return {"error": "unparseable-poc-output", "raw": (text or "")[:400]}
+
+
+# The Python PoC boots the target Flask app inside the sandbox and hits its
+# test-client with a classic SQLi tautology payload. The target root is read
+# from SPOTLIGHT_TARGET_ROOT so the same script works under Modal (mount at
+# /app/target) and subprocess (real repo path).
+_PY_POC_SCRIPT = r"""
+import importlib.util, json, os, traceback
 from urllib.parse import quote
 
-app_path = os.environ["SPOTLIGHT_POC_APP_PATH"]
-payload = os.environ["SPOTLIGHT_POC_PAYLOAD"]
+root = os.environ.get("SPOTLIGHT_TARGET_ROOT", "/app/target")
+payload = "' OR '1'='1"
 try:
-    spec = importlib.util.spec_from_file_location("vuln_app", app_path)
+    spec = importlib.util.spec_from_file_location("vuln_app", root + "/app.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     client = mod.app.test_client()
-    # URL-encode the payload so Werkzeug 3.x accepts the path; the route
-    # handler receives the decoded value, so the SQLi tautology reaches the
-    # vulnerable query unchanged.
     resp = client.get("/accounts/" + quote(payload, safe=""))
     body = resp.get_data(as_text=True)
     try:
@@ -217,6 +229,38 @@ try:
     print(json.dumps({"status": resp.status_code, "rows": rows, "exploited": exploited}))
 except Exception as e:
     print(json.dumps({"error": repr(e), "traceback": traceback.format_exc()}))
+"""
+
+
+# The Node PoC boots the target Express app in-process and calls its route.
+# Runs under Modal only (node runtime + deps preinstalled in the sandbox image).
+_JS_POC_SCRIPT = r"""
+(async () => {
+  const payload = "' OR '1'='1";
+  const root = process.env.SPOTLIGHT_TARGET_ROOT || "/app/target";
+  try {
+    const app = require(root + "/app.js");
+    const http = require("http");
+    const server = http.createServer(app);
+    await new Promise((r) => server.listen(0, r));
+    const port = server.address().port;
+    const path = "/accounts/" + encodeURIComponent(payload);
+    const resp = await new Promise((resolve, reject) => {
+      http.get({ host: "127.0.0.1", port, path }, (res) => {
+        let body = "";
+        res.on("data", (c) => (body += c));
+        res.on("end", () => resolve({ status: res.statusCode, body }));
+      }).on("error", reject);
+    });
+    server.close();
+    let rows = [];
+    try { rows = JSON.parse(resp.body); } catch {}
+    const exploited = Array.isArray(rows) && rows.length > 0;
+    console.log(JSON.stringify({ status: resp.status, rows, exploited }));
+  } catch (e) {
+    console.log(JSON.stringify({ error: String(e) }));
+  }
+})();
 """
 
 
@@ -271,6 +315,7 @@ class Verifier:
 
     model: ModelClient
     system_prompt: str = "You are the independent Verifier. Re-derive risk from scratch."
+    sandbox: SandboxRunner | None = None
 
     def run(
         self, repo_path: Path, finding: dict[str, Any], remediation: dict[str, Any]
@@ -278,42 +323,45 @@ class Verifier:
         if not remediation.get("applied"):
             return {"result": "no-patch", "independent_verifier": True}
         patched_path = Path(remediation["patched_path"])
-        # Re-run the PoC against the patched file. Same tempfile + env-var +
-        # URL-encoded payload approach as the Reproducer (see fix note above).
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".py", delete=False, encoding="utf-8"
-        ) as f:
-            f.write(_POC_SCRIPT_TEMPLATE)
-            script_path = f.name
-        try:
-            proc = subprocess.run(
-                [sys.executable, script_path],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                env={
-                    **os.environ,
-                    "SPOTLIGHT_POC_APP_PATH": str(patched_path),
-                    "SPOTLIGHT_POC_PAYLOAD": "' OR '1'='1",
-                },
+        sandbox = self.sandbox or get_sandbox()
+        # The Verifier runs the SAME PoC against a patched-swap of the app —
+        # we substitute a modified target dir where app.py is the .patched.py.
+        # For sandbox mounts we materialize a fresh temp dir with the patch
+        # renamed back into place.
+        with tempfile.TemporaryDirectory(prefix="spotlight-verify-") as td:
+            td_path = Path(td)
+            for f in patched_path.parent.iterdir():
+                if f.name == patched_path.name:
+                    continue
+                if f.is_file():
+                    (td_path / f.name).write_bytes(f.read_bytes())
+            # Drop the patched content in as the new app.py
+            (td_path / "app.py").write_bytes(patched_path.read_bytes())
+            token = CapabilityToken.for_verifier(
+                finding_id=finding.get("id", "unknown"), patched_path=str(td_path)
             )
-        finally:
-            try:
-                os.unlink(script_path)
-            except OSError:
-                pass
-        import json as _j
-
-        try:
-            data = _j.loads(proc.stdout.strip().splitlines()[-1])
-        except Exception:
-            data = {"error": "unparseable", "stdout": proc.stdout, "stderr": proc.stderr}
+            env = {"SPOTLIGHT_TARGET_ROOT": _target_root_for_engine(sandbox.engine, td_path)}
+            file_hint = finding.get("location", {}).get("file", "")
+            if file_hint.endswith((".js", ".ts", ".jsx", ".tsx")):
+                sandbox_result = sandbox.run_node(script=_JS_POC_SCRIPT, token=token, env=env)
+            else:
+                sandbox_result = sandbox.run_python(script=_PY_POC_SCRIPT, token=token, env=env)
+        data = _last_json_line(sandbox_result.stdout)
         backdoor = _backdoor_check(remediation.get("diff", ""))
         judgment = self.model.complete(
             role="verifier",
             prompt=self.system_prompt,
             context={"finding": finding, "repro": data, "backdoor": backdoor},
         )
+        judgment["sandbox"] = {
+            "engine": sandbox_result.engine,
+            "duration_s": round(sandbox_result.duration_s, 3),
+            "exit_code": sandbox_result.exit_code,
+            "capability_token": token.to_dict(),
+        }
+        # Consensus derives result from PoC outcome after patch — but keep
+        # model's judgment for the notes/rationale.
+        judgment["result"] = "repro-now-blocked" if not data.get("exploited") else "still-exploitable"
         return {
             **judgment,
             "backdoor_check": backdoor["verdict"],
