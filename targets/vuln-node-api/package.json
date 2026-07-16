@@ -1,0 +1,10 @@
+{
+  "name": "vuln-node-api",
+  "version": "0.0.0",
+  "main": "app.js",
+  "private": true,
+  "dependencies": {
+    "express": "^4.19.2",
+    "better-sqlite3": "^11.0.0"
+  }
+}

@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { IconChevron, IconPlay } from "./Icons";
-import type { Target } from "../lib/api";
+import { listProfiles, type Profile, type Target } from "../lib/api";
 
 export function TopBar({
   running,
@@ -10,6 +10,8 @@ export function TopBar({
   targets,
   sweepId,
   onOpenPalette,
+  profileId,
+  onProfileChange,
 }: {
   running: boolean;
   onStart: (customRepo?: string) => void;
@@ -18,9 +20,20 @@ export function TopBar({
   targets: Target[];
   sweepId: string | null;
   onOpenPalette: () => void;
+  profileId: string;
+  onProfileChange: (id: string) => void;
 }) {
   const [mode, setMode] = useState<"fixture" | "git">("fixture");
   const [gitUrl, setGitUrl] = useState("");
+  const [profiles, setProfiles] = useState<Profile[]>([]);
+
+  useEffect(() => {
+    listProfiles()
+      .then((p) => setProfiles(Array.isArray(p) ? p : []))
+      .catch(() => setProfiles([]));
+  }, []);
+
+  const activeProfile = profiles.find((p) => p.id === profileId);
 
   function handleStart() {
     if (mode === "git" && gitUrl.trim()) {
@@ -101,6 +114,44 @@ export function TopBar({
             className="w-[260px] bg-white border border-paper-300 text-paper-800 text-xs rounded px-2 py-1 mono placeholder:text-paper-400"
           />
         )}
+
+        <div className="relative group">
+          <select
+            className="bg-paper-100 border border-paper-300 hover:border-paper-400 text-paper-800 text-xs rounded px-2 py-1 mono max-w-[180px]"
+            value={profileId}
+            onChange={(e) => onProfileChange(e.target.value)}
+            disabled={running}
+            title={activeProfile?.description}
+          >
+            {profiles.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name} · {p.classes.length}c · {p.max_agents}a
+              </option>
+            ))}
+          </select>
+          {activeProfile && (
+            <div className="hidden group-hover:block absolute right-0 top-full mt-1 z-30 w-[320px] p-3 bg-white border border-paper-300 rounded shadow-pop">
+              <div className="text-xs font-semibold text-paper-900 mb-1">{activeProfile.name}</div>
+              <div className="text-2xs text-paper-600 mb-2 leading-relaxed">
+                {activeProfile.description}
+              </div>
+              <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-2xs mono">
+                <div className="text-paper-500 uppercase">Surfaces</div>
+                <div className="text-paper-800">{activeProfile.surfaces.join(", ")}</div>
+                <div className="text-paper-500 uppercase">Classes</div>
+                <div className="text-paper-800">{activeProfile.classes.length}</div>
+                <div className="text-paper-500 uppercase">Max agents</div>
+                <div className="text-paper-800 tabular-nums">{activeProfile.max_agents}</div>
+                <div className="text-paper-500 uppercase">Budget</div>
+                <div className="text-paper-800 tabular-nums">
+                  {(activeProfile.budget_tokens / 1000).toFixed(0)}k tokens
+                </div>
+                <div className="text-paper-500 uppercase">Languages</div>
+                <div className="text-paper-800">{activeProfile.languages.join(", ")}</div>
+              </div>
+            </div>
+          )}
+        </div>
 
         <button
           onClick={handleStart}

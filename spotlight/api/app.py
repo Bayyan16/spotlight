@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from sqlalchemy import desc
 
 from spotlight.orchestrator import EventBus, Orchestrator, SweepResult
+from spotlight.profiles import get_profile, list_profiles
 from spotlight.store import (
     EventRow,
     FindingRow,
@@ -75,8 +76,20 @@ _git_workdirs: dict[str, Path] = {}
 
 class SweepRequest(BaseModel):
     repo: str
+    profile_id: str | None = None
     surfaces: list[str] = ["code"]
     deployment_tier: str = "t0-mock"
+
+
+@app.get("/profiles")
+def get_profiles() -> list[dict]:
+    return [p.to_dict() for p in list_profiles()]
+
+
+@app.get("/profiles/{profile_id}")
+def get_profile_by_id(profile_id: str) -> dict:
+    p = get_profile(profile_id)
+    return p.to_dict()
 
 
 @app.get("/healthz")
@@ -101,8 +114,9 @@ def list_targets() -> list[dict]:
 @app.post("/sweeps")
 def start_sweep(req: SweepRequest) -> dict:
     repo_path, source = _resolve_repo(req.repo)
+    profile = get_profile(req.profile_id)
     bus = EventBus()
-    orch = Orchestrator(bus=bus)
+    orch = Orchestrator(bus=bus, profile=profile)
 
     def _worker():
         result = None

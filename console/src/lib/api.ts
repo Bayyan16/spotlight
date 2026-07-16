@@ -11,6 +11,26 @@ export type SweepEvent = {
   payload: Record<string, unknown>;
 };
 
+export type Profile = {
+  id: string;
+  name: string;
+  description: string;
+  surfaces: string[];
+  classes: string[];
+  languages: string[];
+  model: string;
+  max_agents: number;
+  budget_tokens: number;
+  scope_globs: string[];
+  runtime_validate: boolean;
+  interactive: boolean;
+};
+
+export async function listProfiles(): Promise<Profile[]> {
+  const r = await fetch(`${BASE}/profiles`);
+  return r.ok ? r.json() : [];
+}
+
 export type Finding = {
   id: string;
   surface: string;
@@ -28,6 +48,14 @@ export type Finding = {
     root_cause: string;
     fix: { diff: string | null; approach: string };
     verification: Record<string, unknown>;
+    threat_model?: {
+      author: string;
+      profile: string;
+      surfaces: string[];
+      untrusted_sources: string[];
+      high_impact_sinks: string[];
+      stack?: { language?: string; framework?: string };
+    };
   };
   consensus: { tier: string; independent_corroborators: number; decision: string; rationale: string };
   audit: Record<string, unknown>;
@@ -54,11 +82,11 @@ export async function listSweeps(): Promise<SweepSummary[]> {
   return r.json();
 }
 
-export async function startSweep(repo: string): Promise<{ sweep_id: string }> {
+export async function startSweep(repo: string, profileId?: string): Promise<{ sweep_id: string }> {
   const r = await fetch(`${BASE}/sweeps`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ repo, surfaces: ["code"] }),
+    body: JSON.stringify({ repo, profile_id: profileId, surfaces: ["code"] }),
   });
   if (!r.ok) {
     const err = await r.text();

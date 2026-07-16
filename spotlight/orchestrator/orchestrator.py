@@ -12,9 +12,12 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from spotlight.agents import Investigator, Recon, Reducer, Remediator, Reproducer, Verifier
 from spotlight.agents.model import MockModelClient, ModelClient
 from spotlight.agents.moonshot import maybe_from_env
+from spotlight.profiles import Profile, get_profile
 
 from .events import EventBus, EventType
 
@@ -52,10 +55,12 @@ class Orchestrator:
         self,
         model: ModelClient | None = None,
         bus: EventBus | None = None,
+        profile: Profile | None = None,
     ) -> None:
         # Priority: explicit model > Moonshot from env > mock.
         self.model = model or maybe_from_env() or MockModelClient()
         self.bus = bus or EventBus()
+        self.profile = profile or get_profile(None)
 
     def run(self, repo_path: str | Path, out_dir: str | Path | None = None) -> SweepResult:
         repo_path = Path(repo_path).resolve()
@@ -72,24 +77,51 @@ class Orchestrator:
         recon_out = Recon(self.model).run(repo_path)
         emit(EventType.AGENT_FINISHED, "recon", signals=len(recon_out["signals"]))
 
-        # 2. Investigate — one Investigator per reachable slice (Phase 1: no fan-out cap yet)
+        # 2. Investigate — parallel fan-out under Profile.max_agents.
         emit(EventType.SWEEP_PHASE_CHANGED, "orchestrator", phase="investigate")
         candidates: list[dict[str, Any]] = []
-        for slice_ in recon_out["signals"]:
-            emit(EventType.AGENT_SPAWNED, "orchestrator", role="investigator", slice=slice_)
+        slices = recon_out["signals"]
+        # Filter slices by the Profile's class set — if a profile targets only
+        # `sqli`, don't spawn Investigators for XSS/SSRF signals.
+        allowed_classes = set(self.profile.classes)
+        active_slices = [
+            s for s in slices if s["sink"]["class"] in allowed_classes
+        ] if allowed_classes else slices
+
+        def _investigate(idx_slice):
+            idx, slice_ = idx_slice
+            emit(
+                EventType.AGENT_SPAWNED,
+                "orchestrator",
+                role="investigator",
+                slice=slice_,
+                worker=f"inv-{idx}",
+            )
             judgment = Investigator(self.model).run(slice_)
-            if judgment:
-                # Static-analysis facts are attached by the orchestrator, not the
-                # model. That way "reachable" is a checkable graph fact, and the
-                # Consensus Kernel doesn't depend on the model saying magic words.
-                existing = judgment.get("evidence_used", []) or []
-                judgment["evidence_used"] = [
-                    "codegraph:source->sink reachable",
-                    slice_["reason"],
-                    *existing,
-                ]
-                candidates.append(judgment)
-                emit(EventType.CANDIDATE_RAISED, "investigator", candidate=judgment)
+            if not judgment:
+                emit(EventType.AGENT_FINISHED, f"inv-{idx}", verdict="reject")
+                return None
+            existing = judgment.get("evidence_used", []) or []
+            judgment["evidence_used"] = [
+                "codegraph:source->sink reachable",
+                slice_["reason"],
+                *existing,
+            ]
+            emit(EventType.AGENT_FINISHED, f"inv-{idx}", verdict="candidate")
+            emit(EventType.CANDIDATE_RAISED, f"inv-{idx}", candidate=judgment)
+            return judgment
+
+        max_workers = max(1, min(self.profile.max_agents, max(1, len(active_slices))))
+        if max_workers > 1 and len(active_slices) > 1:
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                for judgment in pool.map(_investigate, enumerate(active_slices)):
+                    if judgment:
+                        candidates.append(judgment)
+        else:
+            for pair in enumerate(active_slices):
+                judgment = _investigate(pair)
+                if judgment:
+                    candidates.append(judgment)
 
         # 3. Reduce
         emit(EventType.SWEEP_PHASE_CHANGED, "orchestrator", phase="reduce")
@@ -149,6 +181,18 @@ class Orchestrator:
                         **verify,
                         "path": f"verify/{fid}.json",
                     },
+                    "threat_model": {
+                        "author": "recon",
+                        "profile": self.profile.id,
+                        "surfaces": recon_out["threat_model"].get("surfaces", self.profile.surfaces),
+                        "untrusted_sources": recon_out["threat_model"]
+                            .get("threat_model", {})
+                            .get("untrusted_sources", []),
+                        "high_impact_sinks": recon_out["threat_model"]
+                            .get("threat_model", {})
+                            .get("high_impact_sinks", []),
+                        "stack": recon_out["threat_model"].get("stack", {}),
+                    },
                 },
                 "consensus": {
                     "tier": tier,
@@ -159,6 +203,8 @@ class Orchestrator:
                 "audit": {
                     "model": self.model.family,
                     "deployment_tier": "t0-mock",
+                    "profile": self.profile.id,
+                    "profile_name": self.profile.name,
                     "commit": "<dev>",
                     "timestamp": None,
                 },

@@ -95,6 +95,63 @@ export function FindingDetail({ finding }: { finding: Finding }) {
           </div>
         </Panel>
 
+        {finding.evidence.threat_model && (
+          <Panel title="Threat model in effect">
+            <div className="mb-3 text-xs text-paper-700">
+              This finding was judged under the threat model{" "}
+              <span className="mono uppercase tracking-wider text-2xs text-accent bg-accent-soft border border-accent/30 rounded px-1.5 py-0.5 mx-0.5">
+                {finding.evidence.threat_model.profile}
+              </span>{" "}
+              (author:{" "}
+              <span className="mono">{finding.evidence.threat_model.author}</span>).
+              {finding.evidence.threat_model.stack?.language && (
+                <>
+                  {" "}Stack detected:{" "}
+                  <span className="mono text-paper-800">
+                    {finding.evidence.threat_model.stack.language}
+                    {finding.evidence.threat_model.stack.framework
+                      ? ` · ${finding.evidence.threat_model.stack.framework}`
+                      : ""}
+                  </span>
+                  .
+                </>
+              )}
+            </div>
+            <div className="grid grid-cols-2 gap-4 text-xs">
+              <div>
+                <div className="text-2xs uppercase tracking-wider text-paper-500 mono mb-1.5">
+                  Untrusted sources
+                </div>
+                <ul className="space-y-1">
+                  {(finding.evidence.threat_model.untrusted_sources ?? []).map((s) => (
+                    <li key={s} className="mono text-paper-800 text-2xs bg-paper-100 border border-paper-200 rounded px-2 py-0.5 inline-block mr-1 mb-1">
+                      {s}
+                    </li>
+                  ))}
+                  {(finding.evidence.threat_model.untrusted_sources ?? []).length === 0 && (
+                    <li className="text-paper-500 text-2xs italic">none</li>
+                  )}
+                </ul>
+              </div>
+              <div>
+                <div className="text-2xs uppercase tracking-wider text-paper-500 mono mb-1.5">
+                  High-impact sinks
+                </div>
+                <ul className="space-y-1">
+                  {(finding.evidence.threat_model.high_impact_sinks ?? []).map((s) => (
+                    <li key={s} className="mono text-paper-800 text-2xs bg-paper-100 border border-paper-200 rounded px-2 py-0.5 inline-block mr-1 mb-1">
+                      {s}
+                    </li>
+                  ))}
+                  {(finding.evidence.threat_model.high_impact_sinks ?? []).length === 0 && (
+                    <li className="text-paper-500 text-2xs italic">none</li>
+                  )}
+                </ul>
+              </div>
+            </div>
+          </Panel>
+        )}
+
         <Panel title="Audit">
           <dl className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-xs mono">
             {Object.entries(finding.audit ?? {}).map(([k, v]) => (

@@ -49,6 +49,28 @@ beforeEach(() => {
             Promise.resolve([{ name: "vuln-bank-api", path: "/tmp/vuln", has_ground_truth: true }]),
         }) as any;
       }
+      if (url.endsWith("/profiles")) {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve([
+              {
+                id: "balanced",
+                name: "Balanced",
+                description: "test",
+                surfaces: ["code"],
+                classes: ["sqli"],
+                languages: ["python"],
+                model: "moonshot",
+                max_agents: 6,
+                budget_tokens: 1500000,
+                scope_globs: ["**/*.py"],
+                runtime_validate: true,
+                interactive: false,
+              },
+            ]),
+        }) as any;
+      }
       if (url.endsWith("/sweeps") && init?.method === "POST") {
         return Promise.resolve({ ok: true, json: () => Promise.resolve({ sweep_id: "sw_test" }) }) as any;
       }
@@ -79,7 +101,7 @@ describe("App", () => {
   it("loads targets into the selector", async () => {
     render(<App />);
     await waitFor(() => {
-      expect(screen.getByRole("combobox")).toBeInTheDocument();
+      expect(screen.getAllByRole("combobox").length).toBeGreaterThan(0);
     });
     expect(screen.getByRole("option", { name: "vuln-bank-api" })).toBeInTheDocument();
   });

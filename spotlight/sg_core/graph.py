@@ -149,11 +149,18 @@ def _arg_names(arg_source: str) -> set[str]:
 @dataclass
 class CodeGraph:
     files: list[ParsedFile] = field(default_factory=list)
+    _js_paths: list[Path] = field(default_factory=list)
 
     @classmethod
     def build(cls, paths: Iterable[str | Path]) -> "CodeGraph":
-        parsed = [parse_python(p) for p in paths if str(p).endswith(".py")]
-        return cls(files=parsed)
+        py_paths = [Path(p) for p in paths if str(p).endswith(".py")]
+        parsed = [parse_python(p) for p in py_paths]
+        # JS/TS files are attached separately — their slices are computed
+        # directly by parse_js_ts and returned by slices() below.
+        js_paths = [Path(p) for p in paths if str(p).endswith((".js", ".ts", ".jsx", ".tsx"))]
+        graph = cls(files=parsed)
+        graph._js_paths = js_paths
+        return graph
 
     def slices(self) -> list[DataFlowSlice]:
         results: list[DataFlowSlice] = []
@@ -205,6 +212,11 @@ class CodeGraph:
                                 reason=reason,
                             )
                         )
+        # JS/TS slices come from the regex-based scanner; same output shape.
+        for js_path in self._js_paths:
+            from .js_parser import parse_js_ts
+
+            results.extend(parse_js_ts(js_path))
         return results
 
     def reachable_slices(self) -> list[DataFlowSlice]:

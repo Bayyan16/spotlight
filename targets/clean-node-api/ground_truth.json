@@ -1,0 +1,15 @@
+{
+  "target": "clean-node-api",
+  "language": "javascript",
+  "expected_findings": [],
+  "negative_expectations": [
+    {
+      "id": "NEG-N01",
+      "class": "sqli",
+      "file": "app.js",
+      "function": "GET /accounts/:username",
+      "expectation": "no-promoted-finding",
+      "reason": "parameterized prepared statement — tainted value bound, not interpolated"
+    }
+  ]
+}

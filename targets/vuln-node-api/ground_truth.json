@@ -1,0 +1,20 @@
+{
+  "target": "vuln-node-api",
+  "language": "javascript",
+  "expected_findings": [
+    {
+      "id": "GT-N01",
+      "class": "sqli",
+      "cwe": "CWE-89",
+      "surface": "code",
+      "file": "app.js",
+      "function": "GET /accounts/:username",
+      "line_hint": 17,
+      "trigger": "GET /accounts/'%20OR%201=1--",
+      "expected_state": "confirmed-fixed",
+      "expected_tier": "verified"
+    }
+  ],
+  "negative_expectations": [],
+  "notes": "Classic string concatenation SQLi in an Express route. Fix: use parameterized prepare + placeholder."
+}

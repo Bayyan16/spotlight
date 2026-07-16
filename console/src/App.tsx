@@ -33,6 +33,7 @@ export default function App() {
   const [historyRefresh, setHistoryRefresh] = useState(0);
   const [historyCount, setHistoryCount] = useState<number>(0);
   const [palette, setPalette] = useState(false);
+  const [profileId, setProfileId] = useState<string>("balanced");
 
   useEffect(() => {
     listTargets().then(setTargets).catch(() => setTargets([]));
@@ -102,7 +103,7 @@ export default function App() {
     setNav("sweeps");
     try {
       const repo = customRepo ?? selected;
-      const { sweep_id } = await startSweep(repo);
+      const { sweep_id } = await startSweep(repo, profileId);
       setSweepId(sweep_id);
     } catch (err) {
       setRunning(false);
@@ -139,6 +140,8 @@ export default function App() {
           targets={targets}
           sweepId={sweepId}
           onOpenPalette={() => setPalette(true)}
+          profileId={profileId}
+          onProfileChange={setProfileId}
         />
 
         <div key={nav} className="flex-1 min-h-0 flex overflow-hidden animate-fade-in">

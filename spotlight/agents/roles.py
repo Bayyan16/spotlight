@@ -127,6 +127,15 @@ class Reproducer:
         cls = finding["class"]
         if cls != "sqli":
             return {"result": "inconclusive", "reason": f"no Phase-1 PoC for class={cls}"}
+        # JS targets: skip in-process repro (needs Node runtime + deps installed).
+        # Real Modal sandbox lands in Tranche A3.
+        file_hint = finding.get("location", {}).get("file", "")
+        if file_hint.endswith((".js", ".ts", ".jsx", ".tsx")):
+            return {
+                "result": "inconclusive",
+                "reason": "JS target — offline in-process PoC not available in Phase 1.5; awaits Modal sandbox (Tranche A3)",
+                "poc": {"path": "/accounts/' OR '1'='1", "method": "GET"},
+            }
         # Load the app in-process and hit it with a classic SQLi payload.
         # Fix (regression 2026-07-16): the previous impl built an inline python
         # script via nested f-strings and used the raw payload "' OR '1'='1"
