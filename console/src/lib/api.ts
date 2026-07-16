@@ -154,7 +154,9 @@ export async function deleteSweep(id: string): Promise<void> {
   await fetch(`${BASE}/sweeps/${id}`, { method: "DELETE" });
 }
 
-export async function cleanupSweeps(status: "failed" | "running" = "failed"): Promise<{ deleted: number }> {
+export async function cleanupSweeps(
+  status: "failed" | "running" | "finished" = "failed"
+): Promise<{ deleted: number }> {
   const r = await fetch(`${BASE}/sweeps/cleanup?status=${status}`, { method: "POST" });
   return r.ok ? r.json() : { deleted: 0 };
 }

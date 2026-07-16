@@ -45,7 +45,7 @@ export function NavRail({
 
       <div className="px-4 pb-1 pt-2 text-2xs uppercase tracking-wider text-paper-500 mono">Workspace</div>
       <nav className="px-2 space-y-0.5 text-sm">
-        <NavItem k="home" active={active} onSelect={onSelect} icon={<IconHome />} label="Sweeps history" shortcut="1" />
+        <NavItem k="home" active={active} onSelect={onSelect} icon={<IconHome />} label="Board" shortcut="1" />
         <NavItem
           k="sweeps"
           active={active}

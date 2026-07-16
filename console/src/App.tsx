@@ -4,7 +4,7 @@ import { TopBar } from "./components/TopBar";
 import { FindingsList } from "./components/FindingsList";
 import { FindingDetail } from "./components/FindingDetail";
 import { LiveSweepPanel } from "./components/LiveSweepPanel";
-import { SweepsList } from "./components/SweepsList";
+import { Board } from "./components/Board";
 import { Dashboard } from "./components/Dashboard";
 import { CommandPalette } from "./components/CommandPalette";
 import { Cmul8Mark } from "./components/Cmul8Mark";
@@ -140,13 +140,23 @@ export default function App() {
         />
 
         <div key={nav} className="flex-1 min-h-0 flex overflow-hidden animate-fade-in">
-          {/* HOME — always three panes: nav | sweeps list | dashboard/summary */}
-          {nav === "home" && (
+          {/* HOME (Board) — full-width table + chart hero, cleanui1 aesthetic. */}
+          {nav === "home" && !selectedSweep && (
+            <Board
+              onOpen={openHistoricalSweep}
+              onStart={() => onStart()}
+              onSelect={setSelectedSweep}
+              selected={null}
+              refreshSignal={historyRefresh}
+            />
+          )}
+          {nav === "home" && selectedSweep && (
             <>
-              <SweepsList
+              <Board
                 onOpen={openHistoricalSweep}
+                onStart={() => onStart()}
                 onSelect={setSelectedSweep}
-                selected={selectedSweep?.sweep_id ?? null}
+                selected={selectedSweep.sweep_id}
                 refreshSignal={historyRefresh}
               />
               <Dashboard
