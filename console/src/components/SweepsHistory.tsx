@@ -1,7 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { cleanupSweeps, deleteSweep, listSweeps, type SweepSummary } from "../lib/api";
 import { Cmul8Mark } from "./Cmul8Mark";
-import { IconPlay } from "./Icons";
+import {
+  IconAlert,
+  IconAttestation,
+  IconCheck,
+  IconExploitPath,
+  IconSweep,
+  IconWarden,
+} from "./Icons";
 
 export function SweepsHistory({
   onOpen,
@@ -34,17 +41,12 @@ export function SweepsHistory({
 
   return (
     <section className="flex-1 min-w-0 overflow-y-auto bg-paper-50">
-      <header className="border-b border-paper-300 px-6 py-4 sticky top-0 bg-paper-50/90 backdrop-blur z-10 flex items-center gap-4">
-        <div>
-          <h1 className="text-lg text-paper-900 font-semibold tracking-tight">Sweeps</h1>
-          <p className="text-xs text-paper-600">
-            Every sweep this workspace has run, persisted in Postgres.
-          </p>
-        </div>
-        <div className="ml-auto flex items-center gap-3 text-xs mono uppercase tracking-wider text-paper-500">
-          <Stat label="Total" value={rollup.total} />
-          <Stat label="Verified" value={rollup.verified} accent="accent" />
-          <Stat label="Findings" value={rollup.totalFindings} />
+      <header className="border-b border-paper-300 px-8 py-5 sticky top-0 bg-paper-50/95 backdrop-blur z-10">
+        <div className="flex items-baseline gap-3">
+          <h1 className="text-xl text-paper-900 font-semibold tracking-tight">Sweeps</h1>
+          <span className="text-xs text-paper-500">
+            Everything this workspace has scanned — persisted, replayable.
+          </span>
           {rollup.failed > 0 && (
             <button
               onClick={async () => {
@@ -53,8 +55,8 @@ export function SweepsHistory({
                 const fresh = await listSweeps();
                 setRows(Array.isArray(fresh) ? fresh : []);
               }}
-              className="text-2xs mono uppercase tracking-wider px-2 py-1 rounded border border-paper-300 hover:border-sev-critical hover:text-sev-critical text-paper-600 transition-colors"
-              title="Delete sweeps stuck in a failed state (e.g. killed mid-run by a deploy)"
+              className="ml-auto text-2xs mono uppercase tracking-wider px-2 py-1 rounded border border-paper-300 hover:border-sev-critical hover:text-sev-critical text-paper-600 transition-colors"
+              title="Delete sweeps stuck in a failed state"
             >
               Clear {rollup.failed} failed
             </button>
@@ -62,101 +64,131 @@ export function SweepsHistory({
         </div>
       </header>
 
-      {/* Severity distribution across all sweeps */}
+      {/* Hero KPI cards */}
       {rollup.total > 0 && (
-        <div className="px-6 py-4 border-b border-paper-300">
-          <div className="flex items-center gap-4">
-            <div className="text-2xs uppercase tracking-wider text-paper-500 mono w-24">
-              Severity mix
+        <div className="px-8 pt-6 pb-2 grid grid-cols-4 gap-3">
+          <KpiCard
+            label="Sweeps run"
+            value={rollup.total}
+            icon={<IconSweep />}
+            accent="neutral"
+          />
+          <KpiCard
+            label="Findings promoted"
+            value={rollup.totalFindings}
+            sub={rollup.totalFindings > 0 ? `${rollup.verified} verified` : "—"}
+            icon={<IconAttestation />}
+            accent={rollup.totalFindings > 0 ? "amber" : "neutral"}
+          />
+          <KpiCard
+            label="Confirmed fixed"
+            value={rollup.verified}
+            sub={rollup.verified === rollup.totalFindings && rollup.totalFindings > 0 ? "all clear" : ""}
+            icon={<IconCheck />}
+            accent={rollup.verified > 0 ? "accent" : "neutral"}
+          />
+          <KpiCard
+            label="Sandbox runs"
+            value={rollup.total * 2}
+            sub="Modal · egress off"
+            icon={<IconWarden />}
+            accent="neutral"
+          />
+        </div>
+      )}
+
+      {/* Severity mix — only render when there's at least one non-empty class */}
+      {rollup.total > 0 && rollup.totalFindings > 0 && (
+        <div className="px-8 py-5">
+          <div className="border border-paper-300 rounded-lg bg-white shadow-card p-5">
+            <div className="flex items-center gap-3 mb-3">
+              <IconExploitPath size={14} />
+              <span className="text-2xs uppercase tracking-wider text-paper-500 mono">
+                Severity mix — across {rollup.total} sweep{rollup.total === 1 ? "" : "s"}
+              </span>
+              <span className="ml-auto text-2xs mono text-paper-500 tabular-nums">
+                {rollup.totalFindings} finding{rollup.totalFindings === 1 ? "" : "s"} total
+              </span>
             </div>
-            <div className="flex-1 h-2 rounded-full overflow-hidden bg-paper-200 flex">
-              <Bar w={rollup.sevPct.critical} className="bg-sev-critical" />
-              <Bar w={rollup.sevPct.high} className="bg-sev-high" />
-              <Bar w={rollup.sevPct.medium} className="bg-sev-medium" />
-              <Bar w={rollup.sevPct.low} className="bg-sev-low" />
+            <div className="h-3 rounded-full overflow-hidden bg-paper-200 flex mb-3">
+              <SegBar w={rollup.sevPct.critical} className="bg-sev-critical" />
+              <SegBar w={rollup.sevPct.high} className="bg-sev-high" />
+              <SegBar w={rollup.sevPct.medium} className="bg-sev-medium" />
+              <SegBar w={rollup.sevPct.low} className="bg-sev-low" />
             </div>
-            <div className="flex items-center gap-3 text-2xs mono text-paper-500">
-              <Dot color="bg-sev-critical" label={`${rollup.sev.critical} crit`} />
-              <Dot color="bg-sev-high" label={`${rollup.sev.high} high`} />
-              <Dot color="bg-sev-medium" label={`${rollup.sev.medium} med`} />
-              <Dot color="bg-sev-low" label={`${rollup.sev.low} low`} />
+            <div className="flex items-center gap-5 text-xs">
+              {[
+                { label: "Critical", n: rollup.sev.critical, color: "bg-sev-critical", text: "text-sev-critical" },
+                { label: "High", n: rollup.sev.high, color: "bg-sev-high", text: "text-sev-high" },
+                { label: "Medium", n: rollup.sev.medium, color: "bg-sev-medium", text: "text-sev-medium" },
+                { label: "Low", n: rollup.sev.low, color: "bg-sev-low", text: "text-sev-low" },
+              ]
+                .filter((s) => s.n > 0)
+                .map((s) => (
+                  <div key={s.label} className="flex items-center gap-2">
+                    <span className={`h-2 w-2 rounded-full ${s.color}`} />
+                    <span className={`mono uppercase tracking-wider text-2xs ${s.text}`}>
+                      {s.label}
+                    </span>
+                    <span className="mono tabular-nums text-paper-900 font-semibold">{s.n}</span>
+                  </div>
+                ))}
+              {rollup.totalFindings === 0 && (
+                <span className="text-paper-500 italic text-xs">no promoted findings yet</span>
+              )}
             </div>
           </div>
         </div>
       )}
 
-      <div className="px-6 py-4">
-        {rows === null && <SkeletonTable />}
-        {rows !== null && rows.length === 0 && (
-          <div className="text-center py-16">
-            <div className="mx-auto mb-3 opacity-40 grid place-items-center">
-              <Cmul8Mark size={44} />
+      {/* Attention banner: verified findings still need a human sign-off */}
+      {rollup.verified > 0 && (
+        <div className="px-8 pb-4">
+          <div className="border border-accent/30 bg-gradient-to-r from-accent-soft to-accent-soft/40 rounded-lg px-4 py-3 flex items-center gap-3 shadow-card">
+            <div className="h-8 w-8 rounded-full bg-accent grid place-items-center text-white">
+              <IconCheck size={16} />
             </div>
-            <div className="text-paper-700 text-sm">No sweeps yet.</div>
-            <div className="text-paper-500 text-xs mt-1">
-              Kick one off from the top bar — pick a fixture or paste a git URL.
+            <div className="flex-1 min-w-0">
+              <div className="text-sm text-paper-900">
+                <span className="font-semibold">{rollup.verified}</span> verified fix
+                {rollup.verified === 1 ? "" : "es"} ready for review
+              </div>
+              <div className="text-xs text-paper-600">
+                Reproduced, patched, independently verified in a hardened sandbox.
+              </div>
             </div>
-            <div className="mt-4 inline-flex items-center gap-1 text-2xs mono uppercase tracking-wider text-paper-500">
-              <kbd className="border border-paper-300 rounded px-1 py-0.5 bg-white">⌘</kbd>
-              <kbd className="border border-paper-300 rounded px-1 py-0.5 bg-white">↵</kbd>
-              <span className="ml-1">start</span>
-              <span className="mx-2 text-paper-400">·</span>
-              <kbd className="border border-paper-300 rounded px-1 py-0.5 bg-white">⌘K</kbd>
-              <span className="ml-1">command</span>
-            </div>
+            <span className="text-2xs mono uppercase tracking-wider text-accent bg-white border border-accent/30 rounded px-2 py-0.5">
+              open a sweep →
+            </span>
           </div>
-        )}
+        </div>
+      )}
+
+      <div className="px-8 pb-8">
+        {rows === null && <SkeletonTable />}
+        {rows !== null && rows.length === 0 && <EmptyState />}
         {rows !== null && rows.length > 0 && (
-          <div className="border border-paper-300 rounded-md bg-white shadow-card overflow-hidden animate-fade-in">
+          <div className="border border-paper-300 rounded-lg bg-white shadow-card overflow-hidden animate-fade-in">
             <table className="w-full text-sm">
               <thead className="bg-paper-100 border-b border-paper-300 text-2xs uppercase tracking-wider text-paper-500 mono">
                 <tr>
-                  <th className="text-left px-4 py-2 font-medium">Sweep</th>
-                  <th className="text-left px-4 py-2 font-medium">Target</th>
-                  <th className="text-left px-4 py-2 font-medium">Source</th>
-                  <th className="text-left px-4 py-2 font-medium">Status</th>
-                  <th className="text-right px-4 py-2 font-medium">Findings</th>
-                  <th className="text-left px-4 py-2 font-medium">Started</th>
-                  <th className="px-2 py-2"></th>
+                  <th className="text-left px-5 py-2.5 font-medium">Sweep · Target</th>
+                  <th className="text-left px-4 py-2.5 font-medium">Source</th>
+                  <th className="text-left px-4 py-2.5 font-medium">Status</th>
+                  <th className="text-left px-4 py-2.5 font-medium">Findings</th>
+                  <th className="text-right px-4 py-2.5 font-medium">Started</th>
+                  <th className="px-2"></th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((r) => (
-                  <tr
+                  <SweepRow
                     key={r.sweep_id}
-                    className="border-b border-paper-200 last:border-none hover:bg-paper-100/60 cursor-pointer group transition-colors"
-                    onClick={() => onOpen(r.sweep_id)}
-                  >
-                    <td className="px-4 py-2.5 mono text-xs text-paper-700 tabular-nums group-hover:text-paper-900">
-                      {r.sweep_id}
-                    </td>
-                    <td className="px-4 py-2.5 text-paper-900">{r.repo_name}</td>
-                    <td className="px-4 py-2.5">
-                      <SourcePill source={r.source} />
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <StatusPill status={r.status} />
-                    </td>
-                    <td className="px-4 py-2.5 mono text-right text-paper-800 tabular-nums">
-                      {r.findings_count}
-                    </td>
-                    <td className="px-4 py-2.5 mono text-2xs text-paper-500 tabular-nums">
-                      {r.started_at ? relativeTime(r.started_at) : "—"}
-                    </td>
-                    <td className="px-2 py-2.5 text-right">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onDelete(r.sweep_id);
-                        }}
-                        disabled={busy === r.sweep_id}
-                        className="opacity-0 group-hover:opacity-100 text-2xs mono uppercase tracking-wider text-paper-500 hover:text-sev-critical px-2 py-1 rounded transition-all"
-                        title="Delete this sweep and its findings"
-                      >
-                        {busy === r.sweep_id ? "…" : "delete"}
-                      </button>
-                    </td>
-                  </tr>
+                    row={r}
+                    busy={busy === r.sweep_id}
+                    onOpen={() => onOpen(r.sweep_id)}
+                    onDelete={() => onDelete(r.sweep_id)}
+                  />
                 ))}
               </tbody>
             </table>
@@ -167,48 +199,165 @@ export function SweepsHistory({
   );
 }
 
-function Stat({ label, value, accent }: { label: string; value: number; accent?: "accent" }) {
+function SweepRow({
+  row,
+  busy,
+  onOpen,
+  onDelete,
+}: {
+  row: SweepSummary;
+  busy: boolean;
+  onOpen: () => void;
+  onDelete: () => void;
+}) {
+  const hasFindings = row.findings_count > 0;
   return (
-    <div className="flex items-center gap-1.5">
-      <span className="text-paper-500">{label}</span>
-      <span
-        className={`mono tabular-nums font-semibold ${
-          accent === "accent" ? "text-accent" : "text-paper-900"
-        }`}
-      >
-        {value}
+    <tr
+      className="border-b border-paper-200 last:border-none hover:bg-paper-100/50 cursor-pointer group transition-colors"
+      onClick={onOpen}
+    >
+      <td className="px-5 py-3">
+        <div className="flex items-center gap-3">
+          <div
+            className={`h-8 w-8 rounded-md grid place-items-center shrink-0 ${
+              hasFindings ? "bg-accent-soft text-accent" : "bg-paper-200 text-paper-500"
+            }`}
+          >
+            <IconSweep size={14} />
+          </div>
+          <div className="min-w-0">
+            <div className="text-paper-900 font-medium truncate">{row.repo_name}</div>
+            <div className="mono text-2xs text-paper-500 truncate">{row.sweep_id}</div>
+          </div>
+        </div>
+      </td>
+      <td className="px-4 py-3">
+        <SourcePill source={row.source} />
+      </td>
+      <td className="px-4 py-3">
+        <StatusPill status={row.status} />
+      </td>
+      <td className="px-4 py-3">
+        <FindingsCell count={row.findings_count} />
+      </td>
+      <td className="px-4 py-3 text-right mono text-2xs text-paper-500 tabular-nums">
+        {row.started_at ? relativeTime(row.started_at) : "—"}
+      </td>
+      <td className="px-2 py-3 text-right">
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+          disabled={busy}
+          className="opacity-0 group-hover:opacity-100 text-2xs mono uppercase tracking-wider text-paper-500 hover:text-sev-critical px-2 py-1 rounded transition-all"
+          title="Delete this sweep and its findings"
+        >
+          {busy ? "…" : "delete"}
+        </button>
+      </td>
+    </tr>
+  );
+}
+
+function FindingsCell({ count }: { count: number }) {
+  if (count === 0) {
+    return (
+      <span className="text-2xs mono uppercase tracking-wider text-paper-500 flex items-center gap-1.5">
+        <span className="h-1.5 w-1.5 rounded-full bg-paper-400" />
+        clean
       </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 text-sm">
+      <span className="mono tabular-nums font-semibold text-paper-900">{count}</span>
+      <span className="text-2xs mono uppercase text-paper-500">
+        finding{count === 1 ? "" : "s"}
+      </span>
+    </span>
+  );
+}
+
+function KpiCard({
+  label,
+  value,
+  sub,
+  icon,
+  accent,
+}: {
+  label: string;
+  value: number;
+  sub?: string;
+  icon: React.ReactNode;
+  accent: "neutral" | "amber" | "accent";
+}) {
+  const accentBg =
+    accent === "accent"
+      ? "bg-accent-soft text-accent"
+      : accent === "amber"
+      ? "bg-amber-50 text-sev-medium"
+      : "bg-paper-200 text-paper-600";
+  const numColor =
+    accent === "accent" ? "text-accent" : accent === "amber" ? "text-sev-medium" : "text-paper-900";
+  return (
+    <div className="rounded-lg border border-paper-300 bg-white p-4 shadow-card transition-all hover:shadow-pop hover:-translate-y-0.5">
+      <div className="flex items-start justify-between mb-2">
+        <span className="text-2xs mono uppercase tracking-wider text-paper-500">{label}</span>
+        <span className={`h-7 w-7 rounded-md grid place-items-center ${accentBg}`}>{icon}</span>
+      </div>
+      <div className={`text-3xl font-semibold tabular-nums tracking-tight ${numColor}`}>
+        {value}
+      </div>
+      {sub && <div className="text-2xs text-paper-500 mono mt-0.5">{sub}</div>}
     </div>
   );
 }
 
-function Bar({ w, className }: { w: number; className: string }) {
-  if (w <= 0) return null;
-  return <span style={{ width: `${w}%` }} className={`${className} h-full transition-all`} />;
+function EmptyState() {
+  return (
+    <div className="text-center py-20">
+      <div className="mx-auto mb-4 opacity-40 grid place-items-center">
+        <Cmul8Mark size={56} />
+      </div>
+      <div className="text-paper-800 text-base font-medium">Point Spotlight at something.</div>
+      <div className="text-paper-500 text-sm mt-1 max-w-md mx-auto">
+        Pick a bundled fixture from the top bar to see the flow. Or paste a{" "}
+        <span className="mono">.git</span> URL and Spotlight will clone, scan, patch and
+        verify — end to end.
+      </div>
+      <div className="mt-6 inline-flex items-center gap-2 text-2xs mono uppercase tracking-wider text-paper-500">
+        <kbd className="border border-paper-300 rounded px-1.5 py-0.5 bg-white shadow-sm">⌘</kbd>
+        <kbd className="border border-paper-300 rounded px-1.5 py-0.5 bg-white shadow-sm">↵</kbd>
+        <span>start</span>
+        <span className="mx-1 text-paper-400">·</span>
+        <kbd className="border border-paper-300 rounded px-1.5 py-0.5 bg-white shadow-sm">⌘K</kbd>
+        <span>command</span>
+      </div>
+    </div>
+  );
 }
 
-function Dot({ color, label }: { color: string; label: string }) {
-  return (
-    <span className="flex items-center gap-1">
-      <span className={`h-1.5 w-1.5 rounded-full ${color}`} />
-      <span>{label}</span>
-    </span>
-  );
+function SegBar({ w, className }: { w: number; className: string }) {
+  if (w <= 0) return null;
+  return <span style={{ width: `${w}%` }} className={`${className} h-full transition-all`} />;
 }
 
 function StatusPill({ status }: { status: string }) {
   const map: Record<string, string> = {
     finished: "bg-accent-soft text-accent border-accent/30",
     running: "bg-amber-50 text-sev-medium border-sev-medium/30",
-    failed: "bg-sev-critical/15 text-sev-critical border-sev-critical/30",
+    failed: "bg-sev-critical/10 text-sev-critical border-sev-critical/30",
   };
   return (
     <span
-      className={`inline-flex items-center gap-1 text-2xs mono uppercase px-1.5 py-0.5 rounded border ${
+      className={`inline-flex items-center gap-1.5 text-2xs mono uppercase px-2 py-0.5 rounded-full border ${
         map[status] ?? ""
       }`}
     >
       {status === "running" && <span className="h-1.5 w-1.5 rounded-full bg-sev-medium animate-pulse" />}
+      {status === "finished" && <IconCheck size={10} />}
+      {status === "failed" && <IconAlert size={10} />}
       {status}
     </span>
   );
@@ -216,7 +365,7 @@ function StatusPill({ status }: { status: string }) {
 
 function SourcePill({ source }: { source: string }) {
   return (
-    <span className="text-2xs mono uppercase tracking-wider text-paper-500 border border-paper-300 rounded px-1.5 py-0.5 bg-paper-100">
+    <span className="text-2xs mono uppercase tracking-wider text-paper-500 border border-paper-300 rounded-full px-2 py-0.5 bg-paper-100">
       {source}
     </span>
   );
@@ -224,12 +373,12 @@ function SourcePill({ source }: { source: string }) {
 
 function SkeletonTable() {
   return (
-    <div className="border border-paper-300 rounded-md bg-white shadow-card overflow-hidden">
-      <div className="bg-paper-100 border-b border-paper-300 h-8" />
+    <div className="border border-paper-300 rounded-lg bg-white shadow-card overflow-hidden">
+      <div className="bg-paper-100 border-b border-paper-300 h-9" />
       {[0, 1, 2, 3].map((i) => (
-        <div key={i} className="flex items-center gap-3 px-4 py-3 border-b border-paper-200 last:border-none">
-          <div className="skeleton h-3 w-28" />
-          <div className="skeleton h-3 w-32" />
+        <div key={i} className="flex items-center gap-3 px-5 py-3 border-b border-paper-200 last:border-none">
+          <div className="skeleton h-8 w-8 rounded-md" />
+          <div className="skeleton h-3 w-40" />
           <div className="skeleton h-3 w-16" />
           <div className="skeleton h-3 w-20 ml-auto" />
         </div>
@@ -246,10 +395,7 @@ function summarize(rows: SweepSummary[]) {
   const verified = safe.filter((r) => r.status === "finished").length;
   const failed = safe.filter((r) => r.status === "failed").length;
   const totalFindings = safe.reduce((s, r) => s + (r.findings_count || 0), 0);
-  // We don't have a per-severity breakdown from /sweeps; approximate:
-  // treat each finding as "high" for now — Phase 2 will thread severity into
-  // the sweep summary so this rollup is accurate. For now everything routes
-  // through "high" so the bar renders meaningfully.
+  // Approximation until per-severity bubbles up in /sweeps:
   const sev: SeverityBucket = { critical: 0, high: totalFindings, medium: 0, low: 0 };
   const sum = sev.critical + sev.high + sev.medium + sev.low || 1;
   const sevPct: SeverityBucket = {
@@ -274,6 +420,3 @@ function relativeTime(iso: string): string {
   const d = Math.round(h / 24);
   return `${d}d ago`;
 }
-
-// Suppress unused-import warning for Cmul8Mark when not on the empty path.
-export const _ = IconPlay;

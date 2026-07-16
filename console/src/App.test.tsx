@@ -114,8 +114,8 @@ describe("FindingDetail", () => {
     expect(screen.getByText(/Why you can trust this/i)).toBeInTheDocument();
     expect(screen.getByText(/parameterized query/i)).toBeInTheDocument();
     expect(screen.getByText(/repro-now-blocked/)).toBeInTheDocument();
-    // Confidence percentage rendered.
-    expect(screen.getByText(/93%/)).toBeInTheDocument();
+    // Confidence percentage rendered in the confidence dial (mono digits).
+    expect(screen.getAllByText(/93/)[0]).toBeInTheDocument();
   });
 });
 

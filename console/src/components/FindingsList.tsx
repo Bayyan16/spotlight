@@ -58,19 +58,20 @@ export function FindingsList({
 }
 
 function SeverityHeader({ label, sev, count }: { label: string; sev: string; count: number }) {
-  const color =
-    sev === "critical"
-      ? "text-sev-critical"
-      : sev === "high"
-      ? "text-sev-high"
-      : sev === "medium"
-      ? "text-sev-medium"
-      : "text-sev-low";
+  const map: Record<string, { text: string; bg: string; ring: string }> = {
+    critical: { text: "text-sev-critical", bg: "bg-sev-critical/8", ring: "ring-sev-critical/30" },
+    high: { text: "text-sev-high", bg: "bg-sev-high/8", ring: "ring-sev-high/30" },
+    medium: { text: "text-sev-medium", bg: "bg-sev-medium/8", ring: "ring-sev-medium/30" },
+    low: { text: "text-sev-low", bg: "bg-sev-low/8", ring: "ring-sev-low/30" },
+  };
+  const c = map[sev] ?? map.low;
   return (
-    <div className="sticky top-0 z-10 flex items-center gap-2 px-3 py-1.5 bg-paper-100 border-b border-paper-300">
-      <IconAlert size={12} />
-      <span className={`text-xs uppercase tracking-wider font-semibold ${color}`}>{label}</span>
-      <span className="ml-auto mono text-2xs text-paper-500">#{count}</span>
+    <div className={`sticky top-0 z-10 flex items-center gap-2 px-3 py-2 ${c.bg} border-b border-paper-300`}>
+      <span className={`h-1.5 w-1.5 rounded-full ${sev === "critical" ? "bg-sev-critical" : sev === "high" ? "bg-sev-high" : sev === "medium" ? "bg-sev-medium" : "bg-sev-low"}`} />
+      <span className={`text-2xs uppercase tracking-wider font-semibold ${c.text} mono`}>{label}</span>
+      <span className={`ml-auto text-2xs mono tabular-nums px-1.5 py-0.5 rounded-full bg-white ring-1 ${c.ring} ${c.text}`}>
+        {count}
+      </span>
     </div>
   );
 }
@@ -84,30 +85,47 @@ function FindingRow({
   active: boolean;
   onSelect: (id: string) => void;
 }) {
+  const sevBar =
+    f.severity === "critical"
+      ? "bg-sev-critical"
+      : f.severity === "high"
+      ? "bg-sev-high"
+      : f.severity === "medium"
+      ? "bg-sev-medium"
+      : "bg-sev-low";
   return (
-    <li>
+    <li className="relative">
+      {/* Colored left rail = severity, thicker when active */}
+      <span
+        className={`absolute left-0 top-0 bottom-0 w-1 ${sevBar} ${
+          active ? "opacity-100" : "opacity-60"
+        }`}
+        aria-hidden
+      />
       <button
         onClick={() => onSelect(f.id)}
-        className={`w-full text-left px-3 py-2.5 border-b border-paper-200 flex items-start gap-2.5 transition-colors ${
+        className={`w-full text-left pl-4 pr-3 py-3 border-b border-paper-200 transition-colors ${
           active ? "bg-white shadow-card" : "hover:bg-paper-100"
         }`}
       >
-        <span className={`h-1.5 w-1.5 mt-1.5 rounded-full shrink-0 ${dotColor(f.severity)}`} />
-        <div className="min-w-0 flex-1">
-          <div className="text-sm text-paper-900 truncate">{f.title}</div>
-          <div className="mt-1 flex items-center gap-2 text-2xs mono text-paper-500">
-            <span>{f.id}</span>
-            <span>·</span>
-            <span>{f.cwe}</span>
-            <span>·</span>
-            <span className="truncate">
-              {short(f.location.file)}:{f.location.line}
-            </span>
-          </div>
-          <div className="mt-1 flex items-center gap-1.5">
-            <TierBadge tier={f.tier} />
-            <StateBadge state={f.state} />
-          </div>
+        <div className="text-sm text-paper-900 leading-snug mb-1.5 line-clamp-2">
+          {f.title}
+        </div>
+        <div className="flex items-center gap-1.5 mb-1.5">
+          <TierBadge tier={f.tier} />
+          <StateBadge state={f.state} />
+          <span className="ml-auto text-2xs mono tabular-nums text-accent font-semibold">
+            {(f.confidence * 100).toFixed(0)}%
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5 text-2xs mono text-paper-500">
+          <span className="text-paper-700">{f.id}</span>
+          <span className="text-paper-400">·</span>
+          <span>{f.cwe}</span>
+          <span className="text-paper-400">·</span>
+          <span className="truncate">
+            {short(f.location.file)}:{f.location.line}
+          </span>
         </div>
       </button>
     </li>

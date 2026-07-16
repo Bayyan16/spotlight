@@ -2,47 +2,42 @@ import type { Finding } from "../lib/api";
 import { IconCheck } from "./Icons";
 
 export function FindingDetail({ finding }: { finding: Finding }) {
+  const verified = finding.tier === "verified";
+  const fixed = finding.state === "confirmed-fixed";
   return (
     <section className="flex-1 min-w-0 overflow-y-auto bg-paper-50">
-      <header className="border-b border-paper-300 bg-paper-50/80 backdrop-blur px-6 py-4 sticky top-0">
-        <div className="flex items-center gap-2 mb-1 text-2xs mono text-paper-500">
-          <span>{finding.id}</span>
-          <span>·</span>
+      <header className="border-b border-paper-300 bg-paper-50/95 backdrop-blur px-8 py-5 sticky top-0 z-10">
+        <div className="flex items-center gap-2 mb-2 text-2xs mono text-paper-500 uppercase tracking-wider">
+          <span className="text-paper-700 font-semibold">{finding.id}</span>
+          <span className="text-paper-400">·</span>
           <span>{finding.cwe}</span>
-          <span>·</span>
+          <span className="text-paper-400">·</span>
           <span>surface {finding.surface}</span>
         </div>
-        <h1 className="text-lg text-paper-900 font-semibold tracking-tight">{finding.title}</h1>
-        <div className="mt-1 text-xs mono text-paper-600">
-          {finding.location.file}:{finding.location.line} · {finding.location.function}
+        <div className="flex items-start gap-4">
+          <div className="min-w-0 flex-1">
+            <h1 className="text-2xl text-paper-900 font-semibold tracking-tight leading-tight">
+              {finding.title}
+            </h1>
+            <div className="mt-1.5 text-xs mono text-paper-600">
+              {finding.location.file}:{finding.location.line} ·{" "}
+              <span className="text-paper-800">{finding.location.function}</span>
+            </div>
+          </div>
+          <ConfidenceDial confidence={finding.confidence} verified={verified} />
+        </div>
+        <div className="mt-4 flex items-center gap-2 flex-wrap">
+          <BigSevChip s={finding.severity} />
+          <BigTierChip tier={finding.tier} />
+          <BigStateChip state={finding.state} fixed={fixed} />
+          <span className="ml-auto text-2xs mono uppercase tracking-wider text-paper-500">
+            <span className="mono tabular-nums text-paper-800 font-semibold">
+              {finding.consensus.independent_corroborators}
+            </span>{" "}
+            corroborators
+          </span>
         </div>
       </header>
-
-      {/* Fields row — inspo-2's key-value pills. */}
-      <div className="grid grid-cols-2 gap-x-6 gap-y-3 px-6 py-4 border-b border-paper-300 bg-paper-100/50">
-        <Field label="Severity" value={<SeverityPill s={finding.severity} />} />
-        <Field label="Status" value={<span className="text-paper-800 text-sm">{finding.state}</span>} />
-        <Field
-          label="Confidence"
-          value={<span className="text-paper-800 text-sm">{(finding.confidence * 100).toFixed(0)}%</span>}
-        />
-        <Field
-          label="Tier"
-          value={<span className="text-accent text-sm uppercase mono">{finding.tier}</span>}
-        />
-        <Field
-          label="Class"
-          value={<span className="mono text-paper-800 text-sm">{finding.class}</span>}
-        />
-        <Field
-          label="Corroborators"
-          value={
-            <span className="text-paper-800 text-sm">
-              {finding.consensus.independent_corroborators} independent
-            </span>
-          }
-        />
-      </div>
 
       <div className="px-6 py-5 space-y-6">
         <Panel title="Why you can trust this">
@@ -191,6 +186,95 @@ function Field({ label, value }: { label: string; value: React.ReactNode }) {
       </span>
       {value}
     </div>
+  );
+}
+
+function ConfidenceDial({ confidence, verified }: { confidence: number; verified: boolean }) {
+  const pct = Math.round(confidence * 100);
+  const circumference = 2 * Math.PI * 26;
+  const dashOffset = circumference * (1 - confidence);
+  const stroke = verified ? "#3c8f5c" : confidence >= 0.7 ? "#c99a1e" : "#8a8578";
+  return (
+    <div className="relative shrink-0">
+      <svg width="72" height="72" viewBox="0 0 72 72" className="rotate-[-90deg]">
+        <circle cx="36" cy="36" r="26" stroke="#e6e2d9" strokeWidth="5" fill="none" />
+        <circle
+          cx="36"
+          cy="36"
+          r="26"
+          stroke={stroke}
+          strokeWidth="5"
+          strokeLinecap="round"
+          fill="none"
+          strokeDasharray={circumference}
+          strokeDashoffset={dashOffset}
+          style={{ transition: "stroke-dashoffset 500ms ease" }}
+        />
+      </svg>
+      <div className="absolute inset-0 grid place-items-center">
+        <div className="text-center">
+          <div className="mono tabular-nums text-sm font-semibold text-paper-900">{pct}</div>
+          <div className="text-[8px] uppercase tracking-wider text-paper-500 mono">conf</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BigSevChip({ s }: { s: string }) {
+  const map: Record<string, string> = {
+    critical: "bg-sev-critical text-white",
+    high: "bg-sev-high text-white",
+    medium: "bg-sev-medium text-white",
+    low: "bg-sev-low text-white",
+  };
+  return (
+    <span
+      className={`inline-flex items-center text-2xs uppercase mono px-2 py-1 rounded font-semibold tracking-wider ${
+        map[s] ?? "bg-paper-400 text-white"
+      }`}
+    >
+      {s}
+    </span>
+  );
+}
+
+function BigTierChip({ tier }: { tier: string }) {
+  if (tier === "verified") {
+    return (
+      <span className="inline-flex items-center gap-1 text-2xs uppercase mono px-2 py-1 rounded font-semibold tracking-wider bg-accent text-white">
+        <IconCheck size={10} /> verified
+      </span>
+    );
+  }
+  const map: Record<string, string> = {
+    "high-confidence": "bg-amber-100 text-sev-medium border border-sev-medium/40",
+    "needs-review": "bg-paper-200 text-paper-700 border border-paper-400",
+    held: "bg-paper-100 text-paper-500 border border-paper-300",
+  };
+  return (
+    <span
+      className={`inline-flex items-center text-2xs uppercase mono px-2 py-1 rounded font-semibold tracking-wider ${
+        map[tier] ?? ""
+      }`}
+    >
+      {tier}
+    </span>
+  );
+}
+
+function BigStateChip({ state, fixed }: { state: string; fixed: boolean }) {
+  if (fixed) {
+    return (
+      <span className="inline-flex items-center gap-1 text-2xs uppercase mono px-2 py-1 rounded font-semibold tracking-wider bg-accent-soft text-accent border border-accent/40">
+        <IconCheck size={10} /> {state}
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center text-2xs uppercase mono px-2 py-1 rounded font-semibold tracking-wider bg-paper-200 text-paper-700 border border-paper-300">
+      {state}
+    </span>
   );
 }
 
