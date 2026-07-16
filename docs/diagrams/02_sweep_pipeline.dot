@@ -1,0 +1,36 @@
+digraph SweepPipeline {
+  rankdir=LR;
+  bgcolor="#fbfaf8";
+  fontname="Inter";
+  fontsize=11;
+  splines=ortho;
+  nodesep=0.35;
+  ranksep=0.6;
+
+  node [shape=box, style="rounded,filled", fontname="Inter", fontsize=11, penwidth=1.5, margin="0.20,0.14", fixedsize=false, width=1.9];
+  edge [fontname="JetBrains Mono", fontsize=9, color="#5a5750", penwidth=1.2];
+
+  Recon      [label="1  RECON\n\nAST + taint\ntop of file scan\nWarden README scan\nLLM threat model",  fillcolor="#e6f0e2", color="#3c8f5c"];
+  Investigate[label="2  INVESTIGATE\n\nfan-out × K\nLLM judgment per\ndata-flow slice",             fillcolor="#e6f0e2", color="#3c8f5c"];
+  Reduce     [label="3  REDUCE + CHAIN\n\ndedup by (file, fn, class)\nChainer composes\nExploit Paths", fillcolor="#e6f0e2", color="#3c8f5c"];
+
+  subgraph cluster_perfinding {
+    label="  per-finding loop (repeats N×)";
+    labeljust=l; labelloc=t; fontsize=10; color="#d97141"; style="rounded,filled"; fillcolor="#fff7f0"; margin=14;
+    Reproduce  [label="4a  REPRODUCE\n\nModal sandbox\negress OFF\nrun real PoC\n(SQL tautology, etc.)", fillcolor="#ffffff", color="#d97141"];
+    Remediate  [label="4b  REMEDIATE\n\nminimal patch\ngit branch (opt)\ngh pr create (opt)\nchain-of-custody signed", fillcolor="#ffffff", color="#d97141"];
+    Verify     [label="4c  VERIFY\n\ndifferent agent\nfresh context\nnew sandbox\nre-run PoC + backdoor scan", fillcolor="#ffffff", color="#d97141"];
+    Consensus  [label="4d  CONSENSUS\n\nindependence check\nadjudicator on disagreement\nassign tier + confidence", fillcolor="#ffffff", color="#d97141"];
+  }
+
+  Attest     [label="5  ATTEST\n\nReporter assembles\nJSON · Markdown · PDF\nAttestation persisted",   fillcolor="#3c8f5c", fontcolor="#ffffff", color="#1a1a17", penwidth=2];
+
+  Recon -> Investigate;
+  Investigate -> Reduce;
+  Reduce -> Reproduce [label="each promoted\ncandidate"];
+  Reproduce -> Remediate;
+  Remediate -> Verify;
+  Verify -> Consensus;
+  Consensus -> Reproduce [label="next finding", constraint=false, style=dashed, color="#8a8578"];
+  Consensus -> Attest [label="last finding"];
+}

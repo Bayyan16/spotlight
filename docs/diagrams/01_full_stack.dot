@@ -1,0 +1,89 @@
+digraph FullStack {
+  rankdir=TB;
+  bgcolor="#fbfaf8";
+  fontname="Inter";
+  fontsize=11;
+  splines=ortho;
+  nodesep=0.28;
+  ranksep=0.45;
+  compound=true;
+
+  node [shape=box, style="rounded,filled", fontname="Inter", fontsize=11, penwidth=1.2, margin="0.18,0.10"];
+  edge [fontname="JetBrains Mono", fontsize=9, color="#5a5750"];
+
+  User [label="👤  User\n(security engineer)", fillcolor="#efece6", color="#8a8578"];
+
+  subgraph cluster_console {
+    label="Spotlight Console  ·  React · Tailwind";
+    labeljust=l; labelloc=t; fontsize=11; color="#d3cec4"; style="rounded,filled"; fillcolor="#ffffff"; margin=12;
+    Console [label="Board · Live Sweep · Findings · Presence\nExploit Paths · Warden · Attestations", fillcolor="#f6f4f0", color="#8a8578"];
+  }
+
+  subgraph cluster_api {
+    label="FastAPI Gateway  ·  spotlight/api";
+    labeljust=l; labelloc=t; fontsize=11; color="#d3cec4"; style="rounded,filled"; fillcolor="#ffffff"; margin=12;
+    Api [label="/sweeps  /findings/{id}/presence  /paths/{id}\n/taxonomy  /attestations/{id}?format=  /profiles\n/verify-key  WebSocket hub", fillcolor="#f6f4f0", color="#8a8578"];
+  }
+
+  subgraph cluster_orch {
+    label="Orchestrator  ·  Quorum Protocol";
+    labeljust=l; labelloc=t; fontsize=11; color="#5a5750"; style="rounded,filled"; fillcolor="#ffffff"; margin=12;
+    Orch [label="phase state machine · budget guard · event bus\nRecon → Investigate → Reduce+Chain → Reproduce\n→ Remediate → Verify → Attest", fillcolor="#e6f0e2", color="#3c8f5c", fontcolor="#1a1a17"];
+  }
+
+  subgraph cluster_control {
+    label="Control plane  (wraps every phase)";
+    labeljust=l; labelloc=t; fontsize=11; color="#c8422b"; style="rounded,filled"; fillcolor="#fff2ee"; margin=12;
+    Warden [label="Warden\ninjection detector\nbackdoor scan\nenvelope wrap\ncapability tokens", fillcolor="#ffffff", color="#c8422b"];
+    Consensus [label="Consensus Kernel\nindependence check\nadjudicator LLM\ntier + confidence", fillcolor="#ffffff", color="#c8422b"];
+    Sandbox [label="Modal Sandbox\nblock_network=True\nRO code mount\ntime + CPU + mem cap", fillcolor="#ffffff", color="#c8422b"];
+    Redaction [label="Redaction\n11 secret detectors\n3 chokepoints:\nprompt · event · API", fillcolor="#ffffff", color="#c8422b"];
+    NonRep [label="Non-repudiation\nEd25519 signer\nchain of custody\nSigned-off-by-agent", fillcolor="#ffffff", color="#c8422b"];
+  }
+
+  subgraph cluster_agents {
+    label="Agents  ·  bounded, single-purpose";
+    labeljust=l; labelloc=t; fontsize=11; color="#d97141"; style="rounded,filled"; fillcolor="#fff7f0"; margin=12;
+    Recon [label="Recon\ncode graph + threat model\n+ Warden injection scan", fillcolor="#ffffff", color="#d97141"];
+    Investigator [label="Investigator × K\nparallel judgment of\ndata-flow slices", fillcolor="#ffffff", color="#d97141"];
+    AgenticAnalyst [label="Agentic Analyst\nOWASP LLM Top 10\nLangChain / OpenAI /\nAnthropic patterns", fillcolor="#ffffff", color="#d97141"];
+    ReducerChainer [label="Reducer + Chainer\ndedup + cross-surface\nExploit Path composition", fillcolor="#ffffff", color="#d97141"];
+    Reproducer [label="Reproducer\nrun PoC in Modal\negress denied", fillcolor="#ffffff", color="#d97141"];
+    Remediator [label="Remediator\nminimal patch\ngit branch + gh pr", fillcolor="#ffffff", color="#d97141"];
+    Verifier [label="Verifier  (independent)\nfresh context\nre-run PoC + backdoor scan", fillcolor="#ffffff", color="#d97141"];
+  }
+
+  subgraph cluster_store {
+    label="Storage  ·  spotlight/store";
+    labeljust=l; labelloc=t; fontsize=11; color="#d3cec4"; style="rounded,filled"; fillcolor="#ffffff"; margin=12;
+    Postgres [label="Postgres\nsweeps · findings · events\nexploit_paths · threat_model", fillcolor="#f6f4f0", color="#8a8578"];
+    ObjectStore [label="Object store\nrepo checkouts\nPoC logs · diffs", fillcolor="#f6f4f0", color="#8a8578"];
+  }
+
+  Reporter [label="Reporter\nAttestation JSON · Markdown · PDF\nmeta · findings · exploit paths ·\nWarden · chain of custody · sandbox proofs", fillcolor="#e6f0e2", color="#3c8f5c"];
+
+  Attestation [label="📄  ATTESTATION\naudit-ready record", fillcolor="#3c8f5c", fontcolor="#ffffff", color="#1a1a17", penwidth=2];
+
+  User -> Console [label="clicks Start Sweep"];
+  Console -> Api [label="REST + WS"];
+  Api -> Orch [label="spawns"];
+
+  Orch -> Recon [style=dashed];
+  Orch -> Investigator [style=dashed];
+  Orch -> AgenticAnalyst [style=dashed];
+  Orch -> ReducerChainer [style=dashed];
+  Orch -> Reproducer [style=dashed];
+  Orch -> Remediator [style=dashed];
+  Orch -> Verifier [style=dashed];
+
+  Orch -> Warden [style=dotted, color="#c8422b", label="every phase"];
+  Orch -> Consensus [style=dotted, color="#c8422b"];
+  Orch -> Sandbox [style=dotted, color="#c8422b"];
+  Orch -> Redaction [style=dotted, color="#c8422b"];
+  Orch -> NonRep [style=dotted, color="#c8422b"];
+
+  Orch -> Postgres [label="persist"];
+  Reproducer -> ObjectStore [label="artifacts"];
+  Orch -> Reporter [label="assemble"];
+  Reporter -> Attestation;
+}

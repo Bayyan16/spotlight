@@ -92,55 +92,7 @@ Read these diagrams in order. Each one zooms into a piece of the previous.
 
 ### 2.1 · The full stack — top-down
 
-```
-        ┌───────────────────────────────────────────────────────────────┐
-USER →  │          Spotlight Console  (React · Tailwind SPA)            │
-        │  Board · Live · Findings · Presence · Attestations · Warden   │
-        └───────────────▲──────────────────────────────▲────────────────┘
-                        │ REST                         │ WebSocket
-                        │ (curl/fetch)                 │ (event stream)
-        ┌───────────────┴──────────────────────────────┴────────────────┐
-        │        FastAPI  (spotlight/api/app.py)                        │
-        │  /sweeps  /findings/{id}/presence  /paths/{id}  /taxonomy     │
-        │  /attestations/{id}?format=json|md|pdf  /profiles  /verify-key│
-        └───────────────────────────────┬───────────────────────────────┘
-                                        │ spawns background thread
-                                        ▼
-┌───────────────────────────────────────────────────────────────────────┐
-│    Orchestrator  (spotlight/orchestrator/orchestrator.py)             │
-│    ─────────────────────────────────────────────────────────────      │
-│    Phase state machine · budget guard · fan-out                       │
-└───┬───────────┬───────────┬───────────┬───────────┬───────────┬──────┘
-    │           │           │           │           │           │
-    ▼           ▼           ▼           ▼           ▼           ▼
-┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────────┐
-│ AGENTS │ │ WARDEN │ │CONSEN- │ │SANDBOX │ │REDACT- │ │NON-REPUDI- │
-│        │ │        │ │  SUS   │ │        │ │  ION   │ │  ATION     │
-│ Recon  │ │inject. │ │ tier + │ │ Modal  │ │3 choke-│ │ Ed25519 +  │
-│ Invest.│ │detect. │ │adjud.  │ │block_  │ │points  │ │ chain of   │
-│ Cogn.  │ │backdoor│ │indep.  │ │network │ │secrets │ │ custody +  │
-│ Reduce │ │check   │ │check   │ │= true  │ │scrubbed│ │ signed     │
-│ Chainer│ │capabil.│ │        │ │        │ │        │ │ commits    │
-│ Repro. │ │envelope│ │        │ │        │ │        │ │            │
-│ Remed. │ │        │ │        │ │        │ │        │ │            │
-│ Verif. │ │        │ │        │ │        │ │        │ │            │
-└────────┘ └────────┘ └────────┘ └────────┘ └────────┘ └────────────┘
-    │           │           │           │           │           │
-    └───────────┴───────────┴───────────┴───────────┴───────────┘
-                                │
-                                ▼
-        ┌──────────────────────────────────────────────────┐
-        │  Storage:  Postgres (state) · Object store       │
-        │  (repo checkouts + PoC logs) · Redis (queue)     │
-        └───────────────────────┬──────────────────────────┘
-                                ▼
-        ┌──────────────────────────────────────────────────┐
-        │  Reporter  →  Attestation (JSON · Markdown · PDF) │
-        └──────────────────────────────────────────────────┘
-                                │
-                                ▼
-                          ATTESTATION
-```
+![Full stack — Console → API → Orchestrator → Control plane → Agents → Storage → Attestation](diagrams/01_full_stack.svg){ width=100% }
 
 Six modules make up the "swarm-defense" and "epistemics" control plane
 (Warden, Consensus, Sandbox, Redaction, Non-repudiation, plus the
@@ -150,59 +102,7 @@ agent gets to bypass them.
 
 ### 2.2 · The Sweep pipeline — what each phase does
 
-```
-    ┌─────────┐   Reads every .py/.js/.ts file. Builds Code
-    │  RECON  │   Graph (AST + taint propagation). Runs the
-    │         │   Agentic Scanner. Emits data-flow slices.
-    └────┬────┘   Warden scans README + comments for prompt
-         │       injection attempts against Spotlight itself.
-         ▼           OUTPUT: threat_model, signals, warden_flags
-    ┌─────────┐
-    │INVESTI- │   ThreadPoolExecutor spawns K Investigators in
-    │  GATE   │   parallel (K = Profile.max_agents). Each judges
-    │         │   ONE data-flow slice through the LLM: is this
-    └────┬────┘   a real vuln? Agentic Analyst does the same
-         │       for agentic-surface signals.
-         ▼           OUTPUT: candidates
-    ┌─────────┐
-    │ REDUCE  │   Dedupe by (file, function, class). Then the
-    │ + CHAIN │   Chainer looks for cross-surface chains:
-    │         │   LLM01 + LLM06 + SSRF → one ExploitPath.
-    └────┬────┘   secrets + any → "credential + primary" pair.
-         │           OUTPUT: reduced findings, exploit_paths
-         ▼
-       ┌─┴─────────────────────────────────┐
-       │  Per-finding loop (repeats N×):   │
-       │                                    │
-       │  ┌─────────┐                       │
-       │  │REPRODUCE│  Modal sandbox +      │
-       │  │         │  egress off + PoC     │
-       │  └────┬────┘  script. Confirmed?   │
-       │       ▼                            │
-       │  ┌─────────┐  Minimal patch.       │
-       │  │REMEDIATE│  If open_prs on →     │
-       │  │         │  real gh pr create.   │
-       │  └────┬────┘                       │
-       │       ▼                            │
-       │  ┌─────────┐  Different agent,     │
-       │  │ VERIFY  │  fresh context, new   │
-       │  │         │  sandbox. Re-run PoC. │
-       │  └────┬────┘  Warden backdoor scan.│
-       │       ▼                            │
-       │  ┌─────────┐  Consensus Kernel:    │
-       │  │CONSENSUS│  independence check + │
-       │  │         │  adjudicator. Sets    │
-       │  └────┬────┘  tier + confidence.   │
-       │       │                            │
-       └───────┼────────────────────────────┘
-               ▼
-          ┌─────────┐
-          │ ATTEST  │   Reporter assembles the Attestation.
-          │         │   JSON · Markdown · PDF.
-          └────┬────┘   Persists to Postgres + object store.
-               ▼
-       sweep.finished → Console updates
-```
+![Sweep pipeline — Recon → Investigate → Reduce+Chain → per-finding loop → Attest](diagrams/02_sweep_pipeline.svg){ width=100% }
 
 
 ### 2.3 · The agent roster — inputs, outputs, sandboxing
@@ -246,141 +146,17 @@ agent gets to bypass them.
 
 ### 2.4 · The Consensus Kernel decision tree
 
-```
-                             evidence[]
-                                 │
-                                 ▼
-                     ┌───────────────────────┐
-                     │ Independence dedup:   │
-                     │ (modality, model,     │
-                     │  context_id) unique   │
-                     └───────────┬───────────┘
-                                 │
-                                 ▼
-                     ┌───────────────────────┐
-                     │ class is 'secrets'    │──yes──► VERIFIED
-                     │ AND static_fact       │        (0.95)
-                     └───────────┬───────────┘        no PoC needed
-                                 │no
-                                 ▼
-                     ┌───────────────────────┐
-                     │ reproduced AND        │──yes──► VERIFIED
-                     │ static_fact           │        (0.93)
-                     └───────────┬───────────┘
-                                 │no
-                                 ▼
-                     ┌───────────────────────┐
-                     │ reproduced (alone)    │──yes──► VERIFIED
-                     └───────────┬───────────┘        (0.85)
-                                 │no
-                                 ▼
-                     ┌───────────────────────┐
-                     │ static_fact AND       │──yes──► VERIFIED
-                     │ not_applicable_repro  │        (0.90)
-                     │ (static-only class)   │        NB: e.g. secrets
-                     └───────────┬───────────┘
-                                 │no
-                                 ▼
-                     ┌───────────────────────┐
-                     │ ≥ 2 independent       │──yes──► HIGH-
-                     │ corroborators incl.   │        CONFIDENCE
-                     │ static_fact           │        (0.70)
-                     └───────────┬───────────┘
-                                 │no
-                                 ▼
-                     ┌───────────────────────┐
-                     │ single-source,        │──yes──► NEEDS
-                     │ ambiguous             │        REVIEW
-                     └───────────┬───────────┘        (0.40)
-                                 │no
-                                 ▼
-                              HELD
-                       (suppressed from
-                        the main inbox)
-
-    ── ADJUDICATOR ──
-    Triggered when evidence items DISAGREE (one says vuln, one says
-    not). A fresh-context LLM reads both positions and takes a side.
-    Its rationale is stored on consensus.adjudication.
-```
+![Consensus Kernel decision tree — how evidence becomes a tier](diagrams/03_consensus_tree.svg){ width=100% }
 
 
 ### 2.5 · The cross-surface Exploit Path (the demo money-shot)
 
-```
-    ┌──────────────────────────────────────────────────────────┐
-    │                    ExploitPath EP-0001                    │
-    │  title: "prompt-injection → agent-tool → SSRF → exfil"    │
-    │  cross_surface: TRUE   ·   severity: critical             │
-    └──────────────────────────────────────────────────────────┘
-                                │
-             ┌──────────────────┼──────────────────┐
-             ▼                  ▼                  ▼
-        ┌─────────┐        ┌─────────┐        ┌─────────┐
-        │ step 1  │ enables│ step 2  │ enables│ step 3  │
-        │         ├───────►│         ├───────►│         │
-        │ LLM01   │        │ LLM06   │        │ CWE-918 │
-        │ prompt- │        │excessive│        │  SSRF   │
-        │injection│        │ agency  │        │ (code)  │
-        │(agentic)│        │(agentic)│        │         │
-        │         │        │         │        │         │
-        │ readme  │        │ tool =  │        │ fetch() │
-        │ smuggle │        │ req.get │        │ to      │
-        │ payload │        │ (no     │        │ attacker│
-        │         │        │ allow-  │        │ URL     │
-        │         │        │ list)   │        │         │
-        └─────────┘        └─────────┘        └─────────┘
-        SPOT-0003          SPOT-0004          SPOT-0005
-        agentic          agentic          code
-
-    The Chainer emits one ExploitPath per matching chain.
-    Every step's finding_id is preserved so the analyst can drill
-    into each individual promoted finding.
-```
+![Cross-surface Exploit Path — LLM01 → LLM06 → SSRF, composed by the Chainer](diagrams/04_exploit_path.svg){ width=100% }
 
 
 ### 2.6 · Event bus + WebSocket fan-out
 
-```
-    Orchestrator (single writer)
-         │
-         │  bus.emit(sweep_id, type, actor, payload={...})
-         │  ► REDACTION applied here (chokepoint b)
-         ▼
-    ┌───────────────────────────────────────────────┐
-    │      EventBus (in-memory + persisted)         │
-    │  append-only log · seq counter · WS replay    │
-    └────────┬───────────────────────┬──────────────┘
-             │ sync                  │ async queues
-             ▼                       ▼
-        Persist to               WebSocket hub
-        Postgres                 ────────────
-        events table                    │
-                                        ▼
-                             ┌──────────────────────┐
-                             │  Console clients     │
-                             │  (Live Sweep view)   │
-                             │                      │
-                             │ replay from          │
-                             │ Last-Event-ID on     │
-                             │ reconnect            │
-                             └──────────────────────┘
-
-    Event types (24+):
-      sweep.{started, phase.changed, phase.illegal, budget.exceeded,
-             finished, failed}
-      agent.{spawned, status, tool.call, finished}
-      recon.threat_model
-      candidate.{raised, corroborated}
-      finding.{promoted, held}
-      path.composed
-      repro.{started, result}
-      sandbox.{spawned, result, egress.denied}
-      remediation.opened
-      verify.result
-      warden.{injection.flagged, budget.tripped, capability.denied}
-      attestation.written
-```
+![Event bus fan-out — Orchestrator writes → Redaction chokepoint → Postgres + WebSocket hub → Console clients](diagrams/05_event_bus.svg){ width=100% }
 
 
 ### The layers, expanded

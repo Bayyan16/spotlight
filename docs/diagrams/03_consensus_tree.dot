@@ -1,0 +1,52 @@
+digraph ConsensusTree {
+  rankdir=TB;
+  bgcolor="#fbfaf8";
+  fontname="Inter";
+  fontsize=11;
+  nodesep=0.25;
+  ranksep=0.35;
+
+  node [shape=box, style="rounded,filled", fontname="Inter", fontsize=10, penwidth=1.2, margin="0.14,0.08"];
+  edge [fontname="JetBrains Mono", fontsize=9, color="#5a5750"];
+
+  Start    [label="evidence[]\n(static-fact, reproduction, independent-agent, external-signal)", shape=oval, fillcolor="#e6f0e2", color="#3c8f5c", penwidth=1.5];
+  Dedup    [label="independence dedup\n(modality, model_family, context_id) unique keys", fillcolor="#f6f4f0", color="#8a8578"];
+
+  Q1       [label="class is 'secrets'\nAND static_fact ?", shape=diamond, fillcolor="#ffffff", color="#5a5750", height=1.0, width=2.4];
+  V1       [label="VERIFIED\nconfidence 0.95\n'static-fact class'", fillcolor="#3c8f5c", fontcolor="#ffffff", color="#1a1a17", penwidth=1.5];
+
+  Q2       [label="reproduced\nAND static_fact ?", shape=diamond, fillcolor="#ffffff", color="#5a5750", height=1.0, width=2.4];
+  V2       [label="VERIFIED\nconfidence 0.93\n'repro + static-fact'", fillcolor="#3c8f5c", fontcolor="#ffffff", color="#1a1a17", penwidth=1.5];
+
+  Q3       [label="reproduced\n(alone) ?", shape=diamond, fillcolor="#ffffff", color="#5a5750", height=0.9, width=2.2];
+  V3       [label="VERIFIED\nconfidence 0.85", fillcolor="#3c8f5c", fontcolor="#ffffff", color="#1a1a17", penwidth=1.5];
+
+  Q4       [label="static_fact\nAND not_applicable_repro ?", shape=diamond, fillcolor="#ffffff", color="#5a5750", height=1.0, width=2.8];
+  V4       [label="VERIFIED\nconfidence 0.90\n'static-only class'", fillcolor="#3c8f5c", fontcolor="#ffffff", color="#1a1a17", penwidth=1.5];
+
+  Q5       [label="≥ 2 independent\ncorroborators including\nstatic_fact ?", shape=diamond, fillcolor="#ffffff", color="#5a5750", height=1.1, width=2.6];
+  H        [label="HIGH-CONFIDENCE\nconfidence 0.70", fillcolor="#f5b83a", fontcolor="#1a1a17", color="#1a1a17", penwidth=1.5];
+
+  Q6       [label="single-source,\nambiguous ?", shape=diamond, fillcolor="#ffffff", color="#5a5750", height=0.9, width=2.2];
+  N        [label="NEEDS REVIEW\nconfidence 0.40\nsurfaced to human", fillcolor="#d97141", fontcolor="#ffffff", color="#1a1a17", penwidth=1.5];
+
+  Held     [label="HELD\nsuppressed\nfrom main inbox", fillcolor="#b3ada0", fontcolor="#ffffff", color="#1a1a17"];
+
+  Adj      [label="ADJUDICATOR (fresh LLM)\nfired on evidence DISAGREEMENT\nrationale stored on consensus.adjudication", shape=note, fillcolor="#fff2ee", color="#c8422b", fontsize=9, style="filled"];
+
+  Start -> Dedup -> Q1;
+  Q1 -> V1 [label="yes", color="#3c8f5c"];
+  Q1 -> Q2 [label="no"];
+  Q2 -> V2 [label="yes", color="#3c8f5c"];
+  Q2 -> Q3 [label="no"];
+  Q3 -> V3 [label="yes", color="#3c8f5c"];
+  Q3 -> Q4 [label="no"];
+  Q4 -> V4 [label="yes", color="#3c8f5c"];
+  Q4 -> Q5 [label="no"];
+  Q5 -> H  [label="yes", color="#f5b83a"];
+  Q5 -> Q6 [label="no"];
+  Q6 -> N  [label="yes", color="#d97141"];
+  Q6 -> Held [label="no"];
+
+  Dedup -> Adj [style=dashed, color="#c8422b", label="if any two disagree"];
+}

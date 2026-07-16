@@ -1,0 +1,36 @@
+digraph EventBus {
+  rankdir=LR;
+  bgcolor="#fbfaf8";
+  fontname="Inter";
+  fontsize=11;
+  nodesep=0.3;
+  ranksep=0.5;
+
+  node [shape=box, style="rounded,filled", fontname="Inter", fontsize=10, penwidth=1.2, margin="0.16,0.10"];
+  edge [fontname="JetBrains Mono", fontsize=9, color="#5a5750"];
+
+  Orch [label="Orchestrator\n(single writer)", shape=box, fillcolor="#e6f0e2", color="#3c8f5c", penwidth=1.6];
+
+  subgraph cluster_bus {
+    label="EventBus  ·  spotlight/orchestrator/events.py";
+    labeljust=l; labelloc=t; fontsize=11; color="#8a8578"; style="rounded,filled"; fillcolor="#ffffff"; margin=14;
+    Emit [label="bus.emit(sweep_id, type, actor, payload)", shape=box, fillcolor="#f6f4f0", color="#8a8578"];
+    Redact [label="[chokepoint b]\nRedaction.redact_dict(payload)\n11 secret shapes scrubbed", shape=note, fillcolor="#fff2ee", color="#c8422b"];
+    Log [label="append-only log\n· seq counter\n· in-memory + persisted", fillcolor="#f6f4f0", color="#8a8578"];
+    Emit -> Redact -> Log;
+  }
+
+  Pg [label="Postgres\nEventRow table", fillcolor="#efece6", color="#8a8578"];
+  WsHub [label="WebSocket hub\n/ws/sweeps/{id}\nLast-Event-ID resume", fillcolor="#efece6", color="#8a8578"];
+
+  Console1 [label="Console client A\n(Live Sweep view)", fillcolor="#f6f4f0", color="#8a8578"];
+  Console2 [label="Console client B\n(Warden view)", fillcolor="#f6f4f0", color="#8a8578"];
+
+  EventTypes [shape=note, fillcolor="#f6f4f0", color="#8a8578", fontsize=9, label="24+ event types:\n  sweep.{started, phase.changed, phase.illegal,\n         budget.exceeded, finished, failed}\n  agent.{spawned, finished, tool.call}\n  recon.threat_model\n  candidate.{raised, corroborated}\n  finding.{promoted, held}\n  path.composed\n  repro.{started, result}\n  sandbox.{spawned, result, egress.denied}\n  remediation.opened\n  verify.result\n  warden.{injection.flagged, budget.tripped,\n          capability.denied}\n  attestation.written"];
+
+  Orch -> Emit;
+  Log -> Pg [label="persist"];
+  Log -> WsHub [label="fan out\nasync queues"];
+  WsHub -> Console1;
+  WsHub -> Console2;
+}
