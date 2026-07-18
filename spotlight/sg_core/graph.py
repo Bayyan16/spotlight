@@ -25,12 +25,93 @@ UNTRUSTED_ATTRS = (
     "flask.request",
 )
 
-# Sinks classified by class label.
+# Sinks classified by class label. Each entry is a tuple of substring
+# needles matched against the callee's dotted name. Kept intentionally
+# broad — precision comes from the taint reachability check, not from
+# refining these strings.
+#
+# CWE families each class maps to (see taxonomy.py for authoritative
+# mapping):
+#   sqli               → CWE-89
+#   cmdi               → CWE-78
+#   eval               → CWE-95 (parent CWE-94)
+#   ssrf               → CWE-918
+#   ssti               → CWE-1336 (parent CWE-94) — server-side template injection
+#   dynamic-import     → CWE-94 direct — attacker controls what code is loaded
+#   deserialization    → CWE-502
+#   path-traversal     → CWE-22
+#   weak-hash          → CWE-327
+#   verify-disabled    → CWE-295
 SINKS: dict[str, tuple[str, ...]] = {
     "sqli": ("cursor.execute", ".execute", "executemany", "execute_string"),
     "cmdi": ("os.system", "subprocess.run", "subprocess.call", "subprocess.Popen"),
     "eval": ("eval", "exec"),
     "ssrf": ("requests.get", "requests.post", "httpx.get", "urlopen"),
+    # SSTI — Jinja2 / Mako / Chameleon / Django's `mark_safe` when the
+    # marked string is user-controlled. Template().render(user) is a
+    # canonical remote-code-execution vector on Jinja2 without
+    # sandboxing.
+    "ssti": (
+        "Template",
+        "jinja2.Template",
+        "env.from_string",
+        "Environment.from_string",
+        "mako.Template",
+        "chameleon.PageTemplate",
+        "django.template.Template",
+    ),
+    # Dynamic imports — attacker fully controls which module gets loaded
+    # and its top-level code executes on import. Rare in modern code
+    # but catastrophic when present (plugin systems, "dynamic config",
+    # eval-by-another-name).
+    "dynamic-import": (
+        "__import__",
+        "importlib.import_module",
+        "importlib.util.spec_from_file_location",
+    ),
+    # Deserialization — pickle / yaml.load without SafeLoader / marshal
+    # / dill all treat untrusted bytes as executable code. yaml.safe_load
+    # is fine; the vulnerable ones are the bare `.load` variants.
+    "deserialization": (
+        "pickle.loads",
+        "pickle.load",
+        "cPickle.loads",
+        "dill.loads",
+        "marshal.loads",
+        "yaml.load",  # yaml.safe_load is intentionally NOT a needle
+        "yaml.unsafe_load",
+    ),
+    # Path traversal — `open()`, `send_file`, `send_from_directory` with
+    # user-controlled paths and no allowlist / commonpath containment
+    # check. Also covers os.path.join used as if it made the result
+    # safe (it doesn't).
+    "path-traversal": (
+        "open",
+        "os.open",
+        "pathlib.Path.open",
+        "send_file",
+        "send_from_directory",
+        "shutil.copy",
+        "shutil.move",
+    ),
+    # Weak crypto — md5 / sha1 used in a security context. Precision
+    # comes from taint reachability from a security-relevant source
+    # (password, token, session_id) — non-security hashing is fine
+    # (checksums, cache keys, etc.).
+    "weak-hash": (
+        "hashlib.md5",
+        "hashlib.sha1",
+        "hashlib.new",  # e.g. hashlib.new("md5", ...)
+        "md5.new",
+        "sha.new",
+    ),
+    # SSL verify disabled — verify=False on requests, CERT_NONE on ssl
+    # context, InsecureRequestWarning suppressions. Ships as static-
+    # fact (finding IS the code), no PoC needed.
+    "verify-disabled": (
+        "ssl.CERT_NONE",
+        "InsecureRequestWarning",
+    ),
 }
 
 

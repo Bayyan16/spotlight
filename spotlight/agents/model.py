@@ -51,12 +51,28 @@ class MockModelClient:
                 "cmdi": "CWE-78",
                 "ssrf": "CWE-918",
                 "eval": "CWE-95",
+                # New sinks — CWE-94 family and related.
+                "ssti": "CWE-1336",
+                "dynamic-import": "CWE-94",
+                "deserialization": "CWE-502",
+                "path-traversal": "CWE-22",
+                "weak-hash": "CWE-327",
+                "verify-disabled": "CWE-295",
                 "prompt-injection": "CWE-77",
                 "excessive-agency": "CWE-269",
                 "output-handling": "CWE-79",
                 "system-prompt-leak": "CWE-540",
                 "rag-surface": "CWE-345",
                 "denial-of-wallet": "CWE-400",
+            }
+            # Parent CWE family lookup — surfaces on the finding so an
+            # auditor can group by the umbrella category (e.g., "show me
+            # every CWE-94 finding" catches CWE-95 eval AND CWE-1336 SSTI
+            # AND CWE-94 dynamic-import all at once).
+            cwe_family_by_class = {
+                "eval": "CWE-94",
+                "ssti": "CWE-94",
+                "dynamic-import": "CWE-94",
             }
             is_agentic = slice_.get("surface") == "agentic"
             root_cause = (
@@ -78,6 +94,9 @@ class MockModelClient:
                 "verdict": "candidate",
                 "class": cls,
                 "cwe": cwe_by_class.get(cls, "CWE-693"),
+                # Parent CWE family (if any) — auditor-facing grouping key.
+                # Empty for classes that don't belong to an umbrella family.
+                "cwe_family": cwe_family_by_class.get(cls, ""),
                 "title": f"{cls.upper()} in {slice_['function']}",
                 "severity": "high",
                 "location": {
