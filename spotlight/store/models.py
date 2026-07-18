@@ -43,12 +43,81 @@ class SweepRow(Base):
     # JSONB list of ExploitPath dicts; empty list when the Chainer finds no
     # matching pair. Nullable=True so old rows (pre-B4) load cleanly.
     exploit_paths: Mapped[Any] = mapped_column(JsonType, nullable=True, default=list)
+    # C2 · Whether this sweep was started in interactive mode. Persisted so
+    # the audit trail can distinguish auto-run sweeps from human-in-the-loop
+    # ones months later. Nullable=True for pre-C2 rows.
+    interactive: Mapped[bool | None] = mapped_column(nullable=True, default=False)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     findings_count: Mapped[int] = mapped_column(Integer, default=0)
 
     findings = relationship("FindingRow", back_populates="sweep", cascade="all, delete-orphan")
     events = relationship("EventRow", back_populates="sweep", cascade="all, delete-orphan")
+
+
+class PrWatchRow(Base):
+    """C7 · GitHub PR association per sweep.
+
+    Persists the link between a sweep (fired by /webhooks/github) and the
+    GitHub PR that triggered it. Without this row, an API restart between
+    webhook and sweep-finished loses the PR number — no comment can be
+    posted back. sweep_id is the primary key so the write is idempotent per
+    sweep. Cascade-deletes when the sweep row goes away.
+    """
+
+    __tablename__ = "pr_watches"
+
+    sweep_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("sweeps.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    repo_full_name: Mapped[str] = mapped_column(String(256))
+    pr_number: Mapped[int] = mapped_column(Integer)
+    clone_url: Mapped[str] = mapped_column(String(512))
+    installation_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    # Result of the delta-comment post — populated by a follow-up job.
+    # None: not yet attempted. "posted": succeeded. "failed": last-attempt
+    # error captured in `comment_error`.
+    comment_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    comment_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class WorkspacePrefRow(Base):
+    """Server-persisted workspace preferences.
+
+    Single-workspace demo — no `user_id` yet. Keys are stable strings the
+    console reads on load; the value is a JSONB blob so we can evolve
+    schema without a migration per shape change. Replaces the localStorage
+    reads that we moved off the browser in the persistence follow-up.
+    """
+
+    __tablename__ = "workspace_prefs"
+
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    value: Mapped[Any] = mapped_column(JsonType, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
+class FindingsFilterPrefRow(Base):
+    """C8 · Sortable-inbox filter presets, per Profile.
+
+    (profile_id, key) is the composite primary key so each Profile can hold
+    multiple named presets — today the console writes one "current" preset
+    per profile; the shape is future-proof for named ones.
+    """
+
+    __tablename__ = "findings_filter_prefs"
+
+    profile_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[Any] = mapped_column(JsonType, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
 
 
 class FindingRow(Base):

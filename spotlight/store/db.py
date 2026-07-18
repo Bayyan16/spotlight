@@ -65,6 +65,9 @@ def init_schema() -> None:
 _ADDITIVE_MIGRATIONS: list[tuple[str, str, str]] = [
     # Tranche B4 — Chainer output persisted per sweep.
     ("sweeps", "exploit_paths", "ALTER TABLE sweeps ADD COLUMN IF NOT EXISTS exploit_paths JSONB"),
+    # Persistence follow-up — sweep-level interactive-mode flag so the
+    # audit trail can distinguish auto-run from human-in-the-loop sweeps.
+    ("sweeps", "interactive", "ALTER TABLE sweeps ADD COLUMN IF NOT EXISTS interactive BOOLEAN"),
 ]
 
 

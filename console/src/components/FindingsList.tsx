@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import type { Finding } from "../lib/api";
+import { getFindingsFilterPref, setFindingsFilterPref } from "../lib/api";
 
 const GROUPS = [
   { key: "critical", label: "Critical" },
@@ -21,34 +22,13 @@ const TIER_RANK: Record<string, number> = {
   held: 1,
 };
 
-// C8 · Saved-filter presets are persisted per Profile. The Profile id is
-// baked into the storage key so switching profiles restores the last-used
-// preset for THAT profile. A quiet default (severity + all + all) fires
-// when no preset exists yet.
+// C8 · Saved-filter presets are persisted per Profile in the server-side
+// findings_filter_prefs table — replaces the earlier localStorage
+// implementation which was per-browser and lost on incognito / cache clear.
+// The default preset (severity + all + all) is applied until the server
+// returns a stored value for the active profile.
 type Preset = { sort: SortKey; tier: TierFilter; review: ReviewFilter };
 const DEFAULT_PRESET: Preset = { sort: "severity", tier: "all", review: "all" };
-
-function storageKey(profileId: string): string {
-  return `spotlight.findings-preset.${profileId || "default"}`;
-}
-
-function loadPreset(profileId: string): Preset {
-  try {
-    const raw = localStorage.getItem(storageKey(profileId));
-    if (!raw) return DEFAULT_PRESET;
-    return { ...DEFAULT_PRESET, ...JSON.parse(raw) } as Preset;
-  } catch {
-    return DEFAULT_PRESET;
-  }
-}
-
-function savePreset(profileId: string, p: Preset) {
-  try {
-    localStorage.setItem(storageKey(profileId), JSON.stringify(p));
-  } catch {
-    /* private mode / quota — silently drop */
-  }
-}
 
 export function FindingsList({
   findings,
@@ -63,15 +43,25 @@ export function FindingsList({
   target: string;
   profileId?: string;
 }) {
-  const [preset, setPreset] = useState<Preset>(() => loadPreset(profileId));
+  const [preset, setPreset] = useState<Preset>(DEFAULT_PRESET);
 
-  // Reload the saved preset whenever the active profile changes.
+  // Hydrate the saved preset from the server whenever the active profile
+  // changes. A fresh profile with no stored preset stays on DEFAULT.
   useEffect(() => {
-    setPreset(loadPreset(profileId));
+    let cancelled = false;
+    getFindingsFilterPref<Preset>(profileId).then((stored) => {
+      if (cancelled) return;
+      setPreset(stored ? { ...DEFAULT_PRESET, ...stored } : DEFAULT_PRESET);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [profileId]);
 
+  // Persist writes server-side. Fire-and-forget — the UI updates
+  // optimistically, the server catches up.
   useEffect(() => {
-    savePreset(profileId, preset);
+    setFindingsFilterPref(profileId, preset);
   }, [profileId, preset]);
 
   const filtered = useMemo(

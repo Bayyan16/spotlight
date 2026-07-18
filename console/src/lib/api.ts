@@ -200,6 +200,48 @@ export async function startSweep(
   return r.json();
 }
 
+// Server-persisted preferences — replace localStorage. Every read has a
+// cheap AbortController-safe fetch; every write is fire-and-forget so the
+// UI stays responsive. Callers that need reliability should await.
+export async function getWorkspacePref<T = unknown>(key: string): Promise<T | null> {
+  const r = await fetch(`${BASE}/prefs/workspace/${encodeURIComponent(key)}`);
+  if (!r.ok) return null;
+  const body = (await r.json()) as { value: T | null };
+  return body.value;
+}
+
+export async function setWorkspacePref<T = unknown>(key: string, value: T): Promise<void> {
+  await fetch(`${BASE}/prefs/workspace/${encodeURIComponent(key)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ value }),
+  });
+}
+
+export async function getFindingsFilterPref<T = unknown>(
+  profileId: string,
+  name: string = "current"
+): Promise<T | null> {
+  const url = `${BASE}/prefs/findings-filter/${encodeURIComponent(profileId)}?name=${encodeURIComponent(name)}`;
+  const r = await fetch(url);
+  if (!r.ok) return null;
+  const body = (await r.json()) as { value: T | null };
+  return body.value;
+}
+
+export async function setFindingsFilterPref<T = unknown>(
+  profileId: string,
+  value: T,
+  name: string = "current"
+): Promise<void> {
+  const url = `${BASE}/prefs/findings-filter/${encodeURIComponent(profileId)}?name=${encodeURIComponent(name)}`;
+  await fetch(url, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ value }),
+  });
+}
+
 export async function resumeSweep(
   sweepId: string,
   edits?: Record<string, unknown>,

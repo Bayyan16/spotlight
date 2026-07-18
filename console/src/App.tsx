@@ -15,6 +15,7 @@ import { Cmul8Mark } from "./components/Cmul8Mark";
 import { IconPlay } from "./components/Icons";
 import {
   getFindings,
+  getWorkspacePref,
   listSweeps,
   listTargets,
   openSweepStream,
@@ -52,15 +53,14 @@ export default function App() {
       .then((s) => {
         const n = Array.isArray(s) ? s.length : 0;
         setHistoryCount(n);
-        // C1 · Auto-open the first-scan wizard when the workspace is
-        // empty AND the user hasn't previously dismissed it. We deliberately
-        // don't open on every zero-sweep state — if they hit "Not now" once,
-        // stay quiet until they explicitly click "New scan".
-        try {
-          const dismissed = localStorage.getItem("spotlight.wizard-dismissed") === "1";
-          if (n === 0 && !dismissed) setWizardOpen(true);
-        } catch {
-          /* private mode — never auto-open */
+        // Auto-open the wizard when the workspace is empty AND the user
+        // hasn't previously dismissed it. Dismissal is persisted server-
+        // side (not localStorage) so it survives incognito / new browsers /
+        // redeploys.
+        if (n === 0) {
+          getWorkspacePref<boolean>("wizard-dismissed").then((dismissed) => {
+            if (!dismissed) setWizardOpen(true);
+          });
         }
       })
       .catch(() => setHistoryCount(0));
@@ -147,7 +147,17 @@ export default function App() {
       <div className="flex-1 min-w-0 flex flex-col">
         <TopBar
           running={running}
-          onStart={onStart}
+          onStart={(customRepo) => {
+            if (customRepo) {
+              // Direct git-URL start bypasses the wizard — that's the
+              // "power user" path from TopBar's Git URL segmented control.
+              onStart(customRepo);
+            } else {
+              // Fixture path routes through the wizard so every new sweep
+              // gets the same considered start-flow, not just the first.
+              setWizardOpen(true);
+            }
+          }}
           target={selected}
           onTarget={setSelected}
           targets={targets}

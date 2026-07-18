@@ -261,7 +261,7 @@ def start_sweep(req: SweepRequest) -> dict:
     if source == "git-url":
         _git_workdirs[sweep_id] = repo_path
     # Persist the sweep header immediately so it's visible in history.
-    _persist_sweep_header(sweep_id, repo_path, source)
+    _persist_sweep_header(sweep_id, repo_path, source, interactive=req.interactive)
     return {"sweep_id": sweep_id, "status": "running", "repo_name": repo_path.name, "source": source}
 
 
@@ -300,7 +300,13 @@ def _mark_sweep_failed(sweep_id: str, reason: str) -> None:
         pass
 
 
-def _persist_sweep_header(sweep_id: str, repo_path: Path, source: str) -> None:
+def _persist_sweep_header(
+    sweep_id: str,
+    repo_path: Path,
+    source: str,
+    *,
+    interactive: bool = False,
+) -> None:
     if not store_enabled():
         return
     try:
@@ -315,6 +321,7 @@ def _persist_sweep_header(sweep_id: str, repo_path: Path, source: str) -> None:
                     repo_name=repo_path.name,
                     source=source,
                     status="running",
+                    interactive=interactive,
                 )
             )
     except Exception:
@@ -571,15 +578,18 @@ async def github_webhook(
     req = SweepRequest(repo=clone_url, profile_id=None, interactive=False)
     started = start_sweep(req)
 
-    # Record the association so a later delta / PR-comment writer can find
-    # the previous sweep on the same repo. We stash the PR number on the
-    # in-memory tracker; a real implementation would persist it.
+    # Record the PR association BOTH in-memory (fast path for the current
+    # process) AND in Postgres (survives API restarts, which is the whole
+    # point of the persistence follow-up). The write-through pattern keeps
+    # the in-memory read fast while the DB row is durable.
     if pr_number is not None:
-        _pr_watch_by_sweep[started["sweep_id"]] = {
-            "repo_full_name": repo_block.get("full_name"),
-            "pr_number": pr_number,
+        watch = {
+            "repo_full_name": repo_block.get("full_name") or "",
+            "pr_number": int(pr_number),
             "clone_url": clone_url,
         }
+        _pr_watch_by_sweep[started["sweep_id"]] = watch
+        _persist_pr_watch(started["sweep_id"], watch)
 
     return {
         "started": True,
@@ -590,9 +600,176 @@ async def github_webhook(
     }
 
 
-# In-memory tracker for PR-watching sweeps. Not persisted — good enough for
-# demo + one-shot triggers. Prod hardening: swap for Postgres row per sweep.
+# In-memory hot cache — mirrors the pr_watches Postgres table for fast
+# lookup within the current process. The persistence layer is authoritative;
+# this dict is a cache. Populated by webhook writes AND by hydration on
+# first read (see get_pr_watch below).
 _pr_watch_by_sweep: dict[str, dict[str, Any]] = {}
+
+
+def _persist_pr_watch(sweep_id: str, watch: dict[str, Any]) -> None:
+    """Write-through for the pr_watches table. Silent no-op when the store
+    isn't configured (dev / tests without DATABASE_URL). Any DB failure is
+    logged and swallowed — the in-memory dict is still populated so the
+    current process retains the association."""
+    if not store_enabled():
+        return
+    try:
+        from spotlight.store import PrWatchRow
+
+        with get_session() as sess:
+            existing = sess.get(PrWatchRow, sweep_id)
+            if existing is not None:
+                existing.repo_full_name = watch["repo_full_name"]
+                existing.pr_number = watch["pr_number"]
+                existing.clone_url = watch["clone_url"]
+            else:
+                sess.add(
+                    PrWatchRow(
+                        sweep_id=sweep_id,
+                        repo_full_name=watch["repo_full_name"],
+                        pr_number=watch["pr_number"],
+                        clone_url=watch["clone_url"],
+                    )
+                )
+    except Exception as exc:
+        print(f"[pr_watch] persist failed for {sweep_id}: {exc!r}")
+
+
+def get_pr_watch(sweep_id: str) -> dict[str, Any] | None:
+    """Fetch a PR association. Prefers the in-memory cache; falls back to
+    Postgres and warms the cache on hit. Returns None if no association
+    exists (webhook was for a push, not a PR)."""
+    hot = _pr_watch_by_sweep.get(sweep_id)
+    if hot is not None:
+        return hot
+    if not store_enabled():
+        return None
+    try:
+        from spotlight.store import PrWatchRow
+
+        with get_session() as sess:
+            row = sess.get(PrWatchRow, sweep_id)
+            if row is None:
+                return None
+            hydrated = {
+                "repo_full_name": row.repo_full_name,
+                "pr_number": row.pr_number,
+                "clone_url": row.clone_url,
+            }
+            _pr_watch_by_sweep[sweep_id] = hydrated
+            return hydrated
+    except Exception as exc:
+        print(f"[pr_watch] hydrate failed for {sweep_id}: {exc!r}")
+        return None
+
+
+class PrefValue(BaseModel):
+    """Generic workspace preference payload. `value` is any JSON."""
+
+    value: Any = None
+
+
+_PREF_CACHE: dict[str, Any] = {}
+
+
+def _prefs_read(key: str, default: Any = None) -> Any:
+    """Read a workspace pref. Cache-first, DB fallback. Cached values
+    survive per-process; the DB row survives redeploy."""
+    if key in _PREF_CACHE:
+        return _PREF_CACHE[key]
+    if not store_enabled():
+        return default
+    try:
+        from spotlight.store import WorkspacePrefRow
+
+        with get_session() as sess:
+            row = sess.get(WorkspacePrefRow, key)
+            if row is None:
+                return default
+            _PREF_CACHE[key] = row.value
+            return row.value
+    except Exception as exc:
+        print(f"[prefs] read {key} failed: {exc!r}")
+        return default
+
+
+def _prefs_write(key: str, value: Any) -> None:
+    """Upsert a workspace pref. Writes to Postgres AND the hot cache so a
+    subsequent read in the same process is stale-proof."""
+    _PREF_CACHE[key] = value
+    if not store_enabled():
+        return
+    try:
+        from spotlight.store import WorkspacePrefRow
+
+        with get_session() as sess:
+            row = sess.get(WorkspacePrefRow, key)
+            if row is None:
+                sess.add(WorkspacePrefRow(key=key, value=value))
+            else:
+                row.value = value
+    except Exception as exc:
+        print(f"[prefs] write {key} failed: {exc!r}")
+
+
+@app.get("/prefs/workspace/{key}")
+def get_workspace_pref(key: str) -> dict:
+    """Read a single workspace preference. Returns {"key", "value"};
+    "value" is null if the key has never been written."""
+    return {"key": key, "value": _prefs_read(key, default=None)}
+
+
+@app.put("/prefs/workspace/{key}")
+def put_workspace_pref(key: str, body: PrefValue) -> dict:
+    """Upsert a workspace preference."""
+    _prefs_write(key, body.value)
+    return {"key": key, "value": body.value}
+
+
+@app.get("/prefs/findings-filter/{profile_id}")
+def get_findings_filter(profile_id: str, name: str = "current") -> dict:
+    """Fetch a C8 findings-filter preset for the given profile.
+
+    `name` defaults to "current" which is what the console reads/writes on
+    every filter change. Named presets (future) will use different values.
+    """
+    if not store_enabled():
+        return {"profile_id": profile_id, "name": name, "value": None}
+    try:
+        from spotlight.store import FindingsFilterPrefRow
+
+        with get_session() as sess:
+            row = sess.get(FindingsFilterPrefRow, (profile_id, name))
+            return {
+                "profile_id": profile_id,
+                "name": name,
+                "value": row.value if row else None,
+            }
+    except Exception as exc:
+        print(f"[findings-filter] read failed: {exc!r}")
+        return {"profile_id": profile_id, "name": name, "value": None}
+
+
+@app.put("/prefs/findings-filter/{profile_id}")
+def put_findings_filter(profile_id: str, body: PrefValue, name: str = "current") -> dict:
+    """Upsert a C8 findings-filter preset for a profile."""
+    if not store_enabled():
+        return {"profile_id": profile_id, "name": name, "value": body.value}
+    try:
+        from spotlight.store import FindingsFilterPrefRow
+
+        with get_session() as sess:
+            row = sess.get(FindingsFilterPrefRow, (profile_id, name))
+            if row is None:
+                sess.add(
+                    FindingsFilterPrefRow(profile_id=profile_id, key=name, value=body.value)
+                )
+            else:
+                row.value = body.value
+    except Exception as exc:
+        print(f"[findings-filter] write failed: {exc!r}")
+    return {"profile_id": profile_id, "name": name, "value": body.value}
 
 
 @app.post("/sweeps/cleanup")
