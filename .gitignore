@@ -15,3 +15,5 @@ coverage/
 .ruff_cache/
 console/dist/
 console/.vite/
+.claude/scheduled_tasks.lock
+targets/**/*.patched.py
