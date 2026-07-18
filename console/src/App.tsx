@@ -16,7 +16,6 @@ import { IconPlay } from "./components/Icons";
 import {
   getFindings,
   getWorkspacePref,
-  listSweeps,
   listTargets,
   openSweepStream,
   startSweep,
@@ -25,6 +24,7 @@ import {
   type SweepSummary,
   type Target,
 } from "./lib/api";
+import { invalidateWorkspaceFindings, useWorkspaceData } from "./hooks/useWorkspaceData";
 
 const NAV_ORDER: NavKey[] = ["home", "sweeps", "findings", "paths", "warden", "delta", "attestations"];
 
@@ -38,33 +38,30 @@ export default function App() {
   const [running, setRunning] = useState(false);
   const [activeFinding, setActiveFinding] = useState<string | null>(null);
   const [historyRefresh, setHistoryRefresh] = useState(0);
-  const [historyCount, setHistoryCount] = useState<number>(0);
   const [palette, setPalette] = useState(false);
   const [profileId, setProfileId] = useState<string>("balanced");
   const [selectedSweep, setSelectedSweep] = useState<SweepSummary | null>(null);
   const [wizardOpen, setWizardOpen] = useState(false);
+
+  // Single source of truth for sweep list + per-sweep findings. Board reads
+  // the same hook; `historyCount` (used by the empty-state) reads .total.
+  const workspace = useWorkspaceData(historyRefresh);
+  const historyCount = workspace.counts.total;
 
   useEffect(() => {
     listTargets().then(setTargets).catch(() => setTargets([]));
   }, []);
 
   useEffect(() => {
-    listSweeps()
-      .then((s) => {
-        const n = Array.isArray(s) ? s.length : 0;
-        setHistoryCount(n);
-        // Auto-open the wizard when the workspace is empty AND the user
-        // hasn't previously dismissed it. Dismissal is persisted server-
-        // side (not localStorage) so it survives incognito / new browsers /
-        // redeploys.
-        if (n === 0) {
-          getWorkspacePref<boolean>("wizard-dismissed").then((dismissed) => {
-            if (!dismissed) setWizardOpen(true);
-          });
-        }
-      })
-      .catch(() => setHistoryCount(0));
-  }, [historyRefresh]);
+    // Auto-open the wizard once when the workspace is empty AND the user
+    // hasn't dismissed it. Dismissal persists server-side.
+    if (workspace.sweeps === null) return; // still loading
+    if (workspace.sweeps.length === 0) {
+      getWorkspacePref<boolean>("wizard-dismissed").then((dismissed) => {
+        if (!dismissed) setWizardOpen(true);
+      });
+    }
+  }, [workspace.sweeps]);
 
   useEffect(() => {
     if (!sweepId) return;
@@ -72,6 +69,10 @@ export default function App() {
       setEvents((prev) => [...prev, e]);
       if (e.type === "sweep.finished") {
         setRunning(false);
+        // Fresh sweep landed — invalidate the shared cache so Board's count
+        // + row expansions pick up the new findings on next render. Then
+        // bump historyRefresh to trigger the hook's re-fetch.
+        invalidateWorkspaceFindings(sweepId);
         setHistoryRefresh((n) => n + 1);
         getFindings(sweepId).then((fs) => {
           setFindings(fs);
@@ -222,11 +223,14 @@ export default function App() {
                 <FindingDetail
                   finding={detail}
                   sweepId={sweepId}
-                  onFindingUpdated={(updated) =>
+                  onFindingUpdated={(updated) => {
                     setFindings((prev) =>
                       prev.map((f) => (f.id === updated.id ? updated : f))
-                    )
-                  }
+                    );
+                    // Keep the shared workspace cache in sync so the Board's
+                    // row expansion doesn't render a stale review_state.
+                    if (sweepId) invalidateWorkspaceFindings(sweepId);
+                  }}
                 />
               ) : (
                 <EmptyDetail />

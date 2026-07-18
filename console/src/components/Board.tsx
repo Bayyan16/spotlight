@@ -1,12 +1,12 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import {
   cleanupSweeps,
   deleteSweep,
-  getFindings,
   listSweeps,
   type Finding,
   type SweepSummary,
 } from "../lib/api";
+import { invalidateWorkspaceFindings, useWorkspaceData } from "../hooks/useWorkspaceData";
 import { AreaChart } from "./AreaChart";
 import { Cmul8Mark } from "./Cmul8Mark";
 import { IconCheck, IconPlay } from "./Icons";
@@ -32,9 +32,8 @@ export function Board({
   selected: string | null;
   refreshSignal: number;
 }) {
-  const [rows, setRows] = useState<SweepSummary[] | null>(null);
+  const { sweeps: rows, findingsBySweep, counts, refresh } = useWorkspaceData(refreshSignal);
   const [busy, setBusy] = useState<string | null>(null);
-  const [findingsByThought, setFindingsByThought] = useState<Record<string, Finding[]>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   function toggleExpanded(id: string) {
@@ -46,25 +45,17 @@ export function Board({
     });
   }
 
-  useEffect(() => {
-    listSweeps()
-      .then((d) => setRows(Array.isArray(d) ? d : []))
-      .catch(() => setRows([]));
-  }, [refreshSignal]);
-
-  useEffect(() => {
-    if (!rows) return;
-    const finished = rows.filter((r) => r.status === "finished" && r.findings_count > 0);
-    Promise.all(
-      finished.slice(0, 20).map(async (r) => [r.sweep_id, await getFindings(r.sweep_id)] as const)
-    ).then((entries) => {
-      const map: Record<string, Finding[]> = {};
-      for (const [id, fs] of entries) map[id] = fs;
-      setFindingsByThought(map);
-    });
-  }, [rows]);
-
-  const rollup = useMemo(() => summarize(rows ?? [], findingsByThought), [rows, findingsByThought]);
+  // Single-source-of-truth rollup — no longer computed twice by two callers.
+  const rollup = useMemo(
+    () => ({
+      total: counts.total,
+      open: counts.running,
+      failed: counts.failed,
+      verified: counts.verifiedSweeps,
+      totalFindings: counts.totalFindings,
+    }),
+    [counts]
+  );
   const [granularity, setGranularity] = useState<"day" | "hour">("day");
   const chartPoints = useMemo(
     () =>
@@ -79,7 +70,8 @@ export function Board({
     setBusy(id);
     try {
       await deleteSweep(id);
-      setRows((prev) => (prev ? prev.filter((r) => r.sweep_id !== id) : prev));
+      invalidateWorkspaceFindings(id);
+      refresh();
     } finally {
       setBusy(null);
     }
@@ -90,8 +82,8 @@ export function Board({
     await cleanupSweeps("finished");
     await cleanupSweeps("failed");
     await cleanupSweeps("running");
-    const fresh = await listSweeps();
-    setRows(Array.isArray(fresh) ? fresh : []);
+    invalidateWorkspaceFindings();
+    refresh();
   }
 
   const nothingYet = rows !== null && rows.length === 0;
@@ -210,7 +202,7 @@ export function Board({
             </thead>
             <tbody>
               {rows.map((r) => {
-                const findings = findingsByThought[r.sweep_id] ?? [];
+                const findings = findingsBySweep[r.sweep_id] ?? [];
                 const sev = countSeverities(findings);
                 const active = selected === r.sweep_id;
                 const isOpen = expanded.has(r.sweep_id);
@@ -354,10 +346,10 @@ function CommitCell({
 }
 
 /**
- * Inline findings preview when a sweep row is expanded. Groups by class so
- * a sweep with 15 findings doesn't dump a wall of duplicates — you see
- * "sqli · 4  (critical, verified)" per class, with a "Open sweep" affordance
- * for the full drilldown.
+ * Row-expansion preview — chip strip + one big affordance to open the
+ * canonical Findings inbox for this sweep. Deliberately NOT a mini-inbox:
+ * that path lives in the Findings view, filtered to the sweep via
+ * openHistoricalSweep in App.tsx. Two views would drift; one is the truth.
  */
 function SweepFindingsPreview({
   findings,
@@ -373,7 +365,9 @@ function SweepFindingsPreview({
       </div>
     );
   }
-  // Bucket by class, then by severity within class.
+  // Class → count map. Sorted by count desc so the biggest offenders are
+  // visually first, matching how the Findings inbox groups by severity
+  // rank when opened.
   const byClass = new Map<string, Finding[]>();
   for (const f of findings) {
     const arr = byClass.get(f.class) ?? [];
@@ -383,47 +377,40 @@ function SweepFindingsPreview({
   const sortedClasses = [...byClass.entries()].sort(
     (a, b) => b[1].length - a[1].length
   );
+  const verifiedCount = findings.filter((f) => f.tier === "verified").length;
+
   return (
-    <div>
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-2xs mono uppercase tracking-wider text-paper-500">
-          Findings by class
-        </span>
-        <button
-          onClick={onOpen}
-          className="text-2xs mono uppercase tracking-wider text-accent hover:underline"
-        >
-          Open sweep →
-        </button>
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+    <div className="flex items-center gap-3 flex-wrap">
+      <div className="flex items-center gap-1.5 flex-wrap flex-1 min-w-0">
         {sortedClasses.map(([cls, list]) => {
           const worst = list.reduce((acc, f) => {
             const rank = SEV_RANK[f.severity] ?? 0;
             return rank > (SEV_RANK[acc.severity] ?? 0) ? f : acc;
           }, list[0]);
-          const verified = list.filter((f) => f.tier === "verified").length;
           return (
-            <div
+            <span
               key={cls}
-              className="border border-paper-200 rounded-md bg-white px-2.5 py-2 flex items-center gap-2"
+              className="inline-flex items-center gap-1 mono text-2xs bg-white border border-paper-300 rounded-full pl-2 pr-1.5 py-0.5"
+              title={`${list.length}× ${cls} (worst: ${worst.severity})`}
             >
-              <span className="mono text-xs text-paper-900 font-semibold truncate">
-                {cls}
-              </span>
-              <span className="mono text-2xs text-paper-500 tabular-nums">
-                × {list.length}
-              </span>
+              <span className="text-paper-800">{cls}</span>
+              <span className="tabular-nums text-paper-500">×{list.length}</span>
               <MiniSevChip sev={worst.severity} />
-              {verified > 0 && (
-                <span className="ml-auto text-2xs mono uppercase tracking-wider text-accent">
-                  {verified} verified
-                </span>
-              )}
-            </div>
+            </span>
           );
         })}
       </div>
+      {verifiedCount > 0 && (
+        <span className="text-2xs mono uppercase tracking-wider text-accent">
+          {verifiedCount} verified
+        </span>
+      )}
+      <button
+        onClick={onOpen}
+        className="text-2xs mono uppercase tracking-wider text-white bg-accent hover:brightness-95 rounded-full px-3 py-1"
+      >
+        Open in Findings →
+      </button>
     </div>
   );
 }
@@ -565,21 +552,6 @@ function EmptyState({ onStart }: { onStart: () => void }) {
       </button>
     </div>
   );
-}
-
-function summarize(rows: SweepSummary[], findingsMap: Record<string, Finding[]>) {
-  const total = rows.length;
-  const finished = rows.filter((r) => r.status === "finished");
-  const open = rows.filter((r) => r.status === "running").length;
-  const failed = rows.filter((r) => r.status === "failed").length;
-  let verified = 0;
-  let totalFindings = 0;
-  for (const r of finished) {
-    const findings = findingsMap[r.sweep_id] ?? [];
-    totalFindings += findings.length;
-    if (findings.some((f) => f.tier === "verified")) verified += 1;
-  }
-  return { total, verified, open, failed, totalFindings };
 }
 
 function countSeverities(findings: Finding[]) {
