@@ -84,25 +84,45 @@ function PresenceBody({ data }: { data: PresenceResult }) {
     );
   }
 
-  // Group matches by repo — a single repo with N findings of the same class
-  // should read as ONE entry, not N. Preserves ordering: repos with the most
-  // matches first (most impact), then most-recent within each repo.
+  // Bucket by (org, repo, commit_sha) — the SAME repo at a DIFFERENT commit
+  // is genuinely a different bucket. If you only key on repo_name you lie
+  // to the user: "this vuln shows up in acme/api" hides the fact that it's
+  // actually present at commit a3f9… but was fixed at commit b7c1…. Commit
+  // is the identity axis that matters. `org` disambiguates same-name repos
+  // across orgs (acme/api vs. widgets/api). Falls back to the sweep_id
+  // when commit_sha is missing so pre-identity sweeps still bucket
+  // stably instead of collapsing into a single "unknown" bucket.
   type Match = PresenceResult["matches"][number];
-  const byRepo = new Map<string, Match[]>();
-  for (const m of data.matches) {
-    const arr = byRepo.get(m.repo_name) ?? [];
-    arr.push(m);
-    byRepo.set(m.repo_name, arr);
+  function bucketKey(m: Match): string {
+    const org = m.org ?? "";
+    const commit = m.commit_sha ?? `sweep:${m.sweep_id}`;
+    return `${org}\u0000${m.repo_name}\u0000${commit}`;
   }
-  const repos = [...byRepo.entries()]
-    .map(([repo, matches]) => {
+  const bucketed = new Map<string, Match[]>();
+  for (const m of data.matches) {
+    const key = bucketKey(m);
+    const arr = bucketed.get(key) ?? [];
+    arr.push(m);
+    bucketed.set(key, arr);
+  }
+  const repos = [...bucketed.entries()]
+    .map(([, matches]) => {
       const sorted = [...matches].sort((a, b) => {
         const ta = a.sweep_started_at ? Date.parse(a.sweep_started_at) : 0;
         const tb = b.sweep_started_at ? Date.parse(b.sweep_started_at) : 0;
         return tb - ta;
       });
+      const first = sorted[0];
       return {
-        repo,
+        // Repo label: "org/repo" when org is known, else the repo name.
+        label: first.org ? `${first.org}/${first.repo_name}` : first.repo_name,
+        commit_sha: first.commit_sha ?? null,
+        commit_branch: first.commit_branch ?? null,
+        // If commit_sha is missing (older sweeps) fall back to short sweep_id
+        // so the UI can still show *something* identity-shaped.
+        commitLabel:
+          first.commit_sha?.slice(0, 8) ??
+          `sw ${first.sweep_id.slice(0, 8)}`,
         matches: sorted,
         worstTier: sorted.reduce(
           (acc, m) => (TIER_RANK[m.tier] > TIER_RANK[acc] ? m.tier : acc),
@@ -117,14 +137,21 @@ function PresenceBody({ data }: { data: PresenceResult }) {
   const visibleRepos = showAll ? repos : repos.slice(0, COLLAPSED_LIMIT);
   const hiddenCount = repos.length - visibleRepos.length;
 
-  function toggleRepo(repo: string) {
+  function toggleRepo(key: string) {
     setExpanded((prev) => {
       const next = new Set(prev);
-      if (next.has(repo)) next.delete(repo);
-      else next.add(repo);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   }
+
+  // How many distinct repos (regardless of commit)? Useful in the summary
+  // sentence — "reachable in 3 repos (across 5 commits)" is more honest than
+  // "reachable in 5 repos" when it's actually 3 with re-scans.
+  const distinctRepos = new Set(
+    repos.map((r) => `${r.label}`)
+  ).size;
 
   return (
     <>
@@ -135,32 +162,42 @@ function PresenceBody({ data }: { data: PresenceResult }) {
         </span>{" "}
         class is reachable in{" "}
         <span className="mono tabular-nums font-semibold text-paper-900">
-          {repos.length}
+          {distinctRepos}
         </span>{" "}
-        other repo{repos.length === 1 ? "" : "s"} in your workspace
-        {data.presence_count !== repos.length && (
+        other repo{distinctRepos === 1 ? "" : "s"}
+        {repos.length !== distinctRepos && (
           <>
             {" "}
-            (
+            (across{" "}
+            <span className="mono tabular-nums font-semibold text-paper-900">
+              {repos.length}
+            </span>{" "}
+            commits)
+          </>
+        )}
+        {data.presence_count !== repos.length && (
+          <>
+            {" · "}
             <span className="mono tabular-nums font-semibold text-paper-900">
               {data.presence_count}
             </span>{" "}
-            findings total)
+            findings total
           </>
         )}
         .
       </p>
       <ul className="space-y-1.5">
         {visibleRepos.map((entry) => {
-          const isOpen = expanded.has(entry.repo);
+          const bkey = `${entry.label}\u0000${entry.commit_sha ?? entry.commitLabel}`;
+          const isOpen = expanded.has(bkey);
           const multi = entry.matches.length > 1;
           return (
             <li
-              key={entry.repo}
+              key={bkey}
               className="border border-paper-200 rounded bg-paper-50 overflow-hidden"
             >
               <button
-                onClick={() => (multi ? toggleRepo(entry.repo) : undefined)}
+                onClick={() => (multi ? toggleRepo(bkey) : undefined)}
                 className={`w-full flex items-center gap-3 px-3 py-2 text-left ${
                   multi ? "hover:bg-white cursor-pointer" : "cursor-default"
                 }`}
@@ -177,8 +214,19 @@ function PresenceBody({ data }: { data: PresenceResult }) {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-sm font-semibold text-paper-900 truncate">
-                      {entry.repo}
+                      {entry.label}
                     </span>
+                    <span
+                      className="mono text-2xs text-paper-600 tabular-nums bg-paper-100 border border-paper-300 rounded px-1.5 py-0.5"
+                      title={entry.commit_sha ?? entry.commitLabel}
+                    >
+                      {entry.commitLabel}
+                    </span>
+                    {entry.commit_branch && (
+                      <span className="text-[10px] mono uppercase tracking-wider text-paper-500 truncate">
+                        {entry.commit_branch}
+                      </span>
+                    )}
                     <span className="text-2xs mono tabular-nums text-paper-500">
                       × {entry.matches.length}
                     </span>

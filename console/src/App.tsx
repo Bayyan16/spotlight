@@ -100,7 +100,7 @@ export default function App() {
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !running) {
         e.preventDefault();
-        onStart();
+        setWizardOpen(true);
       }
       if (e.key === "Escape") setPalette(false);
     }
@@ -147,24 +147,9 @@ export default function App() {
       <div className="flex-1 min-w-0 flex flex-col">
         <TopBar
           running={running}
-          onStart={(customRepo) => {
-            if (customRepo) {
-              // Direct git-URL start bypasses the wizard — that's the
-              // "power user" path from TopBar's Git URL segmented control.
-              onStart(customRepo);
-            } else {
-              // Fixture path routes through the wizard so every new sweep
-              // gets the same considered start-flow, not just the first.
-              setWizardOpen(true);
-            }
-          }}
-          target={selected}
-          onTarget={setSelected}
-          targets={targets}
+          onOpenWizard={() => setWizardOpen(true)}
           sweepId={sweepId}
           onOpenPalette={() => setPalette(true)}
-          profileId={profileId}
-          onProfileChange={setProfileId}
         />
 
         <div key={nav} className="flex-1 min-h-0 flex overflow-hidden animate-fade-in">
@@ -172,7 +157,7 @@ export default function App() {
           {nav === "home" && !selectedSweep && (
             <Board
               onOpen={openHistoricalSweep}
-              onStart={() => onStart()}
+              onStart={() => setWizardOpen(true)}
               onSelect={setSelectedSweep}
               selected={null}
               refreshSignal={historyRefresh}
@@ -182,7 +167,7 @@ export default function App() {
             <>
               <Board
                 onOpen={openHistoricalSweep}
-                onStart={() => onStart()}
+                onStart={() => setWizardOpen(true)}
                 onSelect={setSelectedSweep}
                 selected={selectedSweep.sweep_id}
                 refreshSignal={historyRefresh}
@@ -191,7 +176,7 @@ export default function App() {
                 onOpen={openHistoricalSweep}
                 refreshSignal={historyRefresh}
                 selected={selectedSweep}
-                onStart={() => onStart()}
+                onStart={() => setWizardOpen(true)}
               />
             </>
           )}
@@ -214,7 +199,7 @@ export default function App() {
               {sweepId && <LiveSweepPanel events={events} running={running} />}
               {!sweepId && (
                 <EmptySweep
-                  onStart={() => onStart()}
+                  onStart={() => setWizardOpen(true)}
                   onViewHistory={() => setNav("home")}
                   hasHistory={historyCount > 0}
                   historyCount={historyCount}
@@ -260,7 +245,7 @@ export default function App() {
         open={palette}
         onClose={() => setPalette(false)}
         onNavigate={setNav}
-        onStartSweep={() => onStart()}
+        onStartSweep={() => setWizardOpen(true)}
         onPickTarget={setSelected}
         targets={targets}
       />

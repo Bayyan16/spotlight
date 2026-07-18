@@ -299,6 +299,13 @@ export async function getAttestation(id: string): Promise<unknown> {
 export type PresenceMatch = {
   sweep_id: string;
   repo_name: string;
+  // Identity — a match at a DIFFERENT commit on the same repo is a
+  // separate bucket, not a duplicate. `org` disambiguates same-name repos
+  // across GitHub orgs. Both optional to stay compatible with pre-identity
+  // sweep rows that lack this metadata.
+  org?: string | null;
+  commit_sha?: string | null;
+  commit_branch?: string | null;
   finding_id: string;
   file: string;
   line: number;

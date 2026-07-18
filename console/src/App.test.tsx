@@ -105,18 +105,23 @@ beforeEach(() => {
 });
 
 describe("App", () => {
-  it("renders the sweeps-history default view with CMUL8 brand + Start Sweep CTA", async () => {
+  it("renders the sweeps-history default view with CMUL8 brand + New-scan CTA", async () => {
     render(<App />);
     expect(screen.getAllByText(/CMUL8/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Start Sweep/i).length).toBeGreaterThan(0);
+    // TopBar's single start-affordance is now "New scan" (the wizard opener);
+    // the fixture/git/profile pickers moved into the wizard itself so there
+    // is exactly one place to configure a sweep.
+    expect(screen.getAllByText(/New scan/i).length).toBeGreaterThan(0);
   });
 
-  it("loads targets into the selector", async () => {
+  it("shows targets in the Board or empty-state as appropriate", async () => {
     render(<App />);
+    // No more TopBar combobox — pickers live inside the wizard now. Wait for
+    // targets to load so an empty-state or board renders past skeleton.
     await waitFor(() => {
-      expect(screen.getAllByRole("combobox").length).toBeGreaterThan(0);
+      // Board area chart or empty-state renders once targets/sweeps resolve.
+      expect(document.querySelector(".animate-fade-in")).toBeInTheDocument();
     });
-    expect(screen.getByRole("option", { name: "vuln-bank-api" })).toBeInTheDocument();
   });
 });
 

@@ -1119,6 +1119,14 @@ def get_finding_presence(finding_id: str) -> dict:
                     {
                         "sweep_id": sweep_id,
                         "repo_name": sweep_row.repo_name if sweep_row else "",
+                        # Identity — a match at a DIFFERENT commit on the
+                        # same repo is a different match; the Console needs
+                        # commit_sha to bucket correctly. `org` disambiguates
+                        # two repos that share a short name across GitHub
+                        # organisations.
+                        "org": sweep_row.org if sweep_row else None,
+                        "commit_sha": sweep_row.commit_sha if sweep_row else None,
+                        "commit_branch": sweep_row.commit_branch if sweep_row else None,
                         "finding_id": r.id,
                         "file": r.file,
                         "line": r.line,

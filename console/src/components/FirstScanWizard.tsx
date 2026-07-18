@@ -54,11 +54,12 @@ export function FirstScanWizard({
   defaultProfileId?: string;
   title?: string;
 }) {
-  const [tab, setTab] = useState<"single" | "all">("single");
+  const [tab, setTab] = useState<"bundled" | "git" | "all">("bundled");
   const [targets, setTargets] = useState<Target[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [profileId, setProfileId] = useState<string>(defaultProfileId ?? "balanced");
   const [selectedRepo, setSelectedRepo] = useState<string>("");
+  const [gitUrl, setGitUrl] = useState("");
   const [query, setQuery] = useState("");
   const [autoScan, setAutoScan] = useState(false);
   const [interactive, setInteractive] = useState(false);
@@ -100,16 +101,25 @@ export function FirstScanWizard({
     return targets.filter((t) => t.name.toLowerCase().includes(q));
   }, [targets, query]);
 
+  const gitUrlValid = /^https?:\/\/.+\.git$|^git@.+:.+\.git$/.test(gitUrl.trim());
   const canStart =
-    tab === "single" ? !!selectedRepo : filteredTargets.length > 0;
+    tab === "bundled"
+      ? !!selectedRepo
+      : tab === "git"
+        ? gitUrlValid
+        : filteredTargets.length > 0;
 
   function submit() {
     if (!canStart) return;
     const repos =
-      tab === "single" ? [selectedRepo] : filteredTargets.map((t) => t.name);
+      tab === "bundled"
+        ? [selectedRepo]
+        : tab === "git"
+          ? [gitUrl.trim()]
+          : filteredTargets.map((t) => t.name);
     // Persist last-choice server-side so redeploys keep the user's context.
     void setWorkspacePref<LastChoice>(LAST_CHOICE_KEY, {
-      repo: selectedRepo,
+      repo: tab === "git" ? gitUrl.trim() : selectedRepo,
       profile_id: profileId,
       interactive,
       auto_scan: autoScan,
@@ -147,11 +157,14 @@ export function FirstScanWizard({
         </header>
 
         <div className="px-8 flex items-center gap-6 border-b border-paper-200">
-          <TabBtn active={tab === "single"} onClick={() => setTab("single")}>
-            Single repo
+          <TabBtn active={tab === "bundled"} onClick={() => setTab("bundled")}>
+            Bundled target
+          </TabBtn>
+          <TabBtn active={tab === "git"} onClick={() => setTab("git")}>
+            Attach git repo
           </TabBtn>
           <TabBtn active={tab === "all"} onClick={() => setTab("all")}>
-            All repos
+            All bundled
             <span className="ml-1.5 mono text-2xs text-paper-500">
               {targets.length}
             </span>
@@ -160,7 +173,7 @@ export function FirstScanWizard({
 
         {/* Body — scrollable when tall */}
         <div className="px-8 py-5 flex-1 overflow-y-auto space-y-6">
-          {tab === "single" ? (
+          {tab === "bundled" ? (
             <div>
               <div className="relative mb-2">
                 <input
@@ -203,6 +216,49 @@ export function FirstScanWizard({
                   </li>
                 ))}
               </ul>
+            </div>
+          ) : tab === "git" ? (
+            <div>
+              <label className="block text-2xs mono uppercase tracking-wider text-paper-500 mb-1">
+                Public git repo URL
+              </label>
+              <input
+                type="text"
+                value={gitUrl}
+                onChange={(e) => setGitUrl(e.target.value)}
+                placeholder="https://github.com/acme/api.git"
+                autoFocus
+                spellCheck={false}
+                className={`w-full border rounded-lg px-3 py-2 text-sm mono focus:outline-none focus:ring-2 focus:ring-accent/20 ${
+                  gitUrl && !gitUrlValid
+                    ? "border-sev-critical focus:border-sev-critical"
+                    : "border-paper-300 focus:border-accent"
+                }`}
+              />
+              <div className="mt-2 flex items-center gap-2">
+                {gitUrl && !gitUrlValid ? (
+                  <span className="text-2xs text-sev-critical">
+                    URL must end with <span className="mono">.git</span>
+                  </span>
+                ) : (
+                  <span className="text-2xs text-paper-500">
+                    Spotlight will shallow-clone the repo into an ephemeral
+                    workdir and read HEAD's commit SHA for identity.
+                  </span>
+                )}
+              </div>
+              <div className="mt-4 p-3 rounded-lg border border-paper-200 bg-paper-50">
+                <div className="mono text-2xs uppercase tracking-wider text-paper-500 mb-1">
+                  Public repos only — for now
+                </div>
+                <div className="text-2xs text-paper-600 leading-relaxed">
+                  Authenticated private-repo access lands with the T1
+                  self-hosted path in Phase 3 (workspace-scoped GitHub App
+                  install, SSH deploy keys, or a personal access token — one
+                  of those, depending on how your org already grants CI
+                  read access).
+                </div>
+              </div>
             </div>
           ) : (
             <div>
