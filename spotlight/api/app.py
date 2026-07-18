@@ -163,6 +163,12 @@ class SweepRequest(BaseModel):
     # before continuing to Investigate. Default False to preserve legacy
     # non-interactive behavior for all existing clients.
     interactive: bool = False
+    # Pin a specific commit SHA (or ref) to sweep. Only meaningful when
+    # `repo` is a git URL; ignored for bundled fixture targets. Enables
+    # per-commit CVE reproduction — sweep the vulnerable pre-patch commit
+    # and verify Spotlight catches the same finding a published advisory
+    # describes.
+    commit_sha: str | None = None
 
 
 class ResumeRequest(BaseModel):
@@ -250,7 +256,7 @@ def list_targets() -> list[dict]:
 
 @app.post("/sweeps")
 def start_sweep(req: SweepRequest) -> dict:
-    repo_path, source = _resolve_repo(req.repo)
+    repo_path, source = _resolve_repo(req.repo, commit_sha=req.commit_sha)
     profile = get_profile(req.profile_id)
     bus = EventBus()
     orch = Orchestrator(bus=bus, profile=profile)
@@ -293,19 +299,23 @@ def start_sweep(req: SweepRequest) -> dict:
     return {"sweep_id": sweep_id, "status": "running", "repo_name": repo_path.name, "source": source}
 
 
-def _resolve_repo(repo: str) -> tuple[Path, str]:
+def _resolve_repo(repo: str, commit_sha: str | None = None) -> tuple[Path, str]:
     """Resolve a repo argument to a filesystem path, cloning if it's a git URL.
+
+    If ``commit_sha`` is provided AND the repo is a git URL, checkout that
+    exact ref instead of HEAD. Enables per-commit CVE reproduction.
 
     Returns (path, source_kind).
     """
     if repo.startswith(("http://", "https://", "git@")) and repo.endswith(".git"):
         from spotlight.git_ops import GitOps
         try:
-            target = GitOps().clone_at(repo)
+            target = GitOps().clone_at(repo, sha=commit_sha)
         except RuntimeError as exc:
             raise HTTPException(400, f"git clone failed: {str(exc)[:400]}")
         return target, "git-url"
-    # Bundled fixture — look up in targets/
+    # Bundled fixture — look up in targets/. commit_sha is ignored (fixtures
+    # don't have git ancestry).
     p = Path(repo)
     if not p.exists():
         alt = Path(__file__).resolve().parents[2] / "targets" / repo
