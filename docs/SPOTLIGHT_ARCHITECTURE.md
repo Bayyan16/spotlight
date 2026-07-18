@@ -700,6 +700,100 @@ Some bugs aren't pattern-matchable — they're proofs. "Does any input reach any
 
 ---
 
+## 12.6 · Capability expansion plan — closing the "can't do" gaps
+
+The five-layer coverage strategy in §12.5 handles known-CWE breadth (Semgrep) and language-native taint depth (sg-core). It does NOT handle six categories of vulnerability that Spotlight will legitimately miss today. This section names each gap and the concrete plan to close it — with an engine, a phase estimate, and a realistic recall target so nobody in engineering, sales, or a bank CISO's audit committee is misled about what we ship.
+
+### Gap 1 · Memory-safety bugs in C / C++ / Rust unsafe blocks
+
+**Symptoms in the wild:** buffer overflows, use-after-free, out-of-bounds read/write, double-free, null-deref crashes, integer overflow-to-buffer-under/overflow.
+
+**Why we miss it today:** sg-core parses Python + JS/TS AST. It cannot parse C++ IR, cannot understand pointer arithmetic, and has no notion of allocation lifetimes. Semgrep has C rules but only pattern-matches; it can't reason about heap state.
+
+**Engine plan (Phase 4 D3 + D8):**
+- **D3 (already in the plan):** Fuzzing-coupled Reproducer with AFL++ / libFuzzer / honggfuzz. Import ASAN / MSAN / UBSAN crash reports as `dynamic_reproduction` evidence.
+- **D8 (new):** LLVM IR-based sink detection via `tree-sitter-cpp` + a `sg_core_cpp` module. Detect the *pattern* (e.g., `memcpy(dst, src, user_controlled_len)`) with Semgrep; then confirm with a fuzz harness on the vulnerable function.
+- **Alternative:** partner with (or fork) `ossfuzz-gen` — Google's fuzz-target-generation LLM harness. Reuse their per-function harness synthesis, add our signed attestation on top.
+
+**Recall target:** 40-60% of SEC-bench-Pro-class bugs when we have a compilable target. Requires the customer to ship a build script; won't work on repos without one.
+
+### Gap 2 · Type confusion / engine-implementation bugs (V8, SpiderMonkey, JVM)
+
+**Symptoms:** JIT tier-up type confusion, prototype pollution in engine internals, WASM boundary bugs.
+
+**Why we miss it today:** These bugs live inside a language *runtime*, not inside application code. Detection requires either a fuzzer that stresses the engine or symbolic-execution of the JIT IR itself — both are Google-scale research infrastructure investments.
+
+**Engine plan:** honestly, **out of scope for Spotlight**. This is `ossfuzz` / Project Zero / academic-research territory. We should NOT sell "we scan V8" — it dilutes the "AppSec + agentic security" positioning and we'd lose to purpose-built fuzzing platforms. Explicitly note this in prospect calls.
+
+**What we CAN do for JS runtime security:** the *application-level* prototype pollution class (`obj[user_key] = user_value` in Node.js code, not in V8 itself). That's a JS/TS taint pattern we should add to sg-core in Phase 3 — see Gap 4 language expansion.
+
+### Gap 3 · Business-logic vulnerabilities (auth bypass, IDOR, missing rate limits, price manipulation)
+
+**Symptoms:** endpoint that trusts a client-supplied user_id; race between "buy now" and stock check; missing CSRF on a mutation route; ability to place a $0.00 order by tampering with hidden form values.
+
+**Why we miss it today:** these bugs have no syntactic pattern. There's no "sink" — the entire endpoint IS the sink. Detection requires understanding *intent*: "this handler modifies a resource; is the user authorized to modify it?"
+
+**Engine plan (Phase 4 D1 + a new D9):**
+- **D1 (Red/Blue harness):** the Red agent proposes attacks by *role* ("as an unauthenticated user, can I hit this handler? does the response reveal state I shouldn't see?"). Blue agent proposes defenses. Iterated until Red exhausts or Blue holds.
+- **D9 (new):** Endpoint policy inference — an "AuthMap" role scans the codebase for authorization decorators / middleware, builds a `{route: required_role}` map, then flags any route without an auth check that touches a mutation sink.
+
+**Recall target:** 20-40% of the common patterns (missing auth, missing CSRF, missing rate-limit). Nuanced logic bugs ("a $1 order should never proceed if the item costs $500") stay hard.
+
+### Gap 4 · Novel language surfaces (Go, Rust, Ruby, Java, Kotlin, PHP, Swift)
+
+**Symptoms:** SQLi in a Rails app · Command injection in a Go microservice · Deserialization in a Java service · SSRF in a Ruby worker.
+
+**Why we miss it today:** sg-core is Python + JS/TS only. Everything else falls to Semgrep passthrough (which handles most known-CWE patterns but not reachability).
+
+**Engine plan (Phase 3 + Phase 4 D10):**
+- **Phase 3 next:** Add **Go** support first (`tree-sitter-go` + Go-specific `SINKS`). Highest customer demand + Go is easier than C++ to statically reason about (no pointer arithmetic, no manual memory).
+- **Then Ruby** (Rails apps). Then Java/Kotlin (banks). Then PHP (legacy).
+- **D10 (Phase 4):** Fine-tune the language-parser layer via a distilled model trained on `(source, AST, sinks)` triples across languages. Cheaper than hand-authoring each parser.
+
+**Recall target per language:** 70-80% of the classes that already fire in Python (SQLi, cmdi, eval, ssrf, deserialization, path-traversal) — because taint patterns generalize once the AST parser is in place.
+
+### Gap 5 · Race conditions / TOCTOU / concurrency bugs
+
+**Symptoms:** the check-then-act pattern where the resource state changes between validation and use; time-of-check-time-of-use file operations; lock-order-reversal deadlocks.
+
+**Why we miss it today:** static analysis fundamentally can't reason about concurrent interleavings without symbolic execution. Semgrep can flag "you called `stat()` then `open()` without holding a lock" as a pattern, but genuine race detection needs runtime instrumentation.
+
+**Engine plan (Phase 4 D2 + D11):**
+- **D2 (Property Reasoner):** SMT-check "does any interleaving of these two threads violate this invariant?" — feasible for small critical sections, expensive for whole programs.
+- **D11 (new):** ThreadSanitizer (TSan) + LockSanitizer report ingestion. Reuse the fuzz harness from D3; import the concurrency-sanitizer crash reports as another `dynamic_reproduction` modality.
+
+**Recall target:** low. Race conditions are the hardest bug class in security. 15-25% would be industry-leading.
+
+### Gap 6 · Cryptographic misuse (semantic, not syntactic)
+
+**Symptoms:** using a static IV with AES-CBC · reusing a nonce across GCM messages · deriving a key with a fast hash · comparing HMAC digests with `==` (timing leak).
+
+**Why we miss it today:** we detect `hashlib.md5(user_input)` (added in the CWE-94 audit) — the syntactic pattern. We don't detect "you passed a static byte-string as the IV to `AES.new(key, MODE_CBC, iv=IV_CONSTANT)`" — that requires semantic reasoning about what the arguments *mean*.
+
+**Engine plan (Phase 4 D2 + Semgrep pro rules):**
+- **Semgrep pro-rules:** their commercial cryptography ruleset covers ~40 crypto-misuse patterns. Fold in via the passthrough (already shipped in Semgrep passthrough rewrite).
+- **D2 (Property Reasoner):** encode "AES-CBC IV must be unique" as an SMT property; check symbolically. Similar for GCM nonces, HMAC timing.
+
+**Recall target:** 50-70% of common patterns (static IV, weak KDF, MD5-in-security-context). Custom crypto protocols stay research-hard.
+
+### Summary matrix
+
+| Gap | Engine | Phase | Realistic recall | Ship-honesty |
+|---|---|---|---|---|
+| Memory safety (C/C++) | Fuzz + LLVM IR sinks | Phase 4 D3 + D8 | 40-60% | Only when customer ships build script |
+| Type confusion (engines) | — | **Out of scope** | 0% | Explicitly not selling this |
+| Business logic | Red/Blue + AuthMap | Phase 4 D1 + D9 | 20-40% | Common patterns yes, nuance no |
+| Novel languages | Per-language sg-core | Phase 3 + Phase 4 D10 | 70-80% each | Go → Ruby → Java → PHP order |
+| Race conditions | SMT + TSan ingest | Phase 4 D2 + D11 | 15-25% | Hardest bug class — no one solves this well |
+| Crypto misuse | Semgrep pro + SMT | Semgrep now, D2 later | 50-70% | Common patterns yes, custom crypto no |
+
+### Two honest principles going forward
+
+1. **Recall targets are ranges, not promises.** No AppSec tool ships 95% recall on any category. Bank CISOs know this; overclaiming loses credibility.
+2. **If a category is out of scope, we say so.** Type confusion in V8 is not our fight. Selling "we cover it" gets us laughed out of the security-eng meeting. Sticking to "Python + JS/TS AppSec + agentic security + the language expansions above" wins the account.
+
+---
+
 ### Deliberately deferred (not on the roadmap)
 
 - **Semantic DLP** — different product category, routed to CMUL8 adjacent-product backlog.
