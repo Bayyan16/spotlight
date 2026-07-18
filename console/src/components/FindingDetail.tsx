@@ -46,7 +46,20 @@ export function FindingDetail({
         <div className="flex items-center gap-2 mb-2 text-2xs mono text-paper-500 uppercase tracking-wider">
           <span className="text-paper-700 font-semibold">{finding.id}</span>
           <span className="text-paper-400">·</span>
-          <span>{finding.cwe}</span>
+          <span title={`${finding.cwe} — our detector's precise child CWE`}>
+            {finding.cwe}
+          </span>
+          {finding.cwe_family && finding.cwe_family !== finding.cwe && (
+            <>
+              <span className="text-paper-400">↑</span>
+              <span
+                title={`${finding.cwe_family} — parent CWE family; matches how published advisories often tag this class`}
+                className="text-paper-500"
+              >
+                {finding.cwe_family}
+              </span>
+            </>
+          )}
           <span className="text-paper-400">·</span>
           <span>surface {finding.surface}</span>
           {sweep?.org && sweep?.repo_name && (

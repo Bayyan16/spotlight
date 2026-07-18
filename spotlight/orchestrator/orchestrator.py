@@ -323,6 +323,21 @@ def _extract_model_name(payload: Any) -> str:
     return ""
 
 
+_CWE_FAMILY_BY_CLASS: dict[str, str] = {
+    # CWE-94 (Improper Control of Generation of Code) — parent family for
+    # every code-execution class. Advisories (GHSA / NVD) usually tag at
+    # this level; we surface it alongside our more specific child CWE so
+    # exact-advisory matching works both ways.
+    "eval": "CWE-94",
+    "ssti": "CWE-94",
+    "dynamic-import": "CWE-94",
+}
+
+
+def _cwe_family_for_class(cls: str) -> str:
+    return _CWE_FAMILY_BY_CLASS.get((cls or "").strip().lower(), "")
+
+
 def _get_signer() -> Any:
     """Lazy import of the workspace signer so tests/importers that don't need
     signing don't pay the crypto init cost. Any failure returns None — the
@@ -1149,6 +1164,17 @@ class Orchestrator:
                 "severity": cand["severity"],
                 "class": cand["class"],
                 "cwe": cand["cwe"],
+                # Parent CWE family (e.g., CWE-95 rolls up under CWE-94).
+                # Auditors and published advisories often tag at the parent
+                # level, so we surface it here for exact-advisory matching.
+                # Computed from the class label as a fallback when the
+                # model didn't thread it (Moonshot's investigator prompt
+                # isn't parent-CWE aware yet).
+                "cwe_family": (
+                    cand.get("cwe_family")
+                    or _cwe_family_for_class(cand.get("class", ""))
+                    or ""
+                ),
                 # For agentic findings we surface the OWASP-LLM code so the
                 # UI + attestation can render the LLM01..LLM10 chip. Empty
                 # for code-surface findings.

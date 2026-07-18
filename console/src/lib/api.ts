@@ -38,6 +38,11 @@ export type Finding = {
   severity: string;
   class: string;
   cwe: string;
+  // Parent CWE family — advisories (GHSA/NVD) often tag at the parent
+  // level (e.g., CWE-94) while our detector's more precise class-CWE
+  // (CWE-95 for eval) is a child. Surfacing both means exact-advisory
+  // matching works in either direction.
+  cwe_family?: string;
   location: {
     file: string;
     line: number;
