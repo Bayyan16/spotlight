@@ -1,9 +1,11 @@
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import {
   cleanupSweeps,
   deleteSweep,
+  listProfiles,
   listSweeps,
   type Finding,
+  type Profile,
   type SweepSummary,
 } from "../lib/api";
 import { invalidateWorkspaceFindings, useWorkspaceData } from "../hooks/useWorkspaceData";
@@ -36,6 +38,14 @@ export function Board({
   const [busy, setBusy] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [repoFilter, setRepoFilter] = useState<string>("all");
+  const [activeTab, setActiveTab] = useState<"sweeps" | "profiles">("sweeps");
+  const [profiles, setProfiles] = useState<Profile[] | null>(null);
+
+  useEffect(() => {
+    listProfiles()
+      .then((p) => setProfiles(Array.isArray(p) ? p : []))
+      .catch(() => setProfiles([]));
+  }, []);
 
   // Repo filter — a workspace with 5 acme-bank sweeps and 2 juice-shop
   // sweeps is confusing when you're focused on one repo's history. Filter
@@ -101,9 +111,9 @@ export function Board({
   const chartPoints = useMemo(
     () =>
       granularity === "day"
-        ? buildDailyPoints(rows ?? [])
-        : buildHourlyPoints(rows ?? []),
-    [rows, granularity]
+        ? buildDailyPoints(rows ?? [], findingsBySweep)
+        : buildHourlyPoints(rows ?? [], findingsBySweep),
+    [rows, granularity, findingsBySweep]
   );
 
   // Chart runs red when any bucket exceeds the hot-threshold. Signals
@@ -260,22 +270,41 @@ export function Board({
         />
       </div>
 
-      {/* Scans/Profiles tabs — Devin-style underline, no pill background */}
+      {/* Tabs — Sweeps / Profiles. Devin-style underline, no pill background.
+          Uses our internal term ("Sweeps") consistently across the workspace. */}
       <div className="px-12 pt-3 flex items-center gap-8 border-b border-paper-300">
-        <TabPill label="Scans" count={rows?.length ?? 0} active />
-        <TabPill label="Profiles" count={4} />
+        <TabPill
+          label="Sweeps"
+          count={rows?.length ?? 0}
+          active={activeTab === "sweeps"}
+          onClick={() => setActiveTab("sweeps")}
+        />
+        <TabPill
+          label="Profiles"
+          count={profiles?.length ?? 0}
+          active={activeTab === "profiles"}
+          onClick={() => setActiveTab("profiles")}
+        />
         <div className="ml-auto flex items-center gap-3 pb-2">
           <button
             onClick={onStart}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-accent text-white text-xs uppercase tracking-wider mono hover:brightness-95"
           >
             <IconPlay size={12} />
-            Start scan
+            New sweep
           </button>
         </div>
       </div>
 
-      {/* Scans table — no card, no vertical dividers, just row lines */}
+      {/* PROFILES tab — clean list of the workspace's Profile presets. */}
+      {activeTab === "profiles" && (
+        <div className="px-12 py-6">
+          <ProfilesTab profiles={profiles} />
+        </div>
+      )}
+
+      {/* SWEEPS table — no card, no vertical dividers, just row lines */}
+      {activeTab === "sweeps" && (
       <div className="px-12 py-4">
         {rows === null && <SkeletonRows />}
         {nothingYet && <EmptyState onStart={onStart} />}
@@ -397,7 +426,75 @@ export function Board({
           </table>
         )}
       </div>
+      )}
     </section>
+  );
+}
+
+function ProfilesTab({ profiles }: { profiles: Profile[] | null }) {
+  if (profiles === null) {
+    return (
+      <div className="text-paper-500 text-sm italic">Loading profiles…</div>
+    );
+  }
+  if (profiles.length === 0) {
+    return (
+      <div className="text-paper-500 text-sm italic">
+        No profiles configured.
+      </div>
+    );
+  }
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+      {profiles.map((p) => (
+        <div
+          key={p.id}
+          className="border border-paper-300 rounded-xl bg-white p-4 shadow-card hover:shadow-md transition-shadow"
+        >
+          <div className="flex items-center gap-2 mb-1.5">
+            <span className="text-base text-paper-900 font-semibold tracking-tight">
+              {p.name}
+            </span>
+            <span className="ml-auto mono text-2xs text-paper-500">{p.id}</span>
+          </div>
+          <p className="text-2xs text-paper-600 leading-relaxed mb-3">
+            {p.description}
+          </p>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-2xs mono">
+            <div>
+              <div className="uppercase tracking-wider text-paper-500">Surfaces</div>
+              <div className="text-paper-800 truncate" title={p.surfaces.join(", ")}>
+                {p.surfaces.join(", ")}
+              </div>
+            </div>
+            <div>
+              <div className="uppercase tracking-wider text-paper-500">Classes</div>
+              <div className="text-paper-800 tabular-nums">{p.classes.length}</div>
+            </div>
+            <div>
+              <div className="uppercase tracking-wider text-paper-500">Max agents</div>
+              <div className="text-paper-800 tabular-nums">{p.max_agents}</div>
+            </div>
+            <div>
+              <div className="uppercase tracking-wider text-paper-500">Budget</div>
+              <div className="text-paper-800 tabular-nums">
+                {(p.budget_tokens / 1000).toFixed(0)}k tokens
+              </div>
+            </div>
+            <div>
+              <div className="uppercase tracking-wider text-paper-500">Languages</div>
+              <div className="text-paper-800 truncate">
+                {p.languages.join(", ")}
+              </div>
+            </div>
+            <div>
+              <div className="uppercase tracking-wider text-paper-500">Model</div>
+              <div className="text-paper-800 truncate">{p.model}</div>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -571,19 +668,33 @@ function StatPill({
   );
 }
 
-function TabPill({ label, count, active }: { label: string; count: number; active?: boolean }) {
+function TabPill({
+  label,
+  count,
+  active,
+  onClick,
+}: {
+  label: string;
+  count: number;
+  active?: boolean;
+  onClick?: () => void;
+}) {
   return (
-    <div
-      className={`relative flex items-baseline gap-1.5 py-2 cursor-pointer ${
-        active ? "text-paper-900" : "text-paper-500 hover:text-paper-700"
+    <button
+      onClick={onClick}
+      className={`relative flex items-baseline gap-1.5 py-2 focus:outline-none ${
+        active
+          ? "text-paper-900"
+          : "text-paper-500 hover:text-paper-800 transition-colors"
       }`}
+      aria-pressed={active}
     >
       <span className="text-sm font-medium">{label}</span>
       <span className="mono text-2xs tabular-nums text-paper-500">{count}</span>
       {active && (
         <span className="absolute left-0 right-0 -bottom-[2px] h-[2px] bg-paper-900" />
       )}
-    </div>
+    </button>
   );
 }
 
@@ -642,7 +753,7 @@ function EmptyState({ onStart }: { onStart: () => void }) {
         className="mt-6 inline-flex items-center gap-2 px-4 py-2 rounded bg-accent text-white text-sm uppercase tracking-wider mono hover:brightness-95 shadow-card"
       >
         <IconPlay />
-        Start scan
+        New sweep
       </button>
     </div>
   );
@@ -659,58 +770,126 @@ function countSeverities(findings: Finding[]) {
   return out;
 }
 
-function buildDailyPoints(rows: SweepSummary[]) {
-  if (rows.length === 0) return [];
-  // Bucket findings_count by day over the last 30 days.
+type BucketAgg = {
+  total: number;
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+  sweeps: number;
+};
+
+function _emptyBucket(): BucketAgg {
+  return { total: 0, critical: 0, high: 0, medium: 0, low: 0, sweeps: 0 };
+}
+
+function _foldSweepInto(
+  bucket: BucketAgg,
+  row: SweepSummary,
+  findings: Finding[] | undefined
+): void {
+  bucket.sweeps += 1;
+  if (findings && findings.length) {
+    for (const f of findings) {
+      bucket.total += 1;
+      const key = f.severity as keyof BucketAgg;
+      if (key === "critical" || key === "high" || key === "medium" || key === "low") {
+        bucket[key] += 1;
+      }
+    }
+  } else {
+    // Fall back to the row-level `findings_count` when the per-finding
+    // list isn't loaded yet (chart still shows something useful).
+    bucket.total += row.findings_count || 0;
+  }
+}
+
+function _finalizeBucket(
+  iso: string,
+  label: string,
+  bucket: BucketAgg,
+  isLive: boolean
+) {
+  return {
+    label,
+    value: bucket.total,
+    critical: bucket.critical,
+    high: bucket.high,
+    medium: bucket.medium,
+    low: bucket.low,
+    sweeps: bucket.sweeps,
+    live: isLive,
+  };
+}
+
+function buildDailyPoints(
+  rows: SweepSummary[],
+  findingsBySweep: Record<string, Finding[]>
+) {
   const days = 30;
   const now = new Date();
   now.setHours(0, 0, 0, 0);
-  const buckets: Record<string, number> = {};
+  const todayKey = now.toISOString().slice(0, 10);
+  const buckets: Record<string, BucketAgg> = {};
+  const order: string[] = [];
   for (let i = days - 1; i >= 0; i--) {
     const d = new Date(now);
     d.setDate(d.getDate() - i);
-    buckets[d.toISOString().slice(0, 10)] = 0;
+    const key = d.toISOString().slice(0, 10);
+    order.push(key);
+    buckets[key] = _emptyBucket();
   }
   for (const r of rows) {
     if (!r.started_at) continue;
     const key = new Date(r.started_at).toISOString().slice(0, 10);
     if (buckets[key] !== undefined) {
-      buckets[key] += r.findings_count || 0;
+      _foldSweepInto(buckets[key], r, findingsBySweep[r.sweep_id]);
     }
   }
-  return Object.entries(buckets).map(([iso, v]) => {
+  return order.map((iso) => {
     const [_, m, day] = iso.split("-");
-    return { label: `${monthLabel(+m - 1)} ${+day}`, value: v };
+    return _finalizeBucket(
+      iso,
+      `${monthLabel(+m - 1)} ${+day}`,
+      buckets[iso],
+      iso === todayKey && buckets[iso].sweeps > 0
+    );
   });
 }
 
-function buildHourlyPoints(rows: SweepSummary[]) {
-  if (rows.length === 0) return [];
-  // Bucket findings_count by hour over the last 48 hours — the demo window
-  // where sparse sweep activity would otherwise look flat on the daily chart.
+function buildHourlyPoints(
+  rows: SweepSummary[],
+  findingsBySweep: Record<string, Finding[]>
+) {
   const hours = 48;
   const now = new Date();
   now.setMinutes(0, 0, 0);
-  const buckets: Record<string, number> = {};
+  const nowKey = now.toISOString().slice(0, 13);
+  const buckets: Record<string, BucketAgg> = {};
   const keyOrder: string[] = [];
   for (let i = hours - 1; i >= 0; i--) {
     const d = new Date(now);
     d.setHours(d.getHours() - i);
-    const key = d.toISOString().slice(0, 13); // yyyy-mm-ddTHH
+    const key = d.toISOString().slice(0, 13);
     keyOrder.push(key);
-    buckets[key] = 0;
+    buckets[key] = _emptyBucket();
   }
   for (const r of rows) {
     if (!r.started_at) continue;
     const key = new Date(r.started_at).toISOString().slice(0, 13);
     if (buckets[key] !== undefined) {
-      buckets[key] += r.findings_count || 0;
+      _foldSweepInto(buckets[key], r, findingsBySweep[r.sweep_id]);
     }
   }
   return keyOrder.map((iso) => {
     const hh = iso.slice(11, 13);
     const day = iso.slice(8, 10);
-    return { label: `${day} · ${hh}:00`, value: buckets[iso] };
+    return _finalizeBucket(
+      iso,
+      `${day} · ${hh}:00`,
+      buckets[iso],
+      iso === nowKey && buckets[iso].sweeps > 0
+    );
   });
 }
 
