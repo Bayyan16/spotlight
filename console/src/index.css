@@ -10,14 +10,43 @@ html,
 body {
   background: #fbfaf8;
   color: #33322e;
-  font-family: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  /* Inter as the primary sans — matches Devin/OpenAI's clean geometric
+     rhythm. Full stack fallbacks to native system fonts if Inter fails
+     to load so the layout never breaks. */
+  font-family: "Inter", ui-sans-serif, -apple-system, BlinkMacSystemFont,
+    "SF Pro Text", "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
-  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  /* Enable Inter's Contextual + Character variants:
+       cv11 — single-story a (matches OpenAI/Devin)
+       ss01 — alternate a, g, y for slightly softer descenders
+       ss03 — square dot on i/j (clearer at small sizes)
+       cv02 — curved-l (removes the straight-l ambiguity)
+       cv05 — alternate lowercase l with tail
+     Combined effect is closer to Söhne without a paid license. */
+  font-feature-settings: "cv11" 1, "ss01" 1, "ss03" 1, "cv02" 1, "cv05" 1,
+    "ss04" 1;
+  letter-spacing: -0.005em;
+  line-height: 1.5;
+}
+
+/* Editorial display headings (finding titles, panel titles when large).
+   Instrument Serif gives the "OpenAI blog / Devin marketing" editorial
+   feel without going full serif everywhere. */
+.font-display {
+  font-family: "Instrument Serif", "Iowan Old Style", "Palatino Linotype",
+    Georgia, serif;
+  font-weight: 400;
+  letter-spacing: -0.01em;
 }
 
 .mono {
-  font-family: "JetBrains Mono", "SF Mono", Menlo, monospace;
-  font-feature-settings: "tnum";
+  font-family: "JetBrains Mono", "SF Mono", "Fira Code", ui-monospace, Menlo,
+    Consolas, monospace;
+  font-feature-settings: "tnum" 1, "calt" 0, "ss01" 1;
+  font-variation-settings: "wght" 450;
+  letter-spacing: -0.003em;
 }
 
 /* Subtle scrollbar to match warm palette. */

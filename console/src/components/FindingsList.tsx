@@ -75,12 +75,16 @@ export function FindingsList({
 
   return (
     <section className="w-[380px] shrink-0 min-h-0 bg-paper-100/60 border-r border-paper-300 flex flex-col">
-      <div className="h-11 shrink-0 border-b border-paper-300 px-3 flex items-center gap-2">
-        <span className="text-2xs uppercase tracking-wider text-paper-500 mono">Findings</span>
-        <span className="text-2xs text-paper-500">·</span>
-        <span className="text-xs mono text-paper-700 truncate">{target}</span>
-        <span className="ml-auto text-2xs mono text-paper-500">
-          {sorted.length} of {findings.length}
+      <div className="shrink-0 border-b border-paper-300 px-3 py-2.5 flex items-baseline gap-2">
+        <span className="text-sm font-semibold tracking-tight text-paper-900">
+          Findings
+        </span>
+        <span className="text-xs text-paper-500 truncate" title={target}>
+          {target}
+        </span>
+        <span className="ml-auto text-xs tabular-nums text-paper-500">
+          <span className="text-paper-800 font-semibold">{sorted.length}</span>{" "}
+          of {findings.length}
         </span>
       </div>
 
@@ -137,83 +141,107 @@ function Toolbar({
   preset: Preset;
   onChange: (p: Preset) => void;
 }) {
+  const isDefault =
+    preset.sort === DEFAULT_PRESET.sort &&
+    preset.tier === DEFAULT_PRESET.tier &&
+    preset.review === DEFAULT_PRESET.review;
   return (
-    <div className="border-b border-paper-300 px-3 py-2 space-y-1.5 bg-paper-50">
-      <div className="flex items-center gap-1.5 text-2xs">
-        <span className="mono uppercase tracking-wider text-paper-500">Sort</span>
-        {(["severity", "tier", "class", "id"] as SortKey[]).map((k) => (
-          <button
-            key={k}
-            onClick={() => onChange({ ...preset, sort: k })}
-            aria-pressed={preset.sort === k}
-            className={`mono uppercase tracking-wider px-1.5 py-0.5 rounded border ${
-              preset.sort === k
-                ? "border-accent/40 bg-accent-soft text-accent"
-                : "border-paper-300 text-paper-600 hover:bg-paper-100"
-            }`}
-          >
-            {k}
-          </button>
-        ))}
+    <div className="border-b border-paper-300 bg-white/80">
+      {/* Row 1 — SORT. Segmented pill group with a proper label. */}
+      <div className="px-3 pt-3 pb-2 flex items-center gap-2">
+        <span className="text-[10px] font-semibold tracking-[0.14em] uppercase text-paper-500">
+          Sort by
+        </span>
+        <div className="inline-flex rounded-lg border border-paper-300 overflow-hidden bg-paper-50 text-xs">
+          {(["severity", "tier", "class", "id"] as SortKey[]).map((k) => (
+            <button
+              key={k}
+              onClick={() => onChange({ ...preset, sort: k })}
+              aria-pressed={preset.sort === k}
+              className={`px-2.5 py-1 tracking-tight transition-colors ${
+                preset.sort === k
+                  ? "bg-white text-paper-900 font-medium shadow-inner"
+                  : "text-paper-500 hover:bg-white/60"
+              } ${k !== "severity" ? "border-l border-paper-300" : ""}`}
+            >
+              {k}
+            </button>
+          ))}
+        </div>
       </div>
-      <div className="flex items-center gap-1.5 text-2xs">
-        <span className="mono uppercase tracking-wider text-paper-500">Tier</span>
-        <FilterSelect
+
+      {/* Row 2 — FILTERS. Real label + segmented select in a clear group. */}
+      <div className="px-3 pb-3 flex items-center gap-3 flex-wrap">
+        <FilterField
+          label="Tier"
           value={preset.tier}
           onChange={(v) => onChange({ ...preset, tier: v as TierFilter })}
           options={[
-            ["all", "any"],
-            ["verified", "verified"],
-            ["high-confidence", "high-conf"],
-            ["needs-review", "review"],
-            ["held", "held"],
+            ["all", "Any"],
+            ["verified", "Verified"],
+            ["high-confidence", "High-conf"],
+            ["needs-review", "Review"],
+            ["held", "Held"],
           ]}
         />
-        <span className="mono uppercase tracking-wider text-paper-500 ml-1">Review</span>
-        <FilterSelect
+        <FilterField
+          label="Review"
           value={preset.review}
           onChange={(v) => onChange({ ...preset, review: v as ReviewFilter })}
           options={[
-            ["all", "any"],
-            ["unreviewed", "open"],
-            ["accepted", "accepted"],
-            ["false-positive", "false-pos"],
-            ["risk-accepted", "risk-acc"],
+            ["all", "Any"],
+            ["unreviewed", "Open"],
+            ["accepted", "Accepted"],
+            ["false-positive", "False-pos"],
+            ["risk-accepted", "Risk-acc"],
           ]}
         />
-        <button
-          onClick={() => onChange(DEFAULT_PRESET)}
-          className="ml-auto mono uppercase tracking-wider px-1.5 py-0.5 rounded text-paper-500 hover:text-paper-800"
-          title="Reset to default preset"
-        >
-          reset
-        </button>
+        {!isDefault && (
+          <button
+            onClick={() => onChange(DEFAULT_PRESET)}
+            className="ml-auto text-xs text-paper-500 hover:text-paper-900 underline decoration-dotted underline-offset-2"
+          >
+            Clear filters
+          </button>
+        )}
       </div>
     </div>
   );
 }
 
-function FilterSelect({
+function FilterField({
+  label,
   value,
   onChange,
   options,
 }: {
+  label: string;
   value: string;
   onChange: (v: string) => void;
   options: Array<[string, string]>;
 }) {
   return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className="mono uppercase tracking-wider px-1.5 py-0.5 rounded border border-paper-300 bg-white text-paper-700"
-    >
-      {options.map(([v, label]) => (
-        <option key={v} value={v}>
-          {label}
-        </option>
-      ))}
-    </select>
+    <label className="inline-flex items-center gap-1.5">
+      <span className="text-[10px] font-semibold tracking-[0.14em] uppercase text-paper-500">
+        {label}
+      </span>
+      <div className="relative">
+        <select
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="appearance-none text-xs bg-white border border-paper-300 hover:border-paper-500 rounded-md pl-2.5 pr-6 py-1 text-paper-800 focus:outline-none focus:ring-2 focus:ring-accent/20 focus:border-accent"
+        >
+          {options.map(([v, l]) => (
+            <option key={v} value={v}>
+              {l}
+            </option>
+          ))}
+        </select>
+        <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-paper-400 text-[10px]">
+          ▾
+        </span>
+      </div>
+    </label>
   );
 }
 

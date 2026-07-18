@@ -71,7 +71,7 @@ export function FindingDetail({
         </div>
         <div className="flex items-start gap-4">
           <div className="min-w-0 flex-1">
-            <h1 className="text-2xl text-paper-900 font-semibold tracking-tight leading-tight">
+            <h1 className="text-[26px] text-paper-900 font-display leading-tight">
               {finding.title}
             </h1>
             <div className="mt-1.5 text-xs mono text-paper-600 flex items-center gap-1 flex-wrap">
@@ -203,21 +203,7 @@ export function FindingDetail({
 
         <ReviewPanel finding={finding} onUpdated={onFindingUpdated} />
 
-        {finding.evidence.sandbox && (
-          <Panel title="Sandbox (hostile-input containment)">
-            <div className="text-xs text-paper-700 mb-3">
-              Reproduction and verification ran in an isolated container with{" "}
-              <span className="mono text-2xs uppercase tracking-wider bg-accent-soft text-accent border border-accent/30 rounded px-1.5 py-0.5">
-                egress off
-              </span>{" "}
-              — the target code cannot phone home from Spotlight's sandbox.
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <SandboxCard label="Reproducer" data={finding.evidence.sandbox.reproducer} />
-              <SandboxCard label="Verifier" data={finding.evidence.sandbox.verifier} />
-            </div>
-          </Panel>
-        )}
+        <SandboxOrStaticFactPanel finding={finding} />
 
         {finding.evidence.threat_model && (
           <Panel title="Threat model in effect">
@@ -800,6 +786,111 @@ function CodePreviewPanel({
 }
 
 
+const STATIC_FACT_CLASSES = new Set(["secrets", "hardcoded-secret"]);
+
+/**
+ * SandboxOrStaticFactPanel — different framing per finding class.
+ *
+ * For static-fact classes (secrets, hardcoded-secret) the Consensus
+ * Kernel intentionally short-circuits sandbox reproduction — the finding
+ * IS the static evidence, there's nothing to "run". Showing an empty
+ * Reproducer / Verifier grid is confusing and makes the pipeline look
+ * broken. Instead we surface a purpose-built callout that:
+ *
+ *   1. names the class shape ("static fact") and explains why no PoC
+ *      is needed, and
+ *   2. gives specific remediation guidance for the credential-leak case
+ *      (rotate + purge from git history, not just from the current
+ *      commit).
+ *
+ * For everything else, the existing sandbox card grid renders as before.
+ */
+function SandboxOrStaticFactPanel({ finding }: { finding: Finding }) {
+  const sandbox = finding.evidence.sandbox;
+  const isStaticFact = STATIC_FACT_CLASSES.has(finding.class);
+
+  if (isStaticFact) {
+    return (
+      <Panel title="Reproduction — not applicable">
+        <div className="rounded-lg border border-accent/30 bg-accent-soft/40 p-4">
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 h-5 w-5 rounded-full bg-accent text-white grid place-items-center text-2xs mono font-semibold shrink-0">
+              i
+            </span>
+            <div className="min-w-0">
+              <div className="text-sm text-paper-900 font-medium leading-snug">
+                Static-fact class · no sandbox PoC needed.
+              </div>
+              <p className="mt-1 text-xs text-paper-700 leading-relaxed">
+                A hardcoded credential is its own evidence — no attacker
+                input is required to "trigger" it, so the Consensus
+                Kernel promotes to <span className="mono">verified</span>{" "}
+                on static evidence alone (see PRD §8.2). Firing a sandbox
+                would be theatre; the leak exists the moment the string
+                is committed.
+              </p>
+              <div className="mt-3 text-2xs mono uppercase tracking-wider text-paper-500 mb-1">
+                Remediation
+              </div>
+              <ol className="text-xs text-paper-800 leading-relaxed space-y-1.5 list-decimal ml-4">
+                <li>
+                  <span className="font-medium">Rotate the credential first.</span>{" "}
+                  Deleting a line from source does nothing — assume the key
+                  is compromised the moment it landed in git.
+                </li>
+                <li>
+                  <span className="font-medium">
+                    Purge the value from git history
+                  </span>{" "}
+                  (<span className="mono">git filter-repo</span> or the
+                  BFG cleaner). A commit-level delete leaves the secret in
+                  every branch, tag, and fork's reflog.
+                </li>
+                <li>
+                  <span className="font-medium">
+                    Replace with a secrets-manager reference
+                  </span>{" "}
+                  — AWS Secrets Manager, Vault, or the platform-native
+                  equivalent. Never re-check-in.
+                </li>
+                <li>
+                  Mark this finding{" "}
+                  <span className="mono bg-white border border-paper-300 rounded px-1">
+                    accept
+                  </span>{" "}
+                  once (1) and (2) are done. The signed review entry
+                  lands on the chain of custody so the auditor sees the
+                  rotation was performed.
+                </li>
+              </ol>
+            </div>
+          </div>
+        </div>
+      </Panel>
+    );
+  }
+
+  if (!sandbox) return null;
+
+  return (
+    <Panel title="Sandbox — hostile-input containment">
+      <div className="text-xs text-paper-700 mb-3 leading-relaxed">
+        Reproduction and verification ran in an isolated container with{" "}
+        <span className="mono text-2xs uppercase tracking-wider bg-accent-soft text-accent border border-accent/30 rounded px-1.5 py-0.5">
+          egress off
+        </span>{" "}
+        — the target code cannot phone home from Spotlight's sandbox. The
+        capability token below is the signed grant.
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        <SandboxCard label="Reproducer" data={sandbox.reproducer} />
+        <SandboxCard label="Verifier" data={sandbox.verifier} />
+      </div>
+    </Panel>
+  );
+}
+
+
 /**
  * DiffPanel — C5 · unified diff + Warden backdoor-check verdict.
  *
@@ -824,10 +915,12 @@ function DiffPanel({ finding }: { finding: Finding }) {
 
   // When no diff was produced (Remediator has no template for this class
   // yet — e.g., eval, cmdi, ssrf, deserialization, path-traversal beyond
-  // sqli), show a Fix panel PLACEHOLDER instead of hiding. The analyst
-  // gets a clear "why no patch" + a scoped intent ("Phase 4 D7 auto-
-  // generation"). Never look like the Remediator forgot to run.
+  // sqli), show a Fix panel PLACEHOLDER instead of hiding. Static-fact
+  // classes get their own richer callout in the Reproduction panel
+  // above; here we just no-op so we're not showing the same
+  // "patch pending" copy twice.
   if (!diff) {
+    if (STATIC_FACT_CLASSES.has(finding.class)) return null;
     return (
       <Panel title="Fix">
         <div className="text-sm text-paper-800 leading-relaxed mb-3">
