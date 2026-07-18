@@ -816,6 +816,12 @@ class Orchestrator:
                     "root_cause": cand["root_cause"],
                     "fix": {
                         "diff": f"{fid}.diff" if remediation.get("applied") else None,
+                        # C5 · Inline the diff text so the Console can render
+                        # it without needing a file-serving endpoint. Capped
+                        # at 32KB to keep the finding payload small in the WS
+                        # + persistence pipelines.
+                        "diff_content": (remediation.get("diff") or "")[:32_000]
+                            if remediation.get("applied") else None,
                         "approach": cand["recommendation"],
                         "pr_url": pr_info.get("pr_url") if pr_info else None,
                         "branch": pr_info.get("branch") if pr_info else None,

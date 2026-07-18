@@ -46,7 +46,16 @@ export type Finding = {
     detected_by: string[];
     corroboration: Array<{ type: string; detail?: unknown; result?: string; path?: string }>;
     root_cause: string;
-    fix: { diff: string | null; approach: string };
+    fix: {
+      diff: string | null;
+      // C5 · unified diff text, inlined so the Console can render without
+      // an extra RTT. Empty string when no patch was applied.
+      diff_content?: string | null;
+      approach: string;
+      pr_url?: string | null;
+      branch?: string | null;
+      commit_sha?: string | null;
+    };
     verification: Record<string, unknown>;
     threat_model?: {
       author: string;

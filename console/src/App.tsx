@@ -9,6 +9,7 @@ import { Dashboard } from "./components/Dashboard";
 import { CommandPalette } from "./components/CommandPalette";
 import { DeltaView } from "./components/DeltaView";
 import { ExploitPathsView } from "./components/ExploitPathsView";
+import { FirstScanWizard } from "./components/FirstScanWizard";
 import { WardenView } from "./components/WardenView";
 import { Cmul8Mark } from "./components/Cmul8Mark";
 import { IconPlay } from "./components/Icons";
@@ -40,6 +41,7 @@ export default function App() {
   const [palette, setPalette] = useState(false);
   const [profileId, setProfileId] = useState<string>("balanced");
   const [selectedSweep, setSelectedSweep] = useState<SweepSummary | null>(null);
+  const [wizardOpen, setWizardOpen] = useState(false);
 
   useEffect(() => {
     listTargets().then(setTargets).catch(() => setTargets([]));
@@ -47,7 +49,20 @@ export default function App() {
 
   useEffect(() => {
     listSweeps()
-      .then((s) => setHistoryCount(Array.isArray(s) ? s.length : 0))
+      .then((s) => {
+        const n = Array.isArray(s) ? s.length : 0;
+        setHistoryCount(n);
+        // C1 · Auto-open the first-scan wizard when the workspace is
+        // empty AND the user hasn't previously dismissed it. We deliberately
+        // don't open on every zero-sweep state — if they hit "Not now" once,
+        // stay quiet until they explicitly click "New scan".
+        try {
+          const dismissed = localStorage.getItem("spotlight.wizard-dismissed") === "1";
+          if (n === 0 && !dismissed) setWizardOpen(true);
+        } catch {
+          /* private mode — never auto-open */
+        }
+      })
       .catch(() => setHistoryCount(0));
   }, [historyRefresh]);
 
@@ -239,6 +254,23 @@ export default function App() {
         onPickTarget={setSelected}
         targets={targets}
       />
+
+      {wizardOpen && (
+        <FirstScanWizard
+          defaultProfileId={profileId}
+          onClose={() => setWizardOpen(false)}
+          onStart={async (repos, chosenProfile, _opts) => {
+            setProfileId(chosenProfile);
+            for (const repo of repos) {
+              setSelected(repo);
+              // Kick off each repo sequentially. `onStart` fires-and-forgets,
+              // but the running-guard debounces so we don't dogpile.
+              // eslint-disable-next-line no-await-in-loop
+              await onStart(repo);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }

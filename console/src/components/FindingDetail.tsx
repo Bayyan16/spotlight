@@ -140,6 +140,8 @@ export function FindingDetail({
           </div>
         </Panel>
 
+        <DiffPanel finding={finding} />
+
         <ReviewPanel finding={finding} onUpdated={onFindingUpdated} />
 
         {finding.evidence.sandbox && (
@@ -449,6 +451,118 @@ function SandboxCard({
       </dl>
     </div>
   );
+}
+
+
+/**
+ * DiffPanel — C5 · unified diff + Warden backdoor-check verdict.
+ *
+ * Renders the Remediator's proposed patch with `+` / `-` line highlighting,
+ * then a Warden panel below showing what the backdoor-check found. If the
+ * backdoor check FAILED, the panel banner turns red — even a repro-blocked
+ * fix cannot be trusted when the diff removed a control instead of adding
+ * one. That's what the Verifier is protecting against.
+ */
+function DiffPanel({ finding }: { finding: Finding }) {
+  const diff = finding.evidence.fix.diff_content;
+  const verification = finding.evidence.verification as {
+    result?: string;
+    backdoor_check?: string;
+    backdoor_findings?: string[];
+  };
+  const backdoor = verification.backdoor_check ?? "unknown";
+  const backdoorFindings = Array.isArray(verification.backdoor_findings)
+    ? verification.backdoor_findings
+    : [];
+  const backdoorFailed = backdoor === "fail";
+
+  if (!diff) return null;
+
+  const lines = diff.split("\n");
+  return (
+    <Panel title="Fix diff · Warden self-defense">
+      <div className="mb-3 flex items-center gap-2 text-2xs">
+        <span
+          className={`mono uppercase tracking-wider px-2 py-0.5 rounded-full border ${
+            backdoorFailed
+              ? "bg-red-50 text-sev-critical border-sev-critical/40"
+              : "bg-accent-soft text-accent border-accent/30"
+          }`}
+        >
+          Warden backdoor scan: {backdoor}
+        </span>
+        {finding.evidence.fix.pr_url && (
+          <a
+            href={finding.evidence.fix.pr_url}
+            target="_blank"
+            rel="noreferrer"
+            className="mono uppercase tracking-wider text-accent hover:underline"
+          >
+            Open PR ↗
+          </a>
+        )}
+        {finding.evidence.fix.branch && (
+          <span className="mono text-paper-500">
+            branch <span className="text-paper-700">{finding.evidence.fix.branch}</span>
+          </span>
+        )}
+      </div>
+
+      <pre className="text-2xs mono leading-tight border border-paper-300 rounded overflow-x-auto bg-paper-50">
+        {lines.map((line, i) => (
+          <div key={i} className={diffLineClass(line)}>
+            <span className="tabular-nums text-paper-400 pr-2 select-none inline-block w-8 text-right">
+              {i + 1}
+            </span>
+            <span>{line || " "}</span>
+          </div>
+        ))}
+      </pre>
+
+      {backdoorFailed && (
+        <div className="mt-3 border-l-2 border-sev-critical bg-red-50/60 px-3 py-2 text-xs">
+          <div className="mono uppercase tracking-wider text-2xs text-sev-critical mb-1">
+            Warden REJECTED this fix
+          </div>
+          <div className="text-paper-800">
+            The Remediator produced a diff that removes a security control
+            rather than adding one. This finding stays open regardless of
+            the Reproducer's outcome — a "not exploited" PoC on a stripped
+            control is not a valid fix.
+          </div>
+          {backdoorFindings.length > 0 && (
+            <ul className="mt-2 space-y-0.5 mono text-2xs text-paper-700">
+              {backdoorFindings.map((k, i) => (
+                <li key={i}>· {k}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {!backdoorFailed && backdoorFindings.length === 0 && (
+        <div className="mt-3 text-2xs text-paper-500 italic">
+          Warden reviewed the diff; no control-removal patterns detected.
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function diffLineClass(line: string): string {
+  if (line.startsWith("+++") || line.startsWith("---")) {
+    return "px-2 py-0.5 text-paper-500 bg-paper-100";
+  }
+  if (line.startsWith("+")) {
+    return "px-2 py-0.5 bg-accent-soft/60 text-accent";
+  }
+  if (line.startsWith("-")) {
+    return "px-2 py-0.5 bg-red-50 text-sev-critical";
+  }
+  if (line.startsWith("@@")) {
+    return "px-2 py-0.5 bg-paper-200 text-paper-600 mono";
+  }
+  return "px-2 py-0.5 text-paper-700";
 }
 
 
