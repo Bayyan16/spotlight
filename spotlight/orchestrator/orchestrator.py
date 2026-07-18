@@ -72,6 +72,96 @@ def resume_paused_sweep(sweep_id: str, edits: dict | None) -> bool:
     return True
 
 
+_TMPDIR_PREFIX_RE = None
+
+
+def _repo_relative_path(file_hint: str, repo_root: Path) -> str:
+    """Strip the ephemeral tmpdir clone prefix from a file path so the
+    Console can display a stable repo-relative path AND build a GitHub
+    blob link. Examples:
+
+        /tmp/spotlight-clone-abc123/src/redshift_connector/foo.py
+        → redshift_connector/foo.py
+
+        /Users/x/Spotlight/targets/acme-bank/app.py  (fixture)
+        → app.py                                       (relative to repo_root)
+    """
+    import re
+
+    global _TMPDIR_PREFIX_RE
+    if _TMPDIR_PREFIX_RE is None:
+        _TMPDIR_PREFIX_RE = re.compile(
+            r"^/tmp/spotlight-clone-[^/]+/src/", re.IGNORECASE
+        )
+    if not file_hint:
+        return ""
+    stripped = _TMPDIR_PREFIX_RE.sub("", file_hint)
+    if stripped != file_hint:
+        return stripped
+    # Fixture path — fall back to `path.relative_to(repo_root)`.
+    try:
+        return str(Path(file_hint).resolve().relative_to(repo_root.resolve()))
+    except (ValueError, OSError):
+        # Not under repo_root — return basename so at least the filename
+        # is stable. Rare enough that this isn't a big loss.
+        return Path(file_hint).name
+
+
+def _capture_code_preview(
+    file_hint: str, *, line: int, context: int = 6
+) -> dict[str, Any] | None:
+    """Read `file_hint` and return a snippet around `line` for the Console.
+
+    Returns None when the file can't be read (deleted, binary, permission
+    denied). The snippet is capped at 40 lines total to keep finding
+    payloads small in the WebSocket + persistence pipelines.
+    """
+    if not file_hint or not line:
+        return None
+    try:
+        p = Path(file_hint)
+        if not p.exists() or not p.is_file():
+            return None
+        raw = p.read_text(errors="replace")
+    except Exception:
+        return None
+    all_lines = raw.splitlines()
+    if not all_lines:
+        return None
+    line = max(1, min(int(line), len(all_lines)))
+    start = max(1, line - context)
+    end = min(len(all_lines), line + context)
+    # Cap at 40 lines total.
+    if end - start > 40:
+        end = start + 40
+    snippet = "\n".join(all_lines[start - 1 : end])
+    return {
+        "language": _guess_language(p.suffix),
+        "start_line": start,
+        "end_line": end,
+        "highlight_line": line,
+        "content": snippet,
+    }
+
+
+def _guess_language(suffix: str) -> str:
+    return {
+        ".py": "python",
+        ".js": "javascript",
+        ".jsx": "javascript",
+        ".ts": "typescript",
+        ".tsx": "typescript",
+        ".go": "go",
+        ".rs": "rust",
+        ".java": "java",
+        ".rb": "ruby",
+        ".php": "php",
+        ".c": "c",
+        ".cpp": "cpp",
+        ".cs": "csharp",
+    }.get(suffix.lower(), "plain")
+
+
 def _get_signer() -> Any:
     """Lazy import of the workspace signer so tests/importers that don't need
     signing don't pay the crypto init cost. Any failure returns None — the
@@ -844,6 +934,18 @@ class Orchestrator:
                 if exploit_path_id is None:
                     exploit_path_id = ep["id"]
 
+            # Normalize location + capture a code preview around the sink
+            # BEFORE the tmpdir gets cleaned up. The preview lets the Console
+            # render syntax-highlighted vulnerable code inline instead of
+            # sending the analyst on a file-fetching detour.
+            loc = dict(cand.get("location") or {})
+            file_hint = loc.get("file", "")
+            repo_relative = _repo_relative_path(file_hint, repo_path)
+            loc["repo_relative_path"] = repo_relative
+            code_preview = _capture_code_preview(
+                file_hint, line=loc.get("line", 0), context=6
+            )
+
             # Plain-language "why this matters" — best-effort; a model
             # exception falls back to a stub with the class name so the UI
             # can still render a placeholder card.
@@ -871,7 +973,8 @@ class Orchestrator:
                 # UI + attestation can render the LLM01..LLM10 chip. Empty
                 # for code-surface findings.
                 "owasp_llm": cand.get("owasp_llm", ""),
-                "location": cand["location"],
+                "location": loc,
+                "code_preview": code_preview,
                 "state": state,
                 "tier": tier,
                 "confidence": confidence,

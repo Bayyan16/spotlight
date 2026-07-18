@@ -73,6 +73,8 @@ _ADDITIVE_MIGRATIONS: list[tuple[str, str, str]] = [
     ("sweeps", "org", "ALTER TABLE sweeps ADD COLUMN IF NOT EXISTS org VARCHAR(128)"),
     ("sweeps", "commit_sha", "ALTER TABLE sweeps ADD COLUMN IF NOT EXISTS commit_sha VARCHAR(64)"),
     ("sweeps", "commit_branch", "ALTER TABLE sweeps ADD COLUMN IF NOT EXISTS commit_branch VARCHAR(128)"),
+    # Canonical remote URL — Console builds GitHub blob links from it.
+    ("sweeps", "clone_url", "ALTER TABLE sweeps ADD COLUMN IF NOT EXISTS clone_url VARCHAR(512)"),
 ]
 
 

@@ -54,6 +54,11 @@ class SweepRow(Base):
     org: Mapped[str | None] = mapped_column(String(128), nullable=True)
     commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
     commit_branch: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Canonical remote URL (from `git config --get remote.origin.url`).
+    # The Console builds "view this file on GitHub" links from this + the
+    # commit_sha + the finding's repo-relative path. Ephemeral tmpdir
+    # clone paths never leave the server.
+    clone_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     findings_count: Mapped[int] = mapped_column(Integer, default=0)

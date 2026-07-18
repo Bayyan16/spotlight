@@ -362,6 +362,7 @@ def _persist_sweep_header(
                     org=ident.get("org") or None,
                     commit_sha=ident.get("commit_sha") or None,
                     commit_branch=ident.get("commit_branch") or None,
+                    clone_url=ident.get("clone_url") or None,
                 )
             )
     except Exception:
@@ -446,6 +447,7 @@ def list_sweeps() -> list[dict]:
                         "org": r.org,
                         "commit_sha": r.commit_sha,
                         "commit_branch": r.commit_branch,
+                        "clone_url": r.clone_url,
                         "interactive": r.interactive,
                     }
                     for r in rows

@@ -140,16 +140,25 @@ export default function App() {
     setNav("findings");
   }
 
+  // Look up the active sweep's row so downstream views (FindingDetail's
+  // "open on GitHub" link, TopBar breadcrumb, etc.) can read its identity
+  // fields without a second fetch.
+  const activeSweep = useMemo(() => {
+    if (!sweepId) return null;
+    return workspace.sweeps?.find((row) => row.sweep_id === sweepId) ?? null;
+  }, [sweepId, workspace.sweeps]);
+
   // Derive the FindingsList header label from the active sweep — the
   // stale `selected` fallback showed hardcoded fixture names before the
   // user picked anything, which leaked into the UI as "vuln-bank-api"
   // even after real sweeps had landed.
   const activeTargetLabel = useMemo(() => {
     if (!sweepId) return selected || "no sweep selected";
-    const s = workspace.sweeps?.find((row) => row.sweep_id === sweepId);
-    if (!s) return sweepId.slice(0, 14);
-    return s.org ? `${s.org}/${s.repo_name}` : s.repo_name;
-  }, [sweepId, selected, workspace.sweeps]);
+    if (!activeSweep) return sweepId.slice(0, 14);
+    return activeSweep.org
+      ? `${activeSweep.org}/${activeSweep.repo_name}`
+      : activeSweep.repo_name;
+  }, [sweepId, selected, activeSweep]);
 
   const detail = useMemo(
     () => (activeFinding ? findings.find((f) => f.id === activeFinding) ?? null : null),
@@ -238,6 +247,7 @@ export default function App() {
                 <FindingDetail
                   finding={detail}
                   sweepId={sweepId}
+                  sweep={activeSweep}
                   onFindingUpdated={(updated) => {
                     setFindings((prev) =>
                       prev.map((f) => (f.id === updated.id ? updated : f))

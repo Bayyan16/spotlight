@@ -1,21 +1,45 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
-import type { Finding, ReviewAction } from "../lib/api";
-import { attestationUrl, reviewFinding } from "../lib/api";
+import type { Finding, ReviewAction, SweepSummary } from "../lib/api";
+import { attestationUrl, repoFileUrl, reviewFinding } from "../lib/api";
 import { IconAttestation, IconCheck } from "./Icons";
 import { PresencePanel } from "./PresencePanel";
 
 export function FindingDetail({
   finding,
   sweepId,
+  sweep,
   onFindingUpdated,
 }: {
   finding: Finding;
   sweepId?: string | null;
+  /** Active sweep row — used to build linkable file URLs from clone_url +
+   *  commit_sha. Optional so callers that don't have it degrade to plain
+   *  path display. */
+  sweep?: SweepSummary | null;
   onFindingUpdated?: (updated: Finding) => void;
 }) {
   const verified = finding.tier === "verified";
   const fixed = finding.state === "confirmed-fixed";
+
+  // Prefer the repo-relative path so we never leak the ephemeral tmpdir
+  // clone directory into the UI. Fall back to the raw `file` field only
+  // for pre-migration findings that don't carry `repo_relative_path`.
+  const relPath =
+    finding.location.repo_relative_path ??
+    finding.location.file.replace(/^\/tmp\/spotlight-clone-[^/]+\/src\//, "");
+
+  const fileUrl = useMemo(
+    () =>
+      repoFileUrl(
+        sweep?.clone_url ?? null,
+        sweep?.commit_sha ?? null,
+        relPath,
+        finding.location.line
+      ),
+    [sweep?.clone_url, sweep?.commit_sha, relPath, finding.location.line]
+  );
+
   return (
     <section className="flex-1 min-w-0 overflow-y-auto bg-paper-50">
       <header className="border-b border-paper-300 bg-paper-50/95 backdrop-blur px-8 py-5 sticky top-0 z-10">
@@ -25,14 +49,47 @@ export function FindingDetail({
           <span>{finding.cwe}</span>
           <span className="text-paper-400">·</span>
           <span>surface {finding.surface}</span>
+          {sweep?.org && sweep?.repo_name && (
+            <>
+              <span className="text-paper-400">·</span>
+              <span className="text-paper-700">
+                {sweep.org}/{sweep.repo_name}
+              </span>
+            </>
+          )}
+          {sweep?.commit_sha && (
+            <>
+              <span className="text-paper-400">·</span>
+              <span
+                className="text-paper-700 bg-paper-100 border border-paper-300 rounded px-1.5"
+                title={sweep.commit_sha}
+              >
+                {sweep.commit_sha.slice(0, 8)}
+              </span>
+            </>
+          )}
         </div>
         <div className="flex items-start gap-4">
           <div className="min-w-0 flex-1">
             <h1 className="text-2xl text-paper-900 font-semibold tracking-tight leading-tight">
               {finding.title}
             </h1>
-            <div className="mt-1.5 text-xs mono text-paper-600">
-              {finding.location.file}:{finding.location.line} ·{" "}
+            <div className="mt-1.5 text-xs mono text-paper-600 flex items-center gap-1 flex-wrap">
+              {fileUrl ? (
+                <a
+                  href={fileUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-accent hover:underline"
+                >
+                  {relPath}:{finding.location.line} ↗
+                </a>
+              ) : (
+                <span>
+                  {relPath}:{finding.location.line}
+                </span>
+              )}
+              <span className="text-paper-400">·</span>
               <span className="text-paper-800">{finding.location.function}</span>
             </div>
           </div>
@@ -89,6 +146,8 @@ export function FindingDetail({
             )}
           </Panel>
         )}
+
+        <CodePreviewPanel finding={finding} fileUrl={fileUrl} />
 
         <Panel title="Why you can trust this">
           <p className="text-sm text-paper-800 leading-relaxed mb-3">{finding.evidence.root_cause}</p>
@@ -455,6 +514,94 @@ function SandboxCard({
 
 
 /**
+ * CodePreviewPanel — the vulnerable code lines in context.
+ *
+ * ±6 lines around the sink, with the vulnerable line highlighted and line
+ * numbers rendered. Language is best-guessed from the file extension so we
+ * can drop in real syntax highlighting later (Prism / Shiki) without
+ * changing the data shape. When `fileUrl` is available (GitHub-hosted
+ * clone), the header offers a direct "open on GitHub ↗" affordance so an
+ * analyst who wants full context is one click away.
+ */
+function CodePreviewPanel({
+  finding,
+  fileUrl,
+}: {
+  finding: Finding;
+  fileUrl: string | null;
+}) {
+  const preview = finding.code_preview;
+  if (!preview || !preview.content) return null;
+  const lines = preview.content.split("\n");
+  const startLine = preview.start_line;
+  const highlight = preview.highlight_line;
+  return (
+    <Panel title="Where the danger lives">
+      <div className="mb-2 flex items-center gap-2 text-2xs">
+        <span className="mono uppercase tracking-wider bg-paper-200 text-paper-700 rounded px-1.5 py-0.5">
+          {preview.language}
+        </span>
+        <span className="mono text-paper-500">
+          lines {startLine}–{preview.end_line}
+        </span>
+        <span className="ml-auto flex items-center gap-2">
+          {fileUrl && (
+            <a
+              href={fileUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="mono uppercase tracking-wider text-accent hover:underline"
+            >
+              open on github ↗
+            </a>
+          )}
+        </span>
+      </div>
+      <pre
+        className="text-xs mono leading-snug rounded-md border border-paper-300 bg-[#fdfcf9] overflow-x-auto"
+        aria-label={`${preview.language} source preview lines ${startLine} to ${preview.end_line}`}
+      >
+        {lines.map((line, i) => {
+          const num = startLine + i;
+          const isHit = num === highlight;
+          return (
+            <div
+              key={i}
+              className={`flex items-start ${
+                isHit
+                  ? "bg-red-50/70 border-l-2 border-sev-critical"
+                  : "border-l-2 border-transparent"
+              }`}
+            >
+              <span
+                className={`tabular-nums select-none px-3 py-0.5 min-w-[3.2rem] text-right ${
+                  isHit ? "text-sev-critical font-semibold" : "text-paper-400"
+                }`}
+              >
+                {num}
+              </span>
+              <span
+                className={`whitespace-pre px-2 py-0.5 flex-1 ${
+                  isHit ? "text-paper-900" : "text-paper-700"
+                }`}
+              >
+                {line || " "}
+              </span>
+              {isHit && (
+                <span className="text-2xs mono uppercase tracking-wider text-sev-critical pr-3 py-0.5 select-none">
+                  ← sink
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </pre>
+    </Panel>
+  );
+}
+
+
+/**
  * DiffPanel — C5 · unified diff + Warden backdoor-check verdict.
  *
  * Renders the Remediator's proposed patch with `+` / `-` line highlighting,
@@ -476,7 +623,36 @@ function DiffPanel({ finding }: { finding: Finding }) {
     : [];
   const backdoorFailed = backdoor === "fail";
 
-  if (!diff) return null;
+  // When no diff was produced (Remediator has no template for this class
+  // yet — e.g., eval, cmdi, ssrf, deserialization, path-traversal beyond
+  // sqli), show a Fix panel PLACEHOLDER instead of hiding. The analyst
+  // gets a clear "why no patch" + a scoped intent ("Phase 4 D7 auto-
+  // generation"). Never look like the Remediator forgot to run.
+  if (!diff) {
+    return (
+      <Panel title="Fix">
+        <div className="text-sm text-paper-800 leading-relaxed mb-3">
+          {finding.evidence.fix.approach ||
+            "See the root cause and evidence panels for recommended remediation."}
+        </div>
+        <div className="rounded-lg border border-dashed border-paper-400 bg-paper-50 p-4">
+          <div className="mono text-2xs uppercase tracking-wider text-paper-500 mb-1">
+            Patch generation — pending
+          </div>
+          <div className="text-2xs text-paper-600 leading-relaxed">
+            Spotlight ships a hand-authored patch template only for a subset
+            of classes today. Automatic per-class patch generation lands
+            with Phase 4 D7 (a fine-tuned TemplateWriter over{" "}
+            <span className="mono">(finding, verified-fix, PoC)</span>{" "}
+            triples). Until then, the analyst applies the fix using the
+            recommendation above and marks the finding{" "}
+            <span className="mono">accept</span> once the change is
+            deployed. The signed review lands on the chain of custody.
+          </div>
+        </div>
+      </Panel>
+    );
+  }
 
   const lines = diff.split("\n");
   return (

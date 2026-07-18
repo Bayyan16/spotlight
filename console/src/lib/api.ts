@@ -38,7 +38,23 @@ export type Finding = {
   severity: string;
   class: string;
   cwe: string;
-  location: { file: string; line: number; function: string };
+  location: {
+    file: string;
+    line: number;
+    function: string;
+    // Repo-relative path — stripped of the ephemeral tmpdir clone prefix.
+    // Console uses this to render "redshift_connector/foo.py" instead of
+    // "/tmp/spotlight-clone-abc/src/redshift_connector/foo.py" AND to
+    // build GitHub blob links via sweep.clone_url + sweep.commit_sha.
+    repo_relative_path?: string;
+  };
+  code_preview?: {
+    language: string;
+    start_line: number;
+    end_line: number;
+    highlight_line: number;
+    content: string;
+  } | null;
   state: string;
   tier: string;
   confidence: number;
@@ -130,8 +146,43 @@ export type SweepSummary = {
   org?: string | null;
   commit_sha?: string | null;
   commit_branch?: string | null;
+  clone_url?: string | null;
   interactive?: boolean | null;
 };
+
+/**
+ * Build a "view this file on GitHub" URL from a sweep + a repo-relative
+ * path + a line number. Returns null when clone_url isn't a GitHub URL,
+ * or when commit_sha / relative path are missing — the FindingDetail
+ * falls back to a plain mono path in that case (no broken links).
+ *
+ * Handles both HTTPS and SSH clone URL forms:
+ *   https://github.com/aws/redshift-python-driver.git → blob URL
+ *   git@github.com:aws/redshift-python-driver.git      → blob URL
+ * Non-GitHub hosts return null; a GitLab handler can drop in later.
+ */
+export function repoFileUrl(
+  cloneUrl: string | null | undefined,
+  commitSha: string | null | undefined,
+  relativePath: string | null | undefined,
+  line?: number | null
+): string | null {
+  if (!cloneUrl || !commitSha || !relativePath) return null;
+  let url = cloneUrl.trim();
+  if (url.endsWith(".git")) url = url.slice(0, -4);
+  // git@github.com:org/repo → https://github.com/org/repo
+  if (url.startsWith("git@")) {
+    const [, host, path] = url.match(/^git@([^:]+):(.+)$/) ?? [];
+    if (!host || !path) return null;
+    url = `https://${host}/${path}`;
+  }
+  if (!/^https?:\/\/github\.com\//i.test(url)) return null;
+  const relPath = relativePath.startsWith("/")
+    ? relativePath.slice(1)
+    : relativePath;
+  const anchor = line && line > 0 ? `#L${line}` : "";
+  return `${url}/blob/${commitSha}/${relPath}${anchor}`;
+}
 
 export async function listTargets(): Promise<Target[]> {
   const r = await fetch(`${BASE}/targets`);

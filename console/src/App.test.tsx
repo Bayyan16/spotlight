@@ -130,7 +130,11 @@ describe("FindingDetail", () => {
     const { FindingDetail } = await import("./components/FindingDetail");
     render(<FindingDetail finding={mockFindings[0] as any} />);
     expect(screen.getByText(/Why you can trust this/i)).toBeInTheDocument();
-    expect(screen.getByText(/parameterized query/i)).toBeInTheDocument();
+    // The "parameterized query" approach text now appears in BOTH the Fix
+    // panel and the Fix-diff-placeholder Panel (when diff_content is
+    // absent). Either match satisfies the "the fix recommendation renders"
+    // assertion this test is guarding.
+    expect(screen.getAllByText(/parameterized query/i).length).toBeGreaterThan(0);
     expect(screen.getByText(/repro-now-blocked/)).toBeInTheDocument();
     // Confidence percentage rendered in the confidence dial (mono digits).
     expect(screen.getAllByText(/93/)[0]).toBeInTheDocument();
