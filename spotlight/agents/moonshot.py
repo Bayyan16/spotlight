@@ -135,6 +135,53 @@ def _prompts_for(role: str, prompt: str, ctx: dict[str, Any]) -> tuple[str, str]
             "Re-derive risk from scratch. Was the exploit path closed?",
         )
 
+    if role == "hypothesis-proposer":
+        # B5 · LLM-proposed exploit chains. Model receives the reduced
+        # candidates and proposes plausible cross-surface chains the
+        # Chainer's rules don't match. Every proposed step id must
+        # reference a candidate that actually exists — the Proposer
+        # module validates + drops invented ids.
+        cands = ctx.get("candidates", []) or []
+        cand_summary = [
+            {
+                "id": c.get("id") or c.get("finding_id") or c.get("title") or "",
+                "class": c.get("class"),
+                "severity": c.get("severity"),
+                "location": c.get("location"),
+                "surface": c.get("surface"),
+            }
+            for c in cands[:20]
+        ]
+        return (
+            "You are Spotlight's ExploitPath Hypothesis Proposer. You are "
+            "given a set of promoted findings. Propose plausible cross-"
+            "surface attack chains — sequences where one finding enables the "
+            "next. Reply as strict JSON: {\"chains\": [{title, rationale, "
+            "severity, step_finding_ids}...]}. Each step_finding_ids MUST "
+            "reference ids from the input. Return at most 5 chains. Do NOT "
+            "invent finding ids. Return {\"chains\": []} if nothing plausibly "
+            "composes.",
+            f"Candidates:\n{json.dumps(cand_summary, indent=2)[:4000]}",
+        )
+
+    if role == "plain-language":
+        # C3 · Plain-language "why this matters" per finding. Three short
+        # paragraphs, no jargon, concrete blast radius. Reply is a strict
+        # JSON object; empty strings are acceptable when the model has
+        # nothing meaningful to say for a class it doesn't recognize.
+        finding = ctx.get("finding", {}) or {}
+        return (
+            "You are Spotlight's Plain-Language explainer. You are given ONE "
+            "security finding. Reply as strict JSON with exactly three keys: "
+            "one_liner, blast_radius, urgency. Each value is a short paragraph "
+            "(20-60 words). NO JARGON — no CWE numbers, no OWASP codes, no "
+            "'canonicalize/corroborate/adjudicate'. Speak to an engineer who "
+            "does not work security day-to-day. Focus on: what an attacker "
+            "actually does (one_liner), what the concrete damage is "
+            "(blast_radius), and how urgent the fix is (urgency).",
+            f"Finding to explain:\n{json.dumps(finding, indent=2)[:4000]}",
+        )
+
     raise ValueError(f"MoonshotModelClient has no prompt template for role={role}")
 
 
