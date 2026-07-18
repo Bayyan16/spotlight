@@ -39,6 +39,29 @@ def _events_of_type(events: Iterable[dict], type_: str) -> list[dict]:
     return [e for e in events or [] if e.get("type") == type_]
 
 
+def _aggregate_token_usage(findings: list[dict]) -> dict:
+    """Roll up per-role token usage across every finding's
+    ``audit.token_usage.by_role`` bucket.
+
+    The tracking proxy accumulates monotonically across the whole sweep,
+    so the LAST finding's snapshot already contains sweep totals — but
+    surfacing an explicit rolled-up shape here means the attestation
+    consumer doesn't have to know that implementation detail.
+    """
+    latest: dict | None = None
+    for f in findings:
+        tu = ((f.get("audit") or {}).get("token_usage")) or None
+        if tu:
+            latest = tu
+    if not latest:
+        return {
+            "by_role": [],
+            "totals": {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            "events_count": 0,
+        }
+    return latest
+
+
 def _sum_sandbox_duration(events: Iterable[dict]) -> float:
     """Sum `duration_s` across every `sandbox.result` payload we've seen.
 
@@ -169,6 +192,13 @@ class Reporter:
             tokens_used = max(tokens_used, int(audit.get("tokens_used") or 0))
         sandbox_total = _sum_sandbox_duration(events)
 
+        # Aggregate per-role token usage across all findings — the last
+        # finding's `audit.token_usage` already has the sweep totals since
+        # the tracking proxy accumulates monotonically, but we recompute
+        # by walking `by_role` from the latest finding so the shape is
+        # explicit at the top level (not buried on an arbitrary finding).
+        token_usage = _aggregate_token_usage(findings)
+
         metrics = {
             "findings_total": len(findings),
             "findings_verified": verified_count,
@@ -182,6 +212,7 @@ class Reporter:
             "tokens_used": tokens_used,
             "sandbox_duration_s": sandbox_total,
             "events_total": len(events),
+            "token_usage": token_usage,
         }
 
         chain_of_custody = chain_of_custody or {"entries": [], "signature_verified": None}

@@ -162,6 +162,167 @@ def _guess_language(suffix: str) -> str:
     }.get(suffix.lower(), "plain")
 
 
+class _TrackingModel:
+    """Transparent proxy around a ModelClient that records token usage per
+    call. Two accumulators land on the parent orchestrator:
+
+      * ``_usage_by_role``  — aggregate rollup per agent role. Answers
+        "how many tokens did the Investigator role burn this sweep?".
+      * ``_usage_events``  — one entry per call. Answers "how many tokens
+        did SPOT-0001's Verifier cost?".
+
+    Every LLM-facing role that goes through ``self.model.complete()`` is
+    recorded. Non-LLM paths (sg-core, Warden regex, Semgrep) are not — by
+    definition they burn zero model tokens.
+    """
+
+    _EVENT_CAP = 500
+
+    def __init__(self, inner: Any, orch: "Orchestrator") -> None:
+        self._inner = inner
+        self._orch = orch
+
+    @property
+    def family(self) -> str:
+        return getattr(self._inner, "family", "unknown")
+
+    def complete(self, *, role: str, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
+        started = time.monotonic()
+        resp = self._inner.complete(role=role, prompt=prompt, context=context)
+        try:
+            pt, ct, tt = _extract_prompt_completion_tokens(resp)
+            # Fall back to a char-based estimate when the model didn't
+            # thread usage — keeps a rough number rather than showing zero.
+            if pt == 0 and ct == 0 and tt == 0:
+                tt = _estimate_tokens(resp)
+                ct = tt
+            model_name = _extract_model_name(resp) or self.family
+            elapsed = time.monotonic() - started
+
+            self._record_role(role, model_name, pt, ct, tt)
+            self._record_event(role, model_name, pt, ct, tt, elapsed, context, resp)
+        except Exception as exc:  # noqa: BLE001 — accounting must never crash a sweep
+            print(f"[token-track] failed to record {role}: {exc!r}")
+        return resp
+
+    def _record_role(
+        self, role: str, model: str, pt: int, ct: int, tt: int
+    ) -> None:
+        bucket = self._orch._usage_by_role.setdefault(
+            role,
+            {
+                "role": role,
+                "model": model,
+                "calls": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+            },
+        )
+        bucket["calls"] += 1
+        bucket["prompt_tokens"] += int(pt)
+        bucket["completion_tokens"] += int(ct)
+        bucket["total_tokens"] += int(tt)
+        # If the same role runs against multiple models in one sweep
+        # (e.g., you swap the verifier to a different family mid-run),
+        # record every model name that appeared.
+        if bucket["model"] != model:
+            bucket["model"] = f"{bucket['model']}, {model}"
+
+    def _record_event(
+        self,
+        role: str,
+        model: str,
+        pt: int,
+        ct: int,
+        tt: int,
+        elapsed_s: float,
+        context: dict[str, Any],
+        resp: dict[str, Any],
+    ) -> None:
+        events = self._orch._usage_events
+        if len(events) >= self._EVENT_CAP:
+            return  # cap so attestation stays bounded on huge repos
+        # Sub-agent id — the caller can pass worker_id in context so we
+        # tag this event with something more granular than the role
+        # (e.g., "inv-3" or "verifier@SPOT-0007"). Falls back to role.
+        subagent = (
+            context.get("worker_id")
+            or context.get("finding_id")
+            or context.get("subagent_id")
+            or role
+        )
+        events.append(
+            {
+                "role": role,
+                "subagent": str(subagent),
+                "model": model,
+                "prompt_tokens": int(pt),
+                "completion_tokens": int(ct),
+                "total_tokens": int(tt),
+                "elapsed_s": round(elapsed_s, 3),
+                "ts": time.time(),
+                "fallback": bool(resp.get("_fallback")),
+            }
+        )
+
+
+def _extract_prompt_completion_tokens(payload: Any) -> tuple[int, int, int]:
+    """Return (prompt, completion, total). Handles the Moonshot / OpenAI
+    usage-block shape plus the top-level `total_tokens` some clients set."""
+    if not isinstance(payload, dict):
+        return (0, 0, 0)
+    usage = payload.get("usage") or payload.get("_usage") or {}
+    if isinstance(usage, dict):
+        pt = int(usage.get("prompt_tokens") or 0)
+        ct = int(usage.get("completion_tokens") or 0)
+        tt = int(usage.get("total_tokens") or 0)
+        if tt == 0:
+            tt = pt + ct
+        if pt or ct or tt:
+            return (pt, ct, tt)
+    tt = int(payload.get("total_tokens") or 0)
+    return (0, 0, tt)
+
+
+def _snapshot_token_usage(orch: "Orchestrator") -> dict[str, Any]:
+    """Snapshot of the orchestrator's accumulated token usage.
+
+    Shape:
+        {
+            "by_role": [ { role, model, calls, prompt_tokens,
+                           completion_tokens, total_tokens }, … ],
+            "totals":  { calls, prompt_tokens, completion_tokens,
+                         total_tokens },
+            "events_count": int,
+        }
+
+    Cheap — just walks the two accumulators the tracking proxy fills.
+    """
+    by_role = list(orch._usage_by_role.values())
+    totals = {
+        "calls": sum(b["calls"] for b in by_role),
+        "prompt_tokens": sum(b["prompt_tokens"] for b in by_role),
+        "completion_tokens": sum(b["completion_tokens"] for b in by_role),
+        "total_tokens": sum(b["total_tokens"] for b in by_role),
+    }
+    return {
+        "by_role": by_role,
+        "totals": totals,
+        "events_count": len(orch._usage_events),
+    }
+
+
+def _extract_model_name(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    for k in ("model", "_model", "model_name"):
+        v = payload.get(k)
+        if v:
+            return str(v)
+    return ""
+
+
 def _get_signer() -> Any:
     """Lazy import of the workspace signer so tests/importers that don't need
     signing don't pay the crypto init cost. Any failure returns None — the
@@ -242,6 +403,10 @@ class SweepResult:
     # Tranche B4 — cross-surface exploit paths composed from reduced
     # candidates. Empty when the Chainer finds no matching pair.
     exploit_paths: list[dict[str, Any]] = field(default_factory=list)
+    # Per-agent + per-sub-agent token accounting. `by_role` aggregates,
+    # `events` is the per-call log. Populated by the _TrackingModel proxy.
+    token_usage: dict[str, Any] = field(default_factory=dict)
+    usage_events: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _finding_id(i: int) -> str:
@@ -434,12 +599,27 @@ class Orchestrator:
         profile: Profile | None = None,
     ) -> None:
         # Priority: explicit model > Moonshot from env > mock.
-        self.model = model or maybe_from_env() or MockModelClient()
+        raw_model = model or maybe_from_env() or MockModelClient()
+        # Wrap in the token-tracking proxy so every .complete() call lands
+        # in _usage_by_role. Zero touches at call sites — the proxy is
+        # transparent, forwards return values verbatim.
+        self.model = _TrackingModel(raw_model, self)
         self.bus = bus or EventBus()
         self.profile = profile or get_profile(None)
         # Budget bookkeeping (reset at the start of each `run`).
         self._tokens_used: int = 0
         self._start_wall: float = 0.0
+        # Per-role usage accumulator — {role: {model, calls, prompt_tokens,
+        # completion_tokens, total_tokens}}. Populated by _TrackingModel;
+        # aggregated into finding.audit.token_usage and sweep-level
+        # metrics.token_usage at finalize time.
+        self._usage_by_role: dict[str, dict[str, Any]] = {}
+        # Per-sub-agent event log — one entry per model.complete() call.
+        # Lets the analyst answer "how many tokens did SPOT-0001's verifier
+        # cost?" not just "how many did the verifier role cost across the
+        # whole sweep?". Capped at 500 entries per sweep to keep the
+        # attestation payload bounded even on very-large repos.
+        self._usage_events: list[dict[str, Any]] = []
         # Phase state machine bookkeeping.
         self._current_phase: str | None = None
         # Signing key held once per Orchestrator instance so each finding's
@@ -1045,6 +1225,10 @@ class Orchestrator:
                     "timestamp": None,
                     "tokens_used": int(self._tokens_used),
                     "wall_seconds": round(self._wall_elapsed(), 6),
+                    # Per-agent token accounting — one snapshot per finding
+                    # so downstream views can answer "how many tokens did
+                    # SPOT-0001 cost per role?" without re-aggregating.
+                    "token_usage": _snapshot_token_usage(self),
                     # Signed chain of custody — every stage that touched this
                     # finding appended one signed entry above. External
                     # verifiers replay against the workspace public key.
@@ -1135,6 +1319,8 @@ class Orchestrator:
             attestations=[attestation],
             events_log=[e.to_dict() for e in self.bus.replay(sweep_id)],
             exploit_paths=exploit_paths,
+            token_usage=_snapshot_token_usage(self),
+            usage_events=list(self._usage_events),
         )
 
         # Tranche B6: emit rich attestation + Markdown + PDF via Reporter.

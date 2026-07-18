@@ -819,6 +819,95 @@ def put_findings_filter(profile_id: str, body: PrefValue, name: str = "current")
     return {"profile_id": profile_id, "name": name, "value": body.value}
 
 
+@app.get("/sweeps/{sweep_id}/token-usage")
+def sweep_token_usage(sweep_id: str) -> dict:
+    """Return per-agent + per-sub-agent token accounting for a sweep.
+
+    Shape:
+        {
+          "by_role": [ { role, model, calls, prompt_tokens,
+                         completion_tokens, total_tokens } ],
+          "totals":  { calls, prompt_tokens, completion_tokens,
+                       total_tokens },
+          "events":  [ { role, subagent, model, prompt_tokens,
+                         completion_tokens, total_tokens, ts,
+                         elapsed_s, fallback } ]  # per-call event log,
+          "wall_seconds": float,
+        }
+
+    The tracking proxy in the Orchestrator records this transparently for
+    every ``model.complete()`` call — no touches at call sites required.
+    """
+    def _empty() -> dict:
+        return {
+            "sweep_id": sweep_id,
+            "by_role": [],
+            "totals": {
+                "calls": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+            },
+            "events": [],
+            "wall_seconds": 0.0,
+        }
+
+    findings: list[dict] = []
+    wall_seconds = 0.0
+    if sweep_id in SWEEPS:
+        findings = list(SWEEPS[sweep_id].findings)
+        for f in findings:
+            audit = f.get("audit") or {}
+            wall_seconds = max(wall_seconds, float(audit.get("wall_seconds") or 0))
+    elif store_enabled():
+        with get_session() as sess:
+            row = sess.get(SweepRow, sweep_id)
+            if row is None:
+                raise HTTPException(404, "sweep not found")
+            frows = (
+                sess.query(FindingRow)
+                .filter(FindingRow.sweep_id == sweep_id)
+                .order_by(FindingRow.id)
+                .all()
+            )
+            findings = [dict(fr.payload) for fr in frows]
+            for f in findings:
+                audit = f.get("audit") or {}
+                wall_seconds = max(wall_seconds, float(audit.get("wall_seconds") or 0))
+    else:
+        raise HTTPException(404, "sweep not found")
+
+    # The tracking proxy accumulates monotonically across the sweep, so
+    # the LAST finding's snapshot has the sweep totals. Falls back to
+    # empty on pre-migration finding payloads that lack `token_usage`.
+    latest: dict | None = None
+    for f in findings:
+        tu = ((f.get("audit") or {}).get("token_usage")) or None
+        if tu:
+            latest = tu
+    if latest is None:
+        empty = _empty()
+        empty["wall_seconds"] = round(wall_seconds, 6)
+        return empty
+
+    # The per-call event log lives on the orchestrator's in-memory state.
+    # For live sweeps it's on SWEEPS[sweep_id]; for persisted sweeps we
+    # don't currently mirror it to Postgres — that's an accepted follow-
+    # up (would need a new event-log table). Return empty when absent.
+    events: list[dict] = []
+    result = SWEEPS.get(sweep_id)
+    if result is not None:
+        events = list(getattr(result, "usage_events", []) or [])
+
+    return _redact_response({
+        "sweep_id": sweep_id,
+        "by_role": latest.get("by_role", []),
+        "totals": latest.get("totals", {}),
+        "events": events,
+        "wall_seconds": round(wall_seconds, 6),
+    })
+
+
 @app.post("/sweeps/cleanup")
 def cleanup_sweeps(status: str = "failed") -> dict:
     """Bulk-delete sweeps with the given status. Handy for clearing orphans
