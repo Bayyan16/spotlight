@@ -82,9 +82,10 @@ def test_entries_carry_finding_id_and_action(acme_repo, tmp_path):
 
 
 def test_sweep_attestation_aggregates_all_finding_entries(acme_repo, tmp_path):
-    """attestation.chain_of_custody.entries should be the union of per-
-    finding entries, so a bank verifier can spot-check without walking the
-    tree."""
+    """attestation.chain_of_custody.entries should be the union of every
+    per-finding entry plus any SWEEP-LEVEL signed actions (currently:
+    the Planner's `plan.rules-written` — one entry per sweep when the
+    Planner ran)."""
     result = Orchestrator().run(acme_repo, out_dir=tmp_path / "sweep")
     per_finding_total = sum(
         len((f.get("audit") or {}).get("chain_of_custody") or [])
@@ -92,7 +93,19 @@ def test_sweep_attestation_aggregates_all_finding_entries(acme_repo, tmp_path):
     )
     assert result.attestations, "no attestation produced"
     coc = result.attestations[0].get("chain_of_custody") or {}
-    assert len(coc.get("entries", [])) == per_finding_total
+    entries = coc.get("entries", [])
+    # Count sweep-level signed actions (non-finding-scoped). Today: just
+    # the planner. If we add more (e.g., recon-threat-model-signed) they
+    # go here too.
+    sweep_level = sum(
+        1
+        for e in entries
+        if e.get("action", "").startswith("plan.")
+    )
+    assert len(entries) == per_finding_total + sweep_level, (
+        f"expected per-finding {per_finding_total} + sweep-level "
+        f"{sweep_level} entries, got {len(entries)}"
+    )
 
 
 def test_signer_failure_degrades_gracefully(acme_repo, tmp_path, monkeypatch):

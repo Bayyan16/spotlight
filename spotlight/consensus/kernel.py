@@ -41,6 +41,12 @@ VALID_MODALITIES = frozenset(
         "dynamic_reproduction",
         "independent_agent",
         "external_signal",
+        # Planner-inferred rule fired — ranked at parity with
+        # external_signal (Semgrep). Grep-validated at plan time so we
+        # know the identifier exists in the repo, but not as trustworthy
+        # as sg-core's hand-authored deterministic reachability. Needs
+        # another independent modality to promote a finding to verified.
+        "planner_inferred",
     }
 )
 

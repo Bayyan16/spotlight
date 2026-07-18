@@ -156,7 +156,24 @@ class DataFlowSlice:
         }
 
 
-def _classify_sink(callee: str) -> str | None:
+def _classify_sink(
+    callee: str,
+    *,
+    extra: dict[str, tuple[str, ...]] | None = None,
+) -> str | None:
+    """Return the class label for `callee` if it matches any known sink.
+
+    `extra` — per-sweep additions from the Planner (see spotlight.planner).
+    Extras are checked FIRST so a Planner-defined `acme.utils.load_yaml`
+    beats a generic `.load` needle. For Tier-3 rules the class label may
+    be `external:planner:<slug>` — same semantics as Semgrep passthrough
+    external classes.
+    """
+    if extra:
+        for cls, needles in extra.items():
+            for needle in needles:
+                if needle and needle in callee:
+                    return cls
     for cls, needles in SINKS.items():
         for needle in needles:
             if needle in callee:
@@ -164,10 +181,19 @@ def _classify_sink(callee: str) -> str | None:
     return None
 
 
-def _tainted_vars(fn: ParsedFunction) -> dict[str, Source]:
+def _tainted_vars(
+    fn: ParsedFunction,
+    *,
+    extra_sources: tuple[str, ...] = (),
+) -> dict[str, Source]:
     """Map every tainted variable in the function (root OR derived) to the
     Source describing the ROOT untrusted entry point. That way sinks report
     "username reached execute", not "query reached execute".
+
+    `extra_sources` — per-sweep identifier names the Planner tagged as
+    untrusted (e.g., a repo-specific ``queue.consume`` helper). Any
+    assignment whose value-source references one of these identifiers is
+    treated as tainted alongside the built-in ``request.*`` sources.
     """
     tainted: dict[str, Source] = {}
 
@@ -180,6 +206,10 @@ def _tainted_vars(fn: ParsedFunction) -> dict[str, Source]:
         vs = assign.value_source or ""
         if any(u in vs for u in UNTRUSTED_ATTRS):
             tainted[assign.target] = Source(name=assign.target, origin="request.*", line=assign.line)
+        elif extra_sources and any(u in vs for u in extra_sources):
+            tainted[assign.target] = Source(
+                name=assign.target, origin="planner:source", line=assign.line
+            )
 
     # Fixed-point propagation: derived vars inherit the ROOT source.
     changed = True
@@ -232,15 +262,38 @@ class CodeGraph:
     files: list[ParsedFile] = field(default_factory=list)
     _js_paths: list[Path] = field(default_factory=list)
     _secrets_roots: list[Path] = field(default_factory=list)
+    # Per-sweep SINKS override — populated from Planner output. `extra_sinks`
+    # maps class label → list of additional needle strings that classify as
+    # that class for THIS sweep only. `extra_sources` are identifier names
+    # treated as untrusted (in addition to sg-core's UNTRUSTED_ATTRS).
+    # `extra_sanitizers` are identifier names that mark a taint flow as
+    # sanitized when they appear in the chain.
+    _extra_sinks: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    _extra_sources: tuple[str, ...] = field(default_factory=tuple)
+    _extra_sanitizers: tuple[str, ...] = field(default_factory=tuple)
 
     @classmethod
-    def build(cls, paths: Iterable[str | Path], scan_secrets_in: Iterable[str | Path] | None = None) -> "CodeGraph":
+    def build(
+        cls,
+        paths: Iterable[str | Path],
+        scan_secrets_in: Iterable[str | Path] | None = None,
+        *,
+        extra_sinks: dict[str, Iterable[str]] | None = None,
+        extra_sources: Iterable[str] | None = None,
+        extra_sanitizers: Iterable[str] | None = None,
+    ) -> "CodeGraph":
         paths_list = list(paths)
         py_paths = [Path(p) for p in paths_list if str(p).endswith(".py")]
         parsed = [parse_python(p) for p in py_paths]
         js_paths = [Path(p) for p in paths_list if str(p).endswith((".js", ".ts", ".jsx", ".tsx"))]
         graph = cls(files=parsed)
         graph._js_paths = js_paths
+        if extra_sinks:
+            graph._extra_sinks = {
+                k: tuple(v) for k, v in extra_sinks.items() if v
+            }
+        graph._extra_sources = tuple(extra_sources or ())
+        graph._extra_sanitizers = tuple(extra_sanitizers or ())
         # Secrets scanner: walk any provided root(s). By default we scan
         # each unique parent directory of the input paths so the caller
         # doesn't have to pass a separate arg — that captures the common
@@ -256,12 +309,12 @@ class CodeGraph:
         results: list[DataFlowSlice] = []
         for pf in self.files:
             for fn in pf.functions:
-                tainted = _tainted_vars(fn)
+                tainted = _tainted_vars(fn, extra_sources=self._extra_sources)
                 if not tainted:
                     continue
                 source_names = set(tainted.keys())
                 for call in fn.calls:
-                    cls_ = _classify_sink(call.callee)
+                    cls_ = _classify_sink(call.callee, extra=self._extra_sinks)
                     if not cls_:
                         continue
                     # For SQLi, decide sanitizer status by inspecting the first
@@ -286,6 +339,20 @@ class CodeGraph:
                             reason = (
                                 "first arg is a bare parameterized SQL literal; "
                                 "tainted values passed as bound params"
+                            )
+                        elif self._extra_sanitizers and any(
+                            san in arg_src for san in self._extra_sanitizers
+                        ):
+                            # Planner-declared sanitizer appears in the arg
+                            # expression — treat the flow as safe. E.g.,
+                            # `db.execute(acme.sanitize.html_escape(user_input))`.
+                            sanitized = True
+                            hit_san = next(
+                                san for san in self._extra_sanitizers if san in arg_src
+                            )
+                            reason = (
+                                f"tainted value passes through planner-declared "
+                                f"sanitizer {hit_san}"
                             )
                         results.append(
                             DataFlowSlice(

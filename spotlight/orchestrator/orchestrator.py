@@ -394,6 +394,15 @@ def _coc_finalize(coc: Any, *, actor: str, action: str, payload: dict) -> list[d
 # remediate, verify) can repeat inside the finding loop — that's not a
 # backward jump, it's the loop rolling forward across findings.
 _PHASE_ORDER = [
+    # Plan → Recon → Investigate.
+    # Plan reads a lightweight repo index (file tree + imports + decorator
+    # histogram) and writes repo-tuned rules — extra sinks, sources, and
+    # sanitizers PLUS an ephemeral Semgrep YAML rulepack. Recon then feeds
+    # those into sg-core's SINKS override and Semgrep's --config so a
+    # single downstream pass sees BOTH the generic patterns AND the
+    # repo-native ones. Running Plan after Recon would waste a full sg-core
+    # + Semgrep pass on default rules only.
+    "plan",
     "recon",
     "investigate",
     "reduce",
@@ -741,7 +750,35 @@ class Orchestrator:
         emit = lambda t, actor, **p: self.bus.emit(sweep_id, t, actor, **p)
         emit(EventType.SWEEP_STARTED, "orchestrator", repo=str(repo_path))
 
-        # 1. Recon — check budget FIRST so an already-blown wall/token cap
+        # 1. PLAN — repo-native rule authoring runs BEFORE Recon so the
+        #    CodeGraph + Semgrep pass both benefit from the tuned rules.
+        #    Failures never crash the sweep — Recon just runs with default
+        #    rules if the Planner errors out.
+        self._advance_phase("plan")
+        plan_out: Any = None
+        try:
+            from spotlight.planner import Planner
+
+            emit(EventType.AGENT_SPAWNED, "orchestrator", role="planner")
+            plan_out = Planner(self.model).plan(repo_path)
+            emit(
+                EventType.PLAN_RULES_WRITTEN,
+                "planner",
+                framework=plan_out.framework,
+                rules_kept=len(plan_out.validation.kept),
+                rules_rejected=len(plan_out.validation.rejected),
+                extra_sinks_by_class={
+                    k: len(v) for k, v in plan_out.sinks_by_class().items()
+                },
+            )
+            emit(EventType.AGENT_FINISHED, "planner",
+                 kept=len(plan_out.validation.kept),
+                 rejected=len(plan_out.validation.rejected))
+        except Exception as exc:
+            print(f"[orchestrator] Planner failed: {exc!r}")
+            plan_out = None
+
+        # 2. Recon — check budget FIRST so an already-blown wall/token cap
         #    halts the sweep before we spawn any agent.
         self._advance_phase("recon")
         breach = self._budget_breach()
@@ -753,7 +790,11 @@ class Orchestrator:
                 findings=[],
             )
         emit(EventType.AGENT_SPAWNED, "orchestrator", role="recon")
-        recon_out = Recon(self.model).run(repo_path)
+        recon_out = Recon(self.model).run(repo_path, plan=plan_out)
+        # Stash the plan on recon_out so downstream consumers (attestation,
+        # UI) can render it without a second lookup.
+        if plan_out is not None:
+            recon_out["plan"] = plan_out.to_dict()
         self._account_usage(recon_out.get("threat_model", {}))
         emit(EventType.AGENT_FINISHED, "recon", signals=len(recon_out["signals"]))
         emit(
@@ -1320,6 +1361,9 @@ class Orchestrator:
             "repo": str(repo_path),
             "findings": findings,
             "threat_model": recon_out.get("threat_model", {}),
+            # Planner output — auditors read this to see the repo-tuned
+            # rules the sweep used. Empty when Planner isn't wired in.
+            "plan": recon_out.get("plan", {}),
             "exploit_paths": exploit_paths,
         }
         (out_dir / "attestation.json").write_text(json.dumps(attestation, indent=2))
@@ -1366,6 +1410,31 @@ class Orchestrator:
             # any single entry against the workspace public key without
             # needing the whole sweep tree.
             sweep_entries: list[dict] = []
+
+            # If the Planner ran and produced a validated plan, sign one
+            # entry recording exactly which rules were written for this
+            # sweep. The plan's `rules_kept` count + `rejected` list are
+            # part of the signed payload so an auditor can prove the
+            # Planner's output wasn't tampered with after the fact.
+            plan_dict = recon_out.get("plan") if recon_out else None
+            if plan_dict and self._signer is not None:
+                try:
+                    plan_entry = self._signer.sign(
+                        actor_kind="agent",
+                        actor_id="planner",
+                        action="plan.rules-written",
+                        payload={
+                            "framework": plan_dict.get("framework"),
+                            "rules_kept": len(plan_dict.get("rules") or []),
+                            "rules_rejected": (
+                                plan_dict.get("validation", {}).get("rejected_count", 0)
+                            ),
+                        },
+                    )
+                    sweep_entries.append(plan_entry)
+                except Exception as exc:
+                    print(f"[orchestrator] plan-sign failed: {exc!r}")
+
             for f in result.findings:
                 for entry in (f.get("audit") or {}).get("chain_of_custody") or []:
                     sweep_entries.append(entry)

@@ -27,14 +27,46 @@ from .model import MockModelClient, ModelClient
 class Recon:
     model: ModelClient
 
-    def run(self, repo_path: Path) -> dict[str, Any]:
+    def run(
+        self,
+        repo_path: Path,
+        *,
+        plan: Any = None,
+    ) -> dict[str, Any]:
+        """Build the code graph + run Semgrep + author the threat model.
+
+        ``plan`` — an optional ``PlanOutput`` (from ``spotlight.planner``)
+        that carries repo-tuned rules. When present:
+          * sg-core's ``SINKS`` gets unioned with ``plan.sinks_by_class()``.
+          * sg-core's tainted-var recognizer gets ``plan.source_identifiers()``.
+          * sg-core's sanitizer heuristic gets ``plan.sanitizer_identifiers()``.
+          * Semgrep gets the planner's ephemeral YAML appended to
+            ``--config`` alongside ``p/default``.
+        Absent, Recon behaves exactly as before (backwards compatible).
+        """
         code_files: list[Path] = []
         for ext in ("*.py", "*.js", "*.ts", "*.jsx", "*.tsx"):
             code_files.extend(
                 p for p in repo_path.rglob(ext)
                 if "node_modules" not in p.parts and ".venv" not in p.parts and "dist" not in p.parts
             )
-        graph = CodeGraph.build(code_files)
+        # Fold planner extras into the CodeGraph build.
+        extra_sinks: dict[str, list[str]] = {}
+        extra_sources: list[str] = []
+        extra_sanitizers: list[str] = []
+        if plan is not None:
+            try:
+                extra_sinks = plan.sinks_by_class()
+                extra_sources = plan.source_identifiers()
+                extra_sanitizers = plan.sanitizer_identifiers()
+            except Exception as exc:
+                print(f"[recon] plan integration failed: {exc!r}")
+        graph = CodeGraph.build(
+            code_files,
+            extra_sinks=extra_sinks or None,
+            extra_sources=extra_sources or None,
+            extra_sanitizers=extra_sanitizers or None,
+        )
         slices = graph.slices()
         signals = [s.to_dict() for s in graph.reachable_slices()]
         has_ai_layer = any(
@@ -62,7 +94,20 @@ class Recon:
             available = adapter.available()
             print(f"[recon] semgrep available: {available}")
             if available:
-                semgrep_matches = adapter.scan(repo_path)
+                extra_configs: list[str] = []
+                if plan is not None and getattr(plan, "semgrep_rules_yaml", ""):
+                    # Planner-authored rulepack — write to a temp file and
+                    # feed to semgrep --config alongside p/default.
+                    try:
+                        import tempfile as _tmp
+
+                        yaml_path = Path(_tmp.mkdtemp(prefix="spotlight-plan-")) / "rules.yml"
+                        yaml_path.write_text(plan.semgrep_rules_yaml)
+                        extra_configs.append(str(yaml_path))
+                        print(f"[recon] planner rulepack: {yaml_path}")
+                    except Exception as exc:
+                        print(f"[recon] planner rulepack write failed: {exc!r}")
+                semgrep_matches = adapter.scan(repo_path, extra_configs=extra_configs or None)
                 semgrep_signals = [m.as_slice_dict() for m in semgrep_matches]
                 print(f"[recon] semgrep matches: {len(semgrep_matches)}")
                 signals = signals + semgrep_signals

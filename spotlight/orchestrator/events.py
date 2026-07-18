@@ -32,6 +32,7 @@ class EventType(str, Enum):
     AGENT_TOOL_CALL = "agent.tool.call"
     AGENT_FINISHED = "agent.finished"
     RECON_THREAT_MODEL = "recon.threat_model"
+    PLAN_RULES_WRITTEN = "plan.rules.written"
     WARDEN_INJECTION_FLAGGED = "warden.injection.flagged"
     WARDEN_BUDGET_TRIPPED = "warden.budget.tripped"
     WARDEN_CAPABILITY_DENIED = "warden.capability.denied"

@@ -177,20 +177,38 @@ class SemgrepAdapter:
     def available(self) -> bool:
         return shutil.which(self.executable) is not None
 
-    def scan(self, root: Path) -> list[SemgrepMatch]:
+    def scan(
+        self,
+        root: Path,
+        *,
+        extra_configs: list[str] | None = None,
+    ) -> list[SemgrepMatch]:
+        """Run Semgrep against `root`.
+
+        `extra_configs` — additional `--config` values appended after the
+        base rulepack. Enables the Planner-authored ephemeral YAML rulepack
+        to ride alongside `p/default` for a single sweep. Silently ignored
+        entries that don't resolve to a file or a valid config id are
+        semgrep's problem, not ours (its `--config` handling accepts
+        broken values and just logs a warning).
+        """
         if not self.available():
             return []
+        cmd = [
+            self.executable,
+            "--config", self.config,
+            "--json",
+            "--quiet",
+            "--timeout", str(self.timeout_s),
+            "--metrics=off",
+        ]
+        for extra in extra_configs or []:
+            if extra:
+                cmd.extend(["--config", str(extra)])
+        cmd.append(str(root))
         try:
             proc = subprocess.run(
-                [
-                    self.executable,
-                    "--config", self.config,
-                    "--json",
-                    "--quiet",
-                    "--timeout", str(self.timeout_s),
-                    "--metrics=off",
-                    str(root),
-                ],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=self.timeout_s + 15,

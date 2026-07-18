@@ -109,6 +109,50 @@ class MockModelClient:
                 "evidence_used": ["codegraph:source->sink reachable", slice_["reason"]],
             }
 
+        if role == "planner":
+            # Deterministic mock planner: reads the index, produces a small
+            # set of framework-generic rules keyed off decorator patterns
+            # visible in the index. The real Moonshot / OpenAI planner will
+            # be much more specific — this mock exists so tests + demos
+            # produce a plausible plan without a live model.
+            index = str(context.get("index", ""))
+            framework = "flask" if "@app.route" in index else (
+                "fastapi" if "@app.get" in index or "@router" in index else
+                "express" if "app.get(" in index or "app.post(" in index else
+                "unknown"
+            )
+            # A small always-emitted rulepack — these are conservative
+            # enough to fire on most Python repos we've swept and give
+            # tests something to key off.
+            rules = [
+                {
+                    "identifier": "yaml.unsafe_load",
+                    "role": "sink",
+                    "target_class": "deserialization",
+                    "cwe": "CWE-502",
+                    "description": "yaml.unsafe_load treats the input as executable code.",
+                },
+                {
+                    "identifier": "pickle.load",
+                    "role": "sink",
+                    "target_class": "deserialization",
+                    "cwe": "CWE-502",
+                    "description": "pickle.load deserializes arbitrary Python objects.",
+                },
+                {
+                    "identifier": "html_escape",
+                    "role": "sanitizer",
+                    "target_class": "xss",
+                    "cwe": "CWE-79",
+                    "description": "Assumed HTML-escape helper.",
+                },
+            ]
+            return {
+                "framework": framework,
+                "rules": rules,
+                "semgrep_rules_yaml": "",
+            }
+
         if role == "hypothesis-proposer":
             # Deterministic mock proposer: pair the first two candidates that
             # (a) live in the same repo and (b) span two surfaces. Real model
