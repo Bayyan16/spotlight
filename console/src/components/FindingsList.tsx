@@ -1,5 +1,6 @@
+import { useEffect, useMemo, useState } from "react";
+
 import type { Finding } from "../lib/api";
-import { IconAlert } from "./Icons";
 
 const GROUPS = [
   { key: "critical", label: "Critical" },
@@ -8,28 +9,92 @@ const GROUPS = [
   { key: "low", label: "Low" },
 ] as const;
 
+type SortKey = "severity" | "tier" | "class" | "id";
+type TierFilter = "all" | "verified" | "high-confidence" | "needs-review" | "held";
+type ReviewFilter = "all" | "unreviewed" | "accepted" | "false-positive" | "risk-accepted";
+
+const SEV_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
+const TIER_RANK: Record<string, number> = {
+  verified: 4,
+  "high-confidence": 3,
+  "needs-review": 2,
+  held: 1,
+};
+
+// C8 · Saved-filter presets are persisted per Profile. The Profile id is
+// baked into the storage key so switching profiles restores the last-used
+// preset for THAT profile. A quiet default (severity + all + all) fires
+// when no preset exists yet.
+type Preset = { sort: SortKey; tier: TierFilter; review: ReviewFilter };
+const DEFAULT_PRESET: Preset = { sort: "severity", tier: "all", review: "all" };
+
+function storageKey(profileId: string): string {
+  return `spotlight.findings-preset.${profileId || "default"}`;
+}
+
+function loadPreset(profileId: string): Preset {
+  try {
+    const raw = localStorage.getItem(storageKey(profileId));
+    if (!raw) return DEFAULT_PRESET;
+    return { ...DEFAULT_PRESET, ...JSON.parse(raw) } as Preset;
+  } catch {
+    return DEFAULT_PRESET;
+  }
+}
+
+function savePreset(profileId: string, p: Preset) {
+  try {
+    localStorage.setItem(storageKey(profileId), JSON.stringify(p));
+  } catch {
+    /* private mode / quota — silently drop */
+  }
+}
+
 export function FindingsList({
   findings,
   active,
   onSelect,
   target,
+  profileId = "default",
 }: {
   findings: Finding[];
   active: string | null;
   onSelect: (id: string) => void;
   target: string;
+  profileId?: string;
 }) {
-  const grouped = groupBySeverity(findings);
+  const [preset, setPreset] = useState<Preset>(() => loadPreset(profileId));
+
+  // Reload the saved preset whenever the active profile changes.
+  useEffect(() => {
+    setPreset(loadPreset(profileId));
+  }, [profileId]);
+
+  useEffect(() => {
+    savePreset(profileId, preset);
+  }, [profileId, preset]);
+
+  const filtered = useMemo(
+    () => applyFilters(findings, preset),
+    [findings, preset]
+  );
+  const sorted = useMemo(() => applySort(filtered, preset.sort), [filtered, preset.sort]);
+
+  const showGrouped = preset.sort === "severity";
+  const grouped = useMemo(() => groupBySeverity(sorted), [sorted]);
+
   return (
     <section className="w-[380px] shrink-0 bg-paper-100/60 border-r border-paper-300 flex flex-col">
       <div className="h-11 shrink-0 border-b border-paper-300 px-3 flex items-center gap-2">
         <span className="text-2xs uppercase tracking-wider text-paper-500 mono">Findings</span>
         <span className="text-2xs text-paper-500">·</span>
-        <span className="text-xs mono text-paper-700">{target}</span>
+        <span className="text-xs mono text-paper-700 truncate">{target}</span>
         <span className="ml-auto text-2xs mono text-paper-500">
-          {findings.length} {findings.length === 1 ? "finding" : "findings"}
+          {sorted.length} of {findings.length}
         </span>
       </div>
+
+      <Toolbar preset={preset} onChange={setPreset} />
 
       <div className="overflow-y-auto flex-1">
         {findings.length === 0 && (
@@ -38,23 +103,156 @@ export function FindingsList({
             <div className="text-xs">Start a Sweep to populate this pane.</div>
           </div>
         )}
-        {GROUPS.map(({ key, label }) => {
-          const bucket = grouped[key] ?? [];
-          if (bucket.length === 0) return null;
-          return (
-            <div key={key}>
-              <SeverityHeader label={label} sev={key} count={bucket.length} />
-              <ul>
-                {bucket.map((f) => (
-                  <FindingRow key={f.id} f={f} active={active === f.id} onSelect={onSelect} />
-                ))}
-              </ul>
-            </div>
-          );
-        })}
+        {findings.length > 0 && sorted.length === 0 && (
+          <div className="p-6 text-paper-500 text-xs">
+            No findings match the current filters.
+          </div>
+        )}
+        {showGrouped
+          ? GROUPS.map(({ key, label }) => {
+              const bucket = grouped[key] ?? [];
+              if (bucket.length === 0) return null;
+              return (
+                <div key={key}>
+                  <SeverityHeader label={label} sev={key} count={bucket.length} />
+                  <ul>
+                    {bucket.map((f) => (
+                      <FindingRow
+                        key={f.id}
+                        f={f}
+                        active={active === f.id}
+                        onSelect={onSelect}
+                      />
+                    ))}
+                  </ul>
+                </div>
+              );
+            })
+          : (
+            <ul>
+              {sorted.map((f) => (
+                <FindingRow key={f.id} f={f} active={active === f.id} onSelect={onSelect} />
+              ))}
+            </ul>
+          )}
       </div>
     </section>
   );
+}
+
+function Toolbar({
+  preset,
+  onChange,
+}: {
+  preset: Preset;
+  onChange: (p: Preset) => void;
+}) {
+  return (
+    <div className="border-b border-paper-300 px-3 py-2 space-y-1.5 bg-paper-50">
+      <div className="flex items-center gap-1.5 text-2xs">
+        <span className="mono uppercase tracking-wider text-paper-500">Sort</span>
+        {(["severity", "tier", "class", "id"] as SortKey[]).map((k) => (
+          <button
+            key={k}
+            onClick={() => onChange({ ...preset, sort: k })}
+            aria-pressed={preset.sort === k}
+            className={`mono uppercase tracking-wider px-1.5 py-0.5 rounded border ${
+              preset.sort === k
+                ? "border-accent/40 bg-accent-soft text-accent"
+                : "border-paper-300 text-paper-600 hover:bg-paper-100"
+            }`}
+          >
+            {k}
+          </button>
+        ))}
+      </div>
+      <div className="flex items-center gap-1.5 text-2xs">
+        <span className="mono uppercase tracking-wider text-paper-500">Tier</span>
+        <FilterSelect
+          value={preset.tier}
+          onChange={(v) => onChange({ ...preset, tier: v as TierFilter })}
+          options={[
+            ["all", "any"],
+            ["verified", "verified"],
+            ["high-confidence", "high-conf"],
+            ["needs-review", "review"],
+            ["held", "held"],
+          ]}
+        />
+        <span className="mono uppercase tracking-wider text-paper-500 ml-1">Review</span>
+        <FilterSelect
+          value={preset.review}
+          onChange={(v) => onChange({ ...preset, review: v as ReviewFilter })}
+          options={[
+            ["all", "any"],
+            ["unreviewed", "open"],
+            ["accepted", "accepted"],
+            ["false-positive", "false-pos"],
+            ["risk-accepted", "risk-acc"],
+          ]}
+        />
+        <button
+          onClick={() => onChange(DEFAULT_PRESET)}
+          className="ml-auto mono uppercase tracking-wider px-1.5 py-0.5 rounded text-paper-500 hover:text-paper-800"
+          title="Reset to default preset"
+        >
+          reset
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function FilterSelect({
+  value,
+  onChange,
+  options,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  options: Array<[string, string]>;
+}) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="mono uppercase tracking-wider px-1.5 py-0.5 rounded border border-paper-300 bg-white text-paper-700"
+    >
+      {options.map(([v, label]) => (
+        <option key={v} value={v}>
+          {label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function applyFilters(findings: Finding[], preset: Preset): Finding[] {
+  return findings.filter((f) => {
+    if (preset.tier !== "all" && f.tier !== preset.tier) return false;
+    const reviewState = f.review?.state ?? null;
+    if (preset.review === "unreviewed" && reviewState !== null) return false;
+    if (preset.review !== "all" && preset.review !== "unreviewed" && reviewState !== preset.review)
+      return false;
+    return true;
+  });
+}
+
+function applySort(findings: Finding[], key: SortKey): Finding[] {
+  const arr = [...findings];
+  arr.sort((a, b) => {
+    switch (key) {
+      case "severity":
+        return (SEV_RANK[b.severity] ?? 0) - (SEV_RANK[a.severity] ?? 0);
+      case "tier":
+        return (TIER_RANK[b.tier] ?? 0) - (TIER_RANK[a.tier] ?? 0);
+      case "class":
+        return a.class.localeCompare(b.class);
+      case "id":
+        return a.id.localeCompare(b.id);
+    }
+  });
+  return arr;
 }
 
 function SeverityHeader({ label, sev, count }: { label: string; sev: string; count: number }) {

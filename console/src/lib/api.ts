@@ -75,6 +75,13 @@ export type Finding = {
   };
   consensus: { tier: string; independent_corroborators: number; decision: string; rationale: string };
   audit: Record<string, unknown>;
+  // C3 — plain-language "why this matters". Three short paragraphs, no
+  // jargon, targeted at engineers who don't work security day-to-day.
+  plain_language?: {
+    one_liner?: string;
+    blast_radius?: string;
+    urgency?: string;
+  };
   // C4 — analyst review state. Absent until first review; each review is
   // ALSO appended as a signed entry on `audit.chain_of_custody` so external
   // verifiers see human decisions in the same auditable log as agent actions.
@@ -260,6 +267,39 @@ export type ExploitPath = {
 export async function getExploitPaths(sweepId: string): Promise<ExploitPath[]> {
   const r = await fetch(`${BASE}/paths/${sweepId}`);
   if (!r.ok) return [];
+  return r.json();
+}
+
+// C6 — Delta between two sweeps.
+export type DeltaFinding = {
+  id: string;
+  class: string;
+  severity: string;
+  tier: string;
+  title: string;
+  file: string;
+  line: number;
+  function: string;
+  review_state: string | null;
+};
+
+export type SweepDelta = {
+  sweep_id: string;
+  since: string;
+  new: DeltaFinding[];
+  resolved: DeltaFinding[];
+  still_open: DeltaFinding[];
+  counts: { new: number; resolved: number; still_open: number };
+};
+
+export async function getSweepDelta(
+  sweepId: string,
+  sinceSweepId: string
+): Promise<SweepDelta | null> {
+  const r = await fetch(
+    `${BASE}/sweeps/${encodeURIComponent(sweepId)}/delta?since=${encodeURIComponent(sinceSweepId)}`
+  );
+  if (!r.ok) return null;
   return r.json();
 }
 

@@ -477,6 +477,106 @@ def sweep_findings(sweep_id: str) -> list[dict]:
     raise HTTPException(404, "sweep not found")
 
 
+@app.get("/sweeps/{sweep_id}/delta")
+def sweep_delta(sweep_id: str, since: str) -> dict:
+    """C6 · Delta between two sweeps.
+
+    Returns three arrays keyed on the (class, file, function) fingerprint:
+
+      * ``new``         — appears in `sweep_id` but not in `since`
+      * ``resolved``    — appeared in `since` but not in `sweep_id`
+      * ``still_open``  — appears in both and is not analyst-reviewed
+                          away (accepted / false-positive / risk-accepted)
+
+    Sweep freshness is not asserted here — callers pick which two sweeps
+    to compare. Same-repo comparison is the intended use, but this
+    endpoint is repo-agnostic so cross-target diffs also work.
+    """
+    curr = _load_findings_for_sweep(sweep_id)
+    prev = _load_findings_for_sweep(since)
+    if curr is None:
+        raise HTTPException(404, f"sweep not found: {sweep_id}")
+    if prev is None:
+        raise HTTPException(404, f"sweep not found: {since}")
+
+    def fp(f: dict) -> tuple:
+        loc = f.get("location") or {}
+        return (
+            str(f.get("class") or ""),
+            str(loc.get("file") or ""),
+            str(loc.get("function") or ""),
+        )
+
+    prev_index = {fp(f): f for f in prev}
+    curr_index = {fp(f): f for f in curr}
+
+    def _summarize(f: dict) -> dict:
+        loc = f.get("location") or {}
+        return {
+            "id": f.get("id"),
+            "class": f.get("class"),
+            "severity": f.get("severity"),
+            "tier": f.get("tier"),
+            "title": f.get("title"),
+            "file": loc.get("file"),
+            "line": loc.get("line"),
+            "function": loc.get("function"),
+            "review_state": (f.get("review") or {}).get("state"),
+        }
+
+    new: list[dict] = []
+    still_open: list[dict] = []
+    for key, f in curr_index.items():
+        summary = _summarize(f)
+        if key not in prev_index:
+            new.append(summary)
+        else:
+            # Still in both sweeps — filter analyst-suppressed ones from
+            # "still_open" so the count matches "what actually needs work".
+            if summary["review_state"] not in ("false-positive", "accepted", "risk-accepted"):
+                still_open.append(summary)
+
+    resolved = [
+        _summarize(f) for key, f in prev_index.items() if key not in curr_index
+    ]
+
+    return _redact_response({
+        "sweep_id": sweep_id,
+        "since": since,
+        "new": new,
+        "resolved": resolved,
+        "still_open": still_open,
+        "counts": {
+            "new": len(new),
+            "resolved": len(resolved),
+            "still_open": len(still_open),
+        },
+    })
+
+
+def _load_findings_for_sweep(sweep_id: str) -> list[dict] | None:
+    """In-memory-first + Postgres fallback, mirroring the pattern the other
+    sweep endpoints use. Returns None if the sweep isn't found in either
+    surface (so the caller can 404 with a specific id)."""
+    if sweep_id in SWEEPS:
+        return list(SWEEPS[sweep_id].findings or [])
+    if store_enabled():
+        with get_session() as sess:
+            rows = (
+                sess.query(FindingRow)
+                .filter(FindingRow.sweep_id == sweep_id)
+                .order_by(FindingRow.id)
+                .all()
+            )
+            if not rows:
+                # Sweep row exists but has no findings — distinguish from
+                # "no sweep" by checking the SweepRow.
+                sweep_row = sess.get(SweepRow, sweep_id)
+                return [] if sweep_row is not None else None
+            return [dict(r.payload) for r in rows]
+    return None
+
+
 @app.get("/findings/{finding_id}")
 def get_finding(finding_id: str) -> dict:
     for s in SWEEPS.values():

@@ -62,6 +62,34 @@ export function FindingDetail({
       </header>
 
       <div className="px-6 py-5 space-y-6">
+        {finding.plain_language && (finding.plain_language.one_liner ||
+          finding.plain_language.blast_radius ||
+          finding.plain_language.urgency) && (
+          <Panel title="Why this matters (plain-language)">
+            {finding.plain_language.one_liner && (
+              <p className="text-base text-paper-900 font-medium leading-relaxed">
+                {finding.plain_language.one_liner}
+              </p>
+            )}
+            {finding.plain_language.blast_radius && (
+              <p className="mt-3 text-sm text-paper-800 leading-relaxed">
+                <span className="mono text-2xs uppercase tracking-wider text-paper-500 mr-2">
+                  Blast radius
+                </span>
+                {finding.plain_language.blast_radius}
+              </p>
+            )}
+            {finding.plain_language.urgency && (
+              <p className="mt-3 text-sm text-paper-800 leading-relaxed">
+                <span className="mono text-2xs uppercase tracking-wider text-paper-500 mr-2">
+                  Urgency
+                </span>
+                {finding.plain_language.urgency}
+              </p>
+            )}
+          </Panel>
+        )}
+
         <Panel title="Why you can trust this">
           <p className="text-sm text-paper-800 leading-relaxed mb-3">{finding.evidence.root_cause}</p>
           <ul className="space-y-1.5">

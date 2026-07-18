@@ -121,6 +121,125 @@ class MockModelClient:
                 ]
             }
 
+        if role == "plain-language":
+            # C3 · Plain-language "why this matters" per finding.
+            # ≤120 words, no jargon, concrete blast radius. The mock uses
+            # canned wording per class so tests + demos stay deterministic;
+            # the real model produces bespoke prose grounded in the
+            # finding's location + evidence.
+            finding = context.get("finding", {}) or {}
+            cls = str(finding.get("class") or "").lower()
+            location = finding.get("location") or {}
+            file_hint = location.get("file", "the target")
+            per_class: dict[str, dict[str, str]] = {
+                "sqli": {
+                    "one_liner": (
+                        "An attacker can read (and often modify) the entire "
+                        "database without needing a valid login."
+                    ),
+                    "blast_radius": (
+                        "Every account row is dumpable. If the same query "
+                        "path is used for writes, balances and passwords "
+                        "can be rewritten too."
+                    ),
+                    "urgency": (
+                        "Fix before the next production deploy — the payload "
+                        "is a single-URL copy-paste."
+                    ),
+                },
+                "ssrf": {
+                    "one_liner": (
+                        "The server will fetch any URL an attacker supplies, "
+                        "including internal metadata endpoints."
+                    ),
+                    "blast_radius": (
+                        "Cloud IAM credentials (AWS/GCP/Azure) can be stolen "
+                        "by pointing the server at its metadata service. "
+                        "Internal admin panels become reachable from the "
+                        "public internet through this proxy."
+                    ),
+                    "urgency": "Ship a URL allowlist this sprint.",
+                },
+                "cmdi": {
+                    "one_liner": (
+                        "An attacker can run arbitrary shell commands on the "
+                        "server through a normal HTTP request."
+                    ),
+                    "blast_radius": (
+                        "Full control of the app process — every secret in "
+                        "memory, every file it can read, every credential "
+                        "it holds. Effectively RCE."
+                    ),
+                    "urgency": "Treat as a P0 — patch and rotate creds today.",
+                },
+                "secrets": {
+                    "one_liner": (
+                        "A working credential is checked into the source "
+                        "tree in plaintext."
+                    ),
+                    "blast_radius": (
+                        "Anyone with repo read access — humans, CI runners, "
+                        "leaked backups — has the key. If it's an AWS or "
+                        "OpenAI key it can be turned into money."
+                    ),
+                    "urgency": (
+                        "Rotate the credential now. Deleting the file line "
+                        "alone is NOT enough — git history retains it."
+                    ),
+                },
+                "prompt-injection": {
+                    "one_liner": (
+                        "Untrusted text (a user message, a scraped page, a "
+                        "support ticket) can rewrite what the AI does."
+                    ),
+                    "blast_radius": (
+                        "Every tool the LLM can call becomes usable by the "
+                        "attacker. If those tools have external network or "
+                        "shell access, the injection turns into a real "
+                        "exploit chain."
+                    ),
+                    "urgency": (
+                        "Fence untrusted input inside a labelled envelope "
+                        "before it reaches the model; scope tools to the "
+                        "narrowest set that works."
+                    ),
+                },
+                "excessive-agency": {
+                    "one_liner": (
+                        "The AI has been given a tool with no scope check — "
+                        "if it decides to call it with a bad input, no one "
+                        "stops it."
+                    ),
+                    "blast_radius": (
+                        "Combines with any prompt-injection or hallucination "
+                        "to become a real exploit path. E.g. `requests.get` "
+                        "without a URL allowlist chains into SSRF."
+                    ),
+                    "urgency": (
+                        "Add scope guards to the tool (allowlist, argument "
+                        "validation) before the next model release."
+                    ),
+                },
+            }
+            default = {
+                "one_liner": (
+                    f"Untrusted data reaches a dangerous operation in "
+                    f"`{file_hint}` without validation."
+                ),
+                "blast_radius": (
+                    "Depends on what the sink can do — read data, modify "
+                    "state, call out to another service. See the sandbox "
+                    "proof for what actually happened when we fired it."
+                ),
+                "urgency": "Fix in this sprint.",
+            }
+            block = per_class.get(cls, default)
+            return {
+                "one_liner": block["one_liner"],
+                "blast_radius": block["blast_radius"],
+                "urgency": block["urgency"],
+            }
+
         if role == "verifier":
             return {
                 "result": "repro-now-blocked",

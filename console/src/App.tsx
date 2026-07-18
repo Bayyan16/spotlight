@@ -7,6 +7,7 @@ import { LiveSweepPanel } from "./components/LiveSweepPanel";
 import { Board } from "./components/Board";
 import { Dashboard } from "./components/Dashboard";
 import { CommandPalette } from "./components/CommandPalette";
+import { DeltaView } from "./components/DeltaView";
 import { ExploitPathsView } from "./components/ExploitPathsView";
 import { WardenView } from "./components/WardenView";
 import { Cmul8Mark } from "./components/Cmul8Mark";
@@ -23,7 +24,7 @@ import {
   type Target,
 } from "./lib/api";
 
-const NAV_ORDER: NavKey[] = ["home", "sweeps", "findings", "paths", "warden", "attestations"];
+const NAV_ORDER: NavKey[] = ["home", "sweeps", "findings", "paths", "warden", "delta", "attestations"];
 
 export default function App() {
   const [nav, setNav] = useState<NavKey>("home");
@@ -182,6 +183,7 @@ export default function App() {
                     setNav("findings");
                   }}
                   target={selected}
+                  profileId={profileId}
                 />
               )}
               {sweepId && <LiveSweepPanel events={events} running={running} />}
@@ -204,6 +206,7 @@ export default function App() {
                 active={activeFinding}
                 onSelect={(id) => setActiveFinding(id)}
                 target={selected}
+                profileId={profileId}
               />
               {detail ? (
                 <FindingDetail
@@ -223,6 +226,7 @@ export default function App() {
 
           {nav === "paths" && <ExploitPathsView onOpenSweep={openHistoricalSweep} />}
           {nav === "warden" && <WardenView onOpenSweep={openHistoricalSweep} />}
+          {nav === "delta" && <DeltaView />}
           {nav === "attestations" && <ComingSoonPane label={nav} />}
         </div>
       </div>

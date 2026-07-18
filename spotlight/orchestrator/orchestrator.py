@@ -770,6 +770,22 @@ class Orchestrator:
                 if exploit_path_id is None:
                     exploit_path_id = ep["id"]
 
+            # Plain-language "why this matters" — best-effort; a model
+            # exception falls back to a stub with the class name so the UI
+            # can still render a placeholder card.
+            plain_language: dict[str, str]
+            try:
+                plain_language = self.model.complete(
+                    role="plain-language",
+                    prompt="explain this finding to a non-security engineer",
+                    context={"finding": {**cand, "id": fid}},
+                ) or {}
+                if not isinstance(plain_language, dict):
+                    plain_language = {}
+            except Exception as exc:
+                print(f"[plain-language] failed for {fid}: {exc!r}")
+                plain_language = {}
+
             finding = {
                 "id": fid,
                 "surface": cand.get("surface", "code"),
@@ -826,6 +842,9 @@ class Orchestrator:
                         "stack": recon_out["threat_model"].get("stack", {}),
                     },
                 },
+                # C3 · plain-language "why this matters" — surfaced on the
+                # finding root so consumers don't have to dig into evidence.
+                "plain_language": plain_language,
                 "consensus": {
                     "tier": tier,
                     "confidence": confidence,

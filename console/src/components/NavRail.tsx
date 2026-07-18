@@ -9,7 +9,7 @@ import {
 } from "./Icons";
 import { Cmul8Mark } from "./Cmul8Mark";
 
-type NavKey = "sweeps" | "findings" | "paths" | "warden" | "attestations" | "home";
+type NavKey = "sweeps" | "findings" | "paths" | "warden" | "delta" | "attestations" | "home";
 
 export function NavRail({
   active,
@@ -66,12 +66,20 @@ export function NavRail({
         <NavItem k="paths" active={active} onSelect={onSelect} icon={<IconExploitPath />} label="Exploit paths" shortcut="4" />
         <NavItem k="warden" active={active} onSelect={onSelect} icon={<IconWarden />} label="Warden" shortcut="5" />
         <NavItem
+          k="delta"
+          active={active}
+          onSelect={onSelect}
+          icon={<IconFindings />}
+          label="Delta"
+          shortcut="6"
+        />
+        <NavItem
           k="attestations"
           active={active}
           onSelect={onSelect}
           icon={<IconAttestation />}
           label="Attestations"
-          shortcut="6"
+          shortcut="7"
           locked
         />
       </nav>
