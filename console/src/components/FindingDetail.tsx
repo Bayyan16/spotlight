@@ -279,16 +279,7 @@ export function FindingDetail({
 
         <PresencePanel findingId={finding.id} />
 
-        <Panel title="Audit">
-          <dl className="grid grid-cols-2 gap-x-6 gap-y-1.5 text-xs mono">
-            {Object.entries(finding.audit ?? {}).map(([k, v]) => (
-              <div key={k} className="contents">
-                <dt className="text-paper-500 uppercase text-2xs tracking-wider">{k}</dt>
-                <dd className="text-paper-800 truncate">{String(v ?? "—")}</dd>
-              </div>
-            ))}
-          </dl>
-        </Panel>
+        <PipelineTimelinePanel finding={finding} />
       </div>
     </section>
   );
@@ -510,6 +501,214 @@ function SandboxCard({
       </dl>
     </div>
   );
+}
+
+
+/**
+ * PipelineTimelinePanel — signed chain of custody + audit metadata as a
+ * proper vertical timeline. Lives at the bottom of the finding detail
+ * because it's reference material, not what an analyst reads first.
+ * Collapsed by default so the reading flow lands on the high-signal
+ * panels (plain language, code preview, evidence, fix, review) without
+ * scrolling past a wall of hashes and timestamps.
+ *
+ * The old "Audit" key-value dump is replaced by:
+ *   * a mini-grid of audit metadata (model, profile, deployment tier,
+ *     tokens used, wall seconds, workspace signing-key fingerprint), and
+ *   * a stage-by-stage timeline of every signed action, with human-
+ *     readable labels + descriptions per stage.
+ */
+function PipelineTimelinePanel({ finding }: { finding: Finding }) {
+  const [open, setOpen] = useState(false);
+  const audit = (finding.audit ?? {}) as Record<string, unknown>;
+  const coc = (audit.chain_of_custody ?? []) as Array<{
+    actor_kind: string;
+    actor_id: string;
+    action: string;
+    ts: string;
+    payload_hash: string;
+    signature: string;
+    key_fingerprint: string;
+  }>;
+
+  const metaCandidates: Array<[string, unknown]> = [
+    ["Model", audit.model],
+    ["Deployment tier", audit.deployment_tier],
+    ["Profile", audit.profile_name ?? audit.profile],
+    ["Tokens used", audit.tokens_used],
+    ["Wall seconds", audit.wall_seconds],
+    ["Signing key fp", coc[0]?.key_fingerprint],
+  ];
+  const metaFields = metaCandidates.filter(
+    ([, v]) => v !== undefined && v !== null && v !== ""
+  );
+
+  const stageCount = coc.length;
+  const t0 = coc[0]?.ts;
+  const tLast = coc[coc.length - 1]?.ts;
+
+  return (
+    <div className="border border-paper-300 rounded-md bg-white shadow-card">
+      <button
+        onClick={() => setOpen((s) => !s)}
+        aria-expanded={open}
+        className="w-full flex items-center gap-3 px-4 py-2.5 border-b border-paper-200"
+      >
+        <span
+          className={`text-paper-400 text-xs transition-transform inline-block ${
+            open ? "rotate-90" : ""
+          }`}
+        >
+          ▸
+        </span>
+        <span className="text-2xs uppercase tracking-wider text-paper-500 mono">
+          Pipeline timeline
+        </span>
+        <span className="text-2xs mono text-paper-500">
+          {stageCount} signed stage{stageCount === 1 ? "" : "s"}
+        </span>
+        {t0 && tLast && (
+          <span className="text-2xs mono text-paper-400 ml-auto">
+            {new Date(t0).toLocaleString()} → {new Date(tLast).toLocaleString()}
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className="p-4 space-y-4">
+          {metaFields.length > 0 && (
+            <dl className="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-1.5 text-xs mono">
+              {metaFields.map(([k, v]) => (
+                <div key={k} className="min-w-0">
+                  <dt className="text-paper-500 uppercase text-2xs tracking-wider">
+                    {k}
+                  </dt>
+                  <dd className="text-paper-800 truncate" title={String(v)}>
+                    {String(v)}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          )}
+          {stageCount === 0 ? (
+            <div className="text-2xs mono uppercase tracking-wider text-paper-400 py-2">
+              chain-of-custody empty — workspace signer unavailable at sweep time
+            </div>
+          ) : (
+            <ol className="relative border-l border-paper-300 ml-2 space-y-3">
+              {coc.map((e, i) => {
+                const meta = describeStage(e.action, e.actor_kind, e.actor_id);
+                return (
+                  <li key={i} className="ml-4 relative">
+                    <span
+                      className={`absolute -left-[22px] top-1 h-3 w-3 rounded-full border-2 ${
+                        e.actor_kind === "human"
+                          ? "border-accent bg-accent"
+                          : "border-paper-400 bg-white"
+                      }`}
+                    />
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span
+                        className={`mono text-2xs uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                          e.actor_kind === "human"
+                            ? "bg-accent-soft text-accent border border-accent/30"
+                            : "bg-paper-100 text-paper-700 border border-paper-300"
+                        }`}
+                      >
+                        {meta.label}
+                      </span>
+                      <span className="text-2xs mono text-paper-500">
+                        {new Date(e.ts).toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-xs text-paper-700 leading-relaxed">
+                      {meta.description}
+                    </div>
+                    <div className="mt-1 text-[10px] mono text-paper-400 truncate">
+                      hash {e.payload_hash.slice(0, 24)}… ·
+                      sig {e.signature.slice(0, 16)}… · fp {e.key_fingerprint}
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Map raw action strings to a human-readable label + description. Anything
+ * we don't recognise falls back to the raw action + a generic "signed
+ * action" description so future stages don't silently regress the UX.
+ */
+function describeStage(
+  action: string,
+  actorKind: string,
+  actorId: string
+): { label: string; description: string } {
+  switch (action) {
+    case "candidate-raised":
+      return {
+        label: "Investigator · candidate raised",
+        description:
+          "The Investigator agent judged the data-flow slice sg-core produced and returned verdict=candidate. Bounded role — sees only this one slice, not the whole repo.",
+      };
+    case "reproduction-attempted":
+      return {
+        label: "Reproducer · PoC fired",
+        description:
+          "The Reproducer booted the target in a Modal sandbox with block_network=True, fired the class-appropriate PoC, and recorded the outcome plus egress-attempts count on the capability token.",
+      };
+    case "patch-generated":
+      return {
+        label: "Remediator · patch generated",
+        description:
+          "The Remediator produced a unified diff against the vulnerable file and wrote it to a .patched sibling. The original stays intact so the Verifier can compare before and after.",
+      };
+    case "reproduction-rechecked-after-patch":
+      return {
+        label: "Verifier · re-ran PoC",
+        description:
+          "The Verifier is a different agent with a fresh context and a distinct system prompt. It re-ran the PoC against the patched build and ran Warden's backdoor scan on the diff — repro-blocked ≠ fixed if the diff removed a control.",
+      };
+    case "tier-decided":
+      return {
+        label: "Consensus · tier decided",
+        description:
+          "Consensus counted the independent corroborators (deduped by modality × model_family × context_id), applied the tier rules, and set the finding's tier + confidence.",
+      };
+    case "review.accept":
+      return {
+        label: `Human · accept · ${actorId}`,
+        description:
+          "Analyst confirmed the finding is real and the fix should ship. Signed with the same workspace key as the agent stages — auditor sees human decisions in the same log as agent actions.",
+      };
+    case "review.false-positive":
+      return {
+        label: `Human · false-positive · ${actorId}`,
+        description:
+          "Analyst determined the finding is a false positive. Reason recorded in the signed payload; supersedes any prior verdict.",
+      };
+    case "review.risk-accept-until":
+      return {
+        label: `Human · risk-accepted · ${actorId}`,
+        description:
+          "Analyst accepted the risk until a specific date (in the payload). Bank / compliance path — the signed record is proof of a considered risk decision.",
+      };
+    case "review.threat-model-edit":
+      return {
+        label: `Human · edited threat model · ${actorId}`,
+        description:
+          "Analyst modified the auto-generated Recon threat model during an interactive-mode sweep. The merged model was signed into the audit trail so the finding's provenance shows the human touch.",
+      };
+    default:
+      return {
+        label: `${actorKind} · ${action}`,
+        description: "Signed action on this finding's chain of custody.",
+      };
+  }
 }
 
 
