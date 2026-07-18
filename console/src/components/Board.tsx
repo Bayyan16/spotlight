@@ -32,9 +32,45 @@ export function Board({
   selected: string | null;
   refreshSignal: number;
 }) {
-  const { sweeps: rows, findingsBySweep, counts, refresh } = useWorkspaceData(refreshSignal);
+  const { sweeps: allRows, findingsBySweep, refresh } = useWorkspaceData(refreshSignal);
   const [busy, setBusy] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [repoFilter, setRepoFilter] = useState<string>("all");
+
+  // Repo filter — a workspace with 5 acme-bank sweeps and 2 juice-shop
+  // sweeps is confusing when you're focused on one repo's history. Filter
+  // ONCE at the top; the KPI pills, chart, and table all read the filtered
+  // view so nothing can drift.
+  const repos = useMemo(() => {
+    const names = new Set<string>();
+    for (const r of allRows ?? []) names.add(r.repo_name);
+    return [...names].sort();
+  }, [allRows]);
+
+  const rows = useMemo(() => {
+    if (repoFilter === "all") return allRows;
+    return (allRows ?? []).filter((r) => r.repo_name === repoFilter);
+  }, [allRows, repoFilter]);
+
+  const counts = useMemo(() => {
+    const list = rows ?? [];
+    const running = list.filter((r) => r.status === "running").length;
+    const failed = list.filter((r) => r.status === "failed").length;
+    let totalFindings = 0;
+    let verifiedSweeps = 0;
+    for (const r of list) {
+      const findings = findingsBySweep[r.sweep_id] ?? [];
+      totalFindings += findings.length;
+      if (findings.some((f) => f.tier === "verified")) verifiedSweeps += 1;
+    }
+    return {
+      total: list.length,
+      running,
+      failed,
+      totalFindings,
+      verifiedSweeps,
+    };
+  }, [rows, findingsBySweep]);
 
   function toggleExpanded(id: string) {
     setExpanded((prev) => {
@@ -56,6 +92,11 @@ export function Board({
     }),
     [counts]
   );
+
+  // Chart hotness — when the largest bucket exceeds this many findings the
+  // chart turns red. Signals "this workspace / repo has real problems" at a
+  // glance without needing to read the numbers.
+  const HOT_BUCKET_THRESHOLD = 20;
   const [granularity, setGranularity] = useState<"day" | "hour">("day");
   const chartPoints = useMemo(
     () =>
@@ -63,6 +104,13 @@ export function Board({
         ? buildDailyPoints(rows ?? [])
         : buildHourlyPoints(rows ?? []),
     [rows, granularity]
+  );
+
+  // Chart runs red when any bucket exceeds the hot-threshold. Signals
+  // "real problems here" at a glance without having to read the numbers.
+  const chartIsHot = useMemo(
+    () => chartPoints.some((p) => p.value >= HOT_BUCKET_THRESHOLD),
+    [chartPoints]
   );
 
   async function onDelete(id: string) {
@@ -121,11 +169,57 @@ export function Board({
         )}
       </div>
 
+      {/* Repo filter — chip strip. `all` shows the aggregate workspace view;
+          picking a repo scopes chart + table + KPIs to that repo. */}
+      {repos.length > 1 && (
+        <div className="px-12 pb-2 flex items-center gap-2 flex-wrap">
+          <span className="text-2xs mono uppercase tracking-wider text-paper-500 mr-1">
+            Filter by repo
+          </span>
+          <button
+            onClick={() => setRepoFilter("all")}
+            aria-pressed={repoFilter === "all"}
+            className={`text-2xs mono uppercase tracking-wider rounded-full px-2 py-0.5 border ${
+              repoFilter === "all"
+                ? "bg-accent text-white border-accent"
+                : "bg-white border-paper-300 text-paper-700 hover:bg-paper-100"
+            }`}
+          >
+            all ({allRows?.length ?? 0})
+          </button>
+          {repos.map((r) => {
+            const n = (allRows ?? []).filter((s) => s.repo_name === r).length;
+            return (
+              <button
+                key={r}
+                onClick={() => setRepoFilter(r)}
+                aria-pressed={repoFilter === r}
+                className={`text-2xs mono rounded-full px-2 py-0.5 border ${
+                  repoFilter === r
+                    ? "bg-accent text-white border-accent"
+                    : "bg-white border-paper-300 text-paper-700 hover:bg-paper-100"
+                }`}
+              >
+                {r} <span className="tabular-nums opacity-70">({n})</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* Chart floats on the paper background — NO wrapping card, NO border. */}
       <div className="px-12 pb-8">
         <div className="flex items-center gap-3 mb-1">
           <div className="text-sm text-paper-900 font-medium">
-            Findings <span className="text-accent">↗ {rollup.totalFindings}</span>
+            Findings{" "}
+            <span className={chartIsHot ? "text-sev-critical" : "text-accent"}>
+              ↗ {rollup.totalFindings}
+            </span>
+            {repoFilter !== "all" && (
+              <span className="ml-2 text-2xs mono uppercase tracking-wider text-paper-500">
+                · {repoFilter}
+              </span>
+            )}
           </div>
           <div className="ml-auto flex items-center gap-3 text-2xs mono uppercase tracking-wider text-paper-500">
             <div className="inline-flex items-center gap-0 rounded border border-paper-300 overflow-hidden">
@@ -160,7 +254,7 @@ export function Board({
         </div>
         <AreaChart
           points={chartPoints}
-          color="#5b8def"
+          color={chartIsHot ? "#d94a3a" : "#5b8def"}
           height={260}
           emptyMessage={nothingYet ? "Start a sweep to see activity" : "No findings yet"}
         />

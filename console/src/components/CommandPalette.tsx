@@ -45,15 +45,20 @@ export function CommandPalette({
       { id: "nav-findings", group: "Go to", label: "Findings", hint: "3", action: () => onNavigate("findings") },
       { id: "nav-paths", group: "Go to", label: "Exploit paths", hint: "4", action: () => onNavigate("paths") },
       { id: "nav-warden", group: "Go to", label: "Warden", hint: "5", action: () => onNavigate("warden") },
-      { id: "nav-atts", group: "Go to", label: "Attestations", hint: "6", action: () => onNavigate("attestations") },
+      { id: "nav-delta", group: "Go to", label: "Delta", hint: "6", action: () => onNavigate("delta") },
+      { id: "nav-atts", group: "Go to", label: "Attestations", hint: "7", action: () => onNavigate("attestations") },
     ];
     const actionCommands: Cmd[] = [
-      { id: "act-start", group: "Actions", label: "Start Sweep", hint: "⌘↵", action: () => onStartSweep() },
+      { id: "act-start", group: "Actions", label: "New scan", hint: "⌘↵", action: () => onStartSweep() },
     ];
+    // Target-picker commands: the canonical picker is now the wizard, so
+    // these are lightweight "activate this bundled target" shortcuts for
+    // power users. Renamed from "Use fixture · X" since the picker now
+    // spans bundled + git-URL and "fixture" was misleading.
     const targetCommands: Cmd[] = targets.map((t) => ({
       id: `tgt-${t.name}`,
-      group: "Targets",
-      label: `Use fixture · ${t.name}`,
+      group: "Bundled targets",
+      label: t.name,
       action: () => onPickTarget(t.name),
     }));
     return [...actionCommands, ...navCommands, ...targetCommands];

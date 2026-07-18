@@ -80,7 +80,6 @@ export function NavRail({
           icon={<IconAttestation />}
           label="Attestations"
           shortcut="7"
-          locked
         />
       </nav>
 

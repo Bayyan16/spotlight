@@ -215,9 +215,10 @@ function EmptyState() {
       </div>
       <div className="text-paper-800 text-base font-medium">No Warden events yet.</div>
       <div className="text-paper-500 text-sm mt-1 max-w-md mx-auto">
-        Run a sweep against a target with a booby-trapped README (like{" "}
-        <span className="mono">injected-readme</span> or <span className="mono">acme-bank</span>).
-        Warden will detect the prompt-injection payload and log it here.
+        Warden runs during Recon on every target's README + docstrings.
+        When a prompt-injection payload lands in target-derived text, the
+        detector flags it here — treating your codebase as hostile input,
+        provably.
       </div>
     </div>
   );

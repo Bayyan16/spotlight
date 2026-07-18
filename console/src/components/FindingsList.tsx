@@ -74,7 +74,7 @@ export function FindingsList({
   const grouped = useMemo(() => groupBySeverity(sorted), [sorted]);
 
   return (
-    <section className="w-[380px] shrink-0 bg-paper-100/60 border-r border-paper-300 flex flex-col">
+    <section className="w-[380px] shrink-0 min-h-0 bg-paper-100/60 border-r border-paper-300 flex flex-col">
       <div className="h-11 shrink-0 border-b border-paper-300 px-3 flex items-center gap-2">
         <span className="text-2xs uppercase tracking-wider text-paper-500 mono">Findings</span>
         <span className="text-2xs text-paper-500">·</span>

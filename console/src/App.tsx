@@ -7,6 +7,7 @@ import { LiveSweepPanel } from "./components/LiveSweepPanel";
 import { Board } from "./components/Board";
 import { Dashboard } from "./components/Dashboard";
 import { CommandPalette } from "./components/CommandPalette";
+import { AttestationsView } from "./components/AttestationsView";
 import { DeltaView } from "./components/DeltaView";
 import { ExploitPathsView } from "./components/ExploitPathsView";
 import { FirstScanWizard } from "./components/FirstScanWizard";
@@ -31,7 +32,10 @@ const NAV_ORDER: NavKey[] = ["home", "sweeps", "findings", "paths", "warden", "d
 export default function App() {
   const [nav, setNav] = useState<NavKey>("home");
   const [targets, setTargets] = useState<Target[]>([]);
-  const [selected, setSelected] = useState<string>("vuln-bank-api");
+  // No hardcoded fixture default — target gets set from the wizard when
+  // the user picks one. Findings pane derives its label from the active
+  // sweep's repo, not from a stale placeholder.
+  const [selected, setSelected] = useState<string>("");
   const [sweepId, setSweepId] = useState<string | null>(null);
   const [events, setEvents] = useState<SweepEvent[]>([]);
   const [findings, setFindings] = useState<Finding[]>([]);
@@ -95,7 +99,7 @@ export default function App() {
         return;
       }
       if (inField) return;
-      if (e.key >= "1" && e.key <= "6") {
+      if (e.key >= "1" && e.key <= "7") {
         const idx = parseInt(e.key, 10) - 1;
         if (idx >= 0 && idx < NAV_ORDER.length) setNav(NAV_ORDER[idx]);
       }
@@ -135,6 +139,17 @@ export default function App() {
     });
     setNav("findings");
   }
+
+  // Derive the FindingsList header label from the active sweep — the
+  // stale `selected` fallback showed hardcoded fixture names before the
+  // user picked anything, which leaked into the UI as "vuln-bank-api"
+  // even after real sweeps had landed.
+  const activeTargetLabel = useMemo(() => {
+    if (!sweepId) return selected || "no sweep selected";
+    const s = workspace.sweeps?.find((row) => row.sweep_id === sweepId);
+    if (!s) return sweepId.slice(0, 14);
+    return s.org ? `${s.org}/${s.repo_name}` : s.repo_name;
+  }, [sweepId, selected, workspace.sweeps]);
 
   const detail = useMemo(
     () => (activeFinding ? findings.find((f) => f.id === activeFinding) ?? null : null),
@@ -193,7 +208,7 @@ export default function App() {
                     setActiveFinding(id);
                     setNav("findings");
                   }}
-                  target={selected}
+                  target={activeTargetLabel}
                   profileId={profileId}
                 />
               )}
@@ -216,7 +231,7 @@ export default function App() {
                 findings={findings}
                 active={activeFinding}
                 onSelect={(id) => setActiveFinding(id)}
-                target={selected}
+                target={activeTargetLabel}
                 profileId={profileId}
               />
               {detail ? (
@@ -241,7 +256,12 @@ export default function App() {
           {nav === "paths" && <ExploitPathsView onOpenSweep={openHistoricalSweep} />}
           {nav === "warden" && <WardenView onOpenSweep={openHistoricalSweep} />}
           {nav === "delta" && <DeltaView />}
-          {nav === "attestations" && <ComingSoonPane label={nav} />}
+          {nav === "attestations" && (
+            <AttestationsView
+              onOpenSweep={openHistoricalSweep}
+              refreshSignal={historyRefresh}
+            />
+          )}
         </div>
       </div>
 
