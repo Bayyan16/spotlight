@@ -34,6 +34,44 @@ from .events import EventBus, EventType
 from .hypothesis import HypothesisProposer
 
 
+# C2 · Interactive-mode pause registry — one entry per paused sweep.
+# The orchestrator (a background thread) blocks on `event`; the API worker
+# sets `edits` then calls `event.set()` to unblock. Cleanup on wake so the
+# registry doesn't grow forever.
+_pause_registry: dict[str, dict[str, Any]] = {}
+
+
+def _register_pause(sweep_id: str) -> None:
+    import threading
+
+    _pause_registry[sweep_id] = {"event": threading.Event(), "edits": None}
+
+
+def _wait_for_resume(sweep_id: str, *, timeout_s: int = 1800) -> dict | None:
+    """Called from inside the orchestrator thread. Returns any threat-model
+    edits the user provided at /resume, or None if the wait timed out."""
+    entry = _pause_registry.get(sweep_id)
+    if entry is None:
+        _register_pause(sweep_id)
+        entry = _pause_registry[sweep_id]
+    entry["event"].wait(timeout=timeout_s)
+    edits = entry.get("edits")
+    _pause_registry.pop(sweep_id, None)
+    return edits
+
+
+def resume_paused_sweep(sweep_id: str, edits: dict | None) -> bool:
+    """Called from the API worker. Returns True iff a sweep was actually
+    waiting on this signal — False means the sweep either never paused, or
+    already resumed."""
+    entry = _pause_registry.get(sweep_id)
+    if entry is None:
+        return False
+    entry["edits"] = edits or None
+    entry["event"].set()
+    return True
+
+
 def _get_signer() -> Any:
     """Lazy import of the workspace signer so tests/importers that don't need
     signing don't pay the crypto init cost. Any failure returns None — the
@@ -397,7 +435,13 @@ class Orchestrator:
         )
 
     # ── main entrypoint ───────────────────────────────────────────────
-    def run(self, repo_path: str | Path, out_dir: str | Path | None = None) -> SweepResult:
+    def run(
+        self,
+        repo_path: str | Path,
+        out_dir: str | Path | None = None,
+        *,
+        interactive: bool = False,
+    ) -> SweepResult:
         repo_path = Path(repo_path).resolve()
         sweep_id = f"sw_{uuid4().hex[:12]}"
         out_dir = Path(out_dir) if out_dir else Path.cwd() / "sweep-run" / sweep_id
@@ -445,6 +489,36 @@ class Orchestrator:
                 "warden",
                 **flag,
             )
+
+        # C2 · Interactive mode — pause after Recon so the user can edit the
+        # threat model before the swarm goes into Investigate. The pause is
+        # implemented as a threading.Event stored in a module-level
+        # registry keyed by sweep_id; POST /sweeps/{id}/resume sets it.
+        # We time-cap the wait so a browser that closes doesn't hang the
+        # background thread forever.
+        if interactive:
+            emit(
+                EventType.SWEEP_PAUSED_FOR_REVIEW,
+                "orchestrator",
+                threat_model=recon_out["threat_model"],
+            )
+            edits = _wait_for_resume(sweep_id, timeout_s=1800)
+            if edits:
+                # Shallow merge — top-level keys in the edited dict replace
+                # the auto-generated Recon output. A signed audit entry lands
+                # so downstream verifiers see the human diff.
+                base = dict(recon_out.get("threat_model") or {})
+                base.update(edits)
+                recon_out["threat_model"] = base
+                emit(
+                    EventType.RECON_THREAT_MODEL,
+                    "recon+human",
+                    threat_model=base,
+                    stack=base.get("stack", {}),
+                    signals_count=len(recon_out["signals"]),
+                    surfaces=base.get("surfaces", []),
+                    edited=True,
+                )
 
         # 2. Investigate — parallel fan-out under Profile.max_agents, guarded
         #    by budget. If a breach lands mid-fan-out we stop spawning.

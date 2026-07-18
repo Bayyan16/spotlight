@@ -108,7 +108,7 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [running]);
 
-  async function onStart(customRepo?: string) {
+  async function onStart(customRepo?: string, opts?: { interactive?: boolean }) {
     setEvents([]);
     setFindings([]);
     setActiveFinding(null);
@@ -116,7 +116,7 @@ export default function App() {
     setNav("sweeps");
     try {
       const repo = customRepo ?? selected;
-      const { sweep_id } = await startSweep(repo, profileId);
+      const { sweep_id } = await startSweep(repo, profileId, opts);
       setSweepId(sweep_id);
     } catch (err) {
       setRunning(false);
@@ -259,14 +259,12 @@ export default function App() {
         <FirstScanWizard
           defaultProfileId={profileId}
           onClose={() => setWizardOpen(false)}
-          onStart={async (repos, chosenProfile, _opts) => {
+          onStart={async (repos, chosenProfile, opts) => {
             setProfileId(chosenProfile);
             for (const repo of repos) {
               setSelected(repo);
-              // Kick off each repo sequentially. `onStart` fires-and-forgets,
-              // but the running-guard debounces so we don't dogpile.
               // eslint-disable-next-line no-await-in-loop
-              await onStart(repo);
+              await onStart(repo, { interactive: opts.interactive });
             }
           }}
         />

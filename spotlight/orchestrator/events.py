@@ -23,6 +23,8 @@ class EventType(str, Enum):
     SWEEP_PHASE_CHANGED = "sweep.phase.changed"
     SWEEP_PHASE_ILLEGAL = "sweep.phase.illegal"
     SWEEP_BUDGET_EXCEEDED = "sweep.budget.exceeded"
+    SWEEP_PAUSED_FOR_REVIEW = "sweep.paused.for-review"
+    SWEEP_RESUMED = "sweep.resumed"
     SWEEP_FINISHED = "sweep.finished"
     SWEEP_FAILED = "sweep.failed"
     AGENT_SPAWNED = "agent.spawned"

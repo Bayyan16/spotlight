@@ -7,14 +7,20 @@ git URLs (cloned into an ephemeral workdir).
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
+import os
 import shutil
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query, Response, WebSocket, WebSocketDisconnect
+from fastapi import (
+    FastAPI, Header, HTTPException, Query, Request, Response,
+    WebSocket, WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
@@ -152,6 +158,24 @@ class SweepRequest(BaseModel):
     profile_id: str | None = None
     surfaces: list[str] = ["code"]
     deployment_tier: str = "t0-mock"
+    # C2 · Interactive mode — when True the orchestrator pauses after Recon
+    # emits `sweep.paused_for_review`, and waits for POST /sweeps/{id}/resume
+    # before continuing to Investigate. Default False to preserve legacy
+    # non-interactive behavior for all existing clients.
+    interactive: bool = False
+
+
+class ResumeRequest(BaseModel):
+    """C2 · resume payload for an interactive sweep.
+
+    ``threat_model_edits`` merges into the orchestrator's recon_out.threat_model
+    at resume time — a shallow merge keyed at the top level. The merge is
+    signed into the chain of custody as ``review.threat-model-edit`` so the
+    edited version is auditable against the auto-generated one.
+    """
+
+    threat_model_edits: dict | None = None
+    reviewer: str = "analyst"
 
 
 @app.get("/profiles")
@@ -206,7 +230,7 @@ def start_sweep(req: SweepRequest) -> dict:
     def _worker():
         result = None
         try:
-            result = orch.run(repo_path)
+            result = orch.run(repo_path, interactive=req.interactive)
             SWEEPS[result.sweep_id] = result
             _persist_sweep(result, source=source, repo_name=repo_path.name)
         except Exception as exc:
@@ -422,6 +446,153 @@ def delete_sweep(sweep_id: str) -> dict:
             if row:
                 sess.delete(row)  # cascade deletes findings + events
     return {"deleted": sweep_id}
+
+
+@app.post("/sweeps/{sweep_id}/resume")
+def resume_sweep(sweep_id: str, req: ResumeRequest) -> dict:
+    """C2 · Resume an interactive-mode sweep paused after Recon.
+
+    Applies `threat_model_edits` as a shallow merge over the auto-generated
+    recon threat model, signs the edit into the chain of custody, then
+    unblocks the orchestrator thread.
+
+    Returns 404 if no sweep is currently paused with this id (either the
+    sweep never entered interactive mode, or it already resumed).
+    """
+    from spotlight.orchestrator.orchestrator import resume_paused_sweep
+
+    edits = req.threat_model_edits or None
+    resumed = resume_paused_sweep(sweep_id, edits)
+    if not resumed:
+        raise HTTPException(404, "sweep not paused (or already resumed)")
+
+    # Signed audit entry — attach to the bus's event log so downstream
+    # consumers see the edit provenance in the same stream as other events.
+    try:
+        from spotlight.non_repudiation import Signer
+        from spotlight.orchestrator.events import EventType
+
+        signer = Signer()
+        entry = signer.sign(
+            actor_kind="human",
+            actor_id=req.reviewer or "analyst",
+            action="review.threat-model-edit",
+            payload={
+                "sweep_id": sweep_id,
+                "edits": edits or {},
+            },
+        )
+        if sweep_id in BUSES:
+            BUSES[sweep_id].emit(
+                sweep_id,
+                EventType.SWEEP_RESUMED,
+                "orchestrator",
+                reviewer=req.reviewer or "analyst",
+                edits=edits or {},
+                signature_fingerprint=entry.get("key_fingerprint"),
+            )
+    except Exception as exc:
+        print(f"[resume] signing failed: {exc!r}")
+
+    return {"sweep_id": sweep_id, "resumed": True}
+
+
+_GITHUB_WEBHOOK_SECRET_ENV = "GITHUB_WEBHOOK_SECRET"
+
+
+def _verify_github_signature(payload: bytes, signature_header: str | None) -> bool:
+    """Verify GitHub's ``X-Hub-Signature-256`` header via HMAC-SHA256.
+
+    Returns True when the signature matches the workspace secret. If the
+    secret env var isn't set we REJECT all webhook calls — leaving the
+    endpoint open would let anyone kick off sweeps against arbitrary repos.
+    Explicit opt-in via env var is the safer default.
+    """
+    secret = os.environ.get(_GITHUB_WEBHOOK_SECRET_ENV)
+    if not secret:
+        return False
+    if not signature_header or not signature_header.startswith("sha256="):
+        return False
+    expected = "sha256=" + hmac.new(
+        secret.encode("utf-8"), payload, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected, signature_header)
+
+
+@app.post("/webhooks/github")
+async def github_webhook(
+    request: Request,
+    x_hub_signature_256: str | None = Header(None, alias="X-Hub-Signature-256"),
+    x_github_event: str | None = Header(None, alias="X-GitHub-Event"),
+) -> dict:
+    """C7 · Watch-mode entry point.
+
+    Kicks off a Spotlight sweep in response to a GitHub push or
+    pull_request event. Reads the target repo's clone URL from the
+    payload, verifies the workspace HMAC, and fires the same
+    orchestrator path as an interactive /sweeps POST.
+
+    Returns 401 if the signature doesn't match. 202 with sweep_id on
+    successful trigger. Non-code-affecting events (ping, watch, etc.)
+    return 204 with no sweep started.
+    """
+    body = await request.body()
+    if not _verify_github_signature(body, x_hub_signature_256):
+        raise HTTPException(401, "invalid signature")
+
+    if x_github_event == "ping":
+        return {"pong": True, "spotlight": "hello, github"}
+    if x_github_event not in ("push", "pull_request"):
+        # Legitimate event type we don't act on — 200 with a no-op.
+        return {"skipped": True, "event": x_github_event}
+
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(400, f"invalid json body: {exc!r}") from exc
+
+    repo_block = payload.get("repository") or {}
+    clone_url = repo_block.get("clone_url") or repo_block.get("ssh_url")
+    if not clone_url:
+        raise HTTPException(400, "payload missing repository.clone_url")
+
+    # Only accept .git URLs — matches the existing /sweeps repo-resolver's
+    # contract. GitHub push events carry https clone URLs by default.
+    if not clone_url.endswith(".git"):
+        clone_url = clone_url + ".git"
+
+    pr_number = None
+    if x_github_event == "pull_request":
+        pr = payload.get("pull_request") or {}
+        pr_number = pr.get("number")
+
+    # Fire the sweep via the same POST /sweeps codepath. We construct the
+    # SweepRequest in-process to reuse validation + the persistence flow.
+    req = SweepRequest(repo=clone_url, profile_id=None, interactive=False)
+    started = start_sweep(req)
+
+    # Record the association so a later delta / PR-comment writer can find
+    # the previous sweep on the same repo. We stash the PR number on the
+    # in-memory tracker; a real implementation would persist it.
+    if pr_number is not None:
+        _pr_watch_by_sweep[started["sweep_id"]] = {
+            "repo_full_name": repo_block.get("full_name"),
+            "pr_number": pr_number,
+            "clone_url": clone_url,
+        }
+
+    return {
+        "started": True,
+        "sweep_id": started["sweep_id"],
+        "event": x_github_event,
+        "pr_number": pr_number,
+        "clone_url": clone_url,
+    }
+
+
+# In-memory tracker for PR-watching sweeps. Not persisted — good enough for
+# demo + one-shot triggers. Prod hardening: swap for Postgres row per sweep.
+_pr_watch_by_sweep: dict[str, dict[str, Any]] = {}
 
 
 @app.post("/sweeps/cleanup")

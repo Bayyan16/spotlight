@@ -178,15 +178,44 @@ export async function getTaxonomy(): Promise<Taxonomy> {
   return r.json();
 }
 
-export async function startSweep(repo: string, profileId?: string): Promise<{ sweep_id: string }> {
+export async function startSweep(
+  repo: string,
+  profileId?: string,
+  opts?: { interactive?: boolean }
+): Promise<{ sweep_id: string }> {
   const r = await fetch(`${BASE}/sweeps`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ repo, profile_id: profileId, surfaces: ["code"] }),
+    body: JSON.stringify({
+      repo,
+      profile_id: profileId,
+      surfaces: ["code"],
+      interactive: opts?.interactive ?? false,
+    }),
   });
   if (!r.ok) {
     const err = await r.text();
     throw new Error(`start_sweep failed: ${r.status} ${err.slice(0, 200)}`);
+  }
+  return r.json();
+}
+
+export async function resumeSweep(
+  sweepId: string,
+  edits?: Record<string, unknown>,
+  reviewer?: string
+): Promise<{ sweep_id: string; resumed: boolean }> {
+  const r = await fetch(`${BASE}/sweeps/${encodeURIComponent(sweepId)}/resume`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      threat_model_edits: edits ?? null,
+      reviewer: reviewer ?? "analyst",
+    }),
+  });
+  if (!r.ok) {
+    const err = await r.text();
+    throw new Error(`resume failed: ${r.status} ${err.slice(0, 200)}`);
   }
   return r.json();
 }

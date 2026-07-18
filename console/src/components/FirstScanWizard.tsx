@@ -182,8 +182,6 @@ export function FirstScanWizard({
               hint="Pause after Recon so you can edit the threat model before investigation."
               checked={interactive}
               onChange={setInteractive}
-              disabled
-              disabledReason="Coming in the next release"
             />
           </div>
         </div>
