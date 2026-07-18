@@ -47,6 +47,45 @@ def _redact_response(data: Any) -> Any:
     return _RESPONSE_REDACTOR.redact_dict(data)
 
 
+def _find_finding_anywhere(finding_id: str) -> tuple[dict | None, str | None]:
+    """Locate a finding by id — hot cache first, then persistent store.
+
+    Returns (finding_dict, sweep_id). Callers who mutate the returned dict
+    must call `_persist_finding_update` to persist to Postgres if the store
+    is enabled.
+    """
+    for s in SWEEPS.values():
+        for f in s.findings:
+            if f["id"] == finding_id:
+                return f, s.sweep_id
+    if store_enabled():
+        with get_session() as sess:
+            row = _find_finding_row(sess, finding_id)
+            if row is not None:
+                return dict(row.payload or {}), row.sweep_id
+    return None, None
+
+
+def _persist_finding_update(finding_id: str, sweep_id: str | None, updated: dict) -> None:
+    """Write a mutated finding back to Postgres AND update the in-memory
+    hot cache. Silent no-op if the store is disabled — the hot-cache is
+    then authoritative for the process lifetime."""
+    # Hot cache — locate the finding and overwrite in place.
+    if sweep_id and sweep_id in SWEEPS:
+        for i, f in enumerate(SWEEPS[sweep_id].findings):
+            if f["id"] == finding_id:
+                SWEEPS[sweep_id].findings[i] = updated
+                break
+
+    if not store_enabled():
+        return
+    with get_session() as sess:
+        row = _find_finding_row(sess, finding_id)
+        if row is not None:
+            row.payload = updated
+            sess.commit()
+
+
 def _find_finding_row(sess, finding_id: str):
     """Look up a FindingRow by either the workspace-scoped key
     (e.g. `SPOT-0001`) OR the sweep-scoped key (`sw_abc:SPOT-0001`).
@@ -450,6 +489,105 @@ def get_finding(finding_id: str) -> dict:
             if row:
                 return _redact_response(row.payload)
     raise HTTPException(404, "finding not found")
+
+
+class ReviewRequest(BaseModel):
+    """C4 — analyst review verdict on a finding.
+
+    action:
+      * ``accept``            — finding is real; ship the fix.
+      * ``false-positive``    — Spotlight's judgment was wrong; skip.
+      * ``risk-accept-until`` — real, but risk-accepted until an ISO date.
+
+    ``reason`` is required (analyst rationale, ~1–2 sentences). ``until``
+    is required iff ``action == "risk-accept-until"``.
+
+    ``reviewer`` is a display name — real auth lands with multi-tenant (see
+    §12 · Deliberately deferred). The signed chain-of-custody entry uses
+    ``actor_kind="human"`` so downstream verifiers can filter analyst
+    reviews from agent actions.
+    """
+
+    action: str  # "accept" | "false-positive" | "risk-accept-until"
+    reason: str
+    until: str | None = None
+    reviewer: str = "analyst"
+
+
+_REVIEW_ACTIONS = {"accept", "false-positive", "risk-accept-until"}
+_REVIEW_STATE_BY_ACTION = {
+    "accept": "accepted",
+    "false-positive": "false-positive",
+    "risk-accept-until": "risk-accepted",
+}
+
+
+@app.post("/findings/{finding_id}/review")
+def post_finding_review(finding_id: str, req: ReviewRequest) -> dict:
+    """Analyst review — append a signed entry, update finding.review_state.
+
+    Every review is a first-class signed action on the chain of custody, so
+    a bank auditor can prove *who* accepted / rejected / risk-accepted this
+    finding, when, and why. State changes are terminal (no un-accept) —
+    to reverse, submit a new review with a fresh signed entry.
+    """
+    action = (req.action or "").strip().lower()
+    if action not in _REVIEW_ACTIONS:
+        raise HTTPException(
+            400, f"action must be one of {sorted(_REVIEW_ACTIONS)}"
+        )
+    reason = (req.reason or "").strip()
+    if not reason:
+        raise HTTPException(400, "reason is required")
+    if action == "risk-accept-until" and not req.until:
+        raise HTTPException(400, "until (ISO date) is required for risk-accept-until")
+
+    finding, sweep_id = _find_finding_anywhere(finding_id)
+    if finding is None:
+        raise HTTPException(404, "finding not found")
+
+    # Sign the review entry against the workspace key. Reuse the same signer
+    # the orchestrator uses so the key_fingerprint matches previous entries
+    # on this finding — external verifiers pull one public key and check
+    # the whole chain in one pass.
+    try:
+        from spotlight.non_repudiation import Signer
+
+        signer = Signer()
+        payload = {
+            "finding_id": finding_id,
+            "action": action,
+            "reason": reason,
+            "reviewer": req.reviewer or "analyst",
+        }
+        if req.until:
+            payload["until"] = req.until
+        entry = signer.sign(
+            actor_kind="human",
+            actor_id=req.reviewer or "analyst",
+            action=f"review.{action}",
+            payload=payload,
+        )
+    except Exception as exc:
+        raise HTTPException(500, f"signing failed: {exc!r}") from exc
+
+    # Mutate the finding — append the entry to the audit chain and stamp
+    # the review_state. Update the in-memory copy AND the persisted row so
+    # subsequent GETs from either surface see the same value.
+    audit = finding.setdefault("audit", {})
+    coc = audit.setdefault("chain_of_custody", [])
+    coc.append(entry)
+    review = finding.setdefault("review", {})
+    review["state"] = _REVIEW_STATE_BY_ACTION[action]
+    review["reason"] = reason
+    review["reviewer"] = req.reviewer or "analyst"
+    review["ts"] = entry["ts"]
+    if req.until:
+        review["until"] = req.until
+
+    _persist_finding_update(finding_id, sweep_id, finding)
+
+    return _redact_response(finding)
 
 
 @app.get("/findings/{finding_id}/presence")

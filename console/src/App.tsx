@@ -205,7 +205,19 @@ export default function App() {
                 onSelect={(id) => setActiveFinding(id)}
                 target={selected}
               />
-              {detail ? <FindingDetail finding={detail} sweepId={sweepId} /> : <EmptyDetail />}
+              {detail ? (
+                <FindingDetail
+                  finding={detail}
+                  sweepId={sweepId}
+                  onFindingUpdated={(updated) =>
+                    setFindings((prev) =>
+                      prev.map((f) => (f.id === updated.id ? updated : f))
+                    )
+                  }
+                />
+              ) : (
+                <EmptyDetail />
+              )}
             </>
           )}
 

@@ -75,7 +75,32 @@ export type Finding = {
   };
   consensus: { tier: string; independent_corroborators: number; decision: string; rationale: string };
   audit: Record<string, unknown>;
+  // C4 — analyst review state. Absent until first review; each review is
+  // ALSO appended as a signed entry on `audit.chain_of_custody` so external
+  // verifiers see human decisions in the same auditable log as agent actions.
+  review?: {
+    state: "accepted" | "false-positive" | "risk-accepted";
+    reason: string;
+    reviewer: string;
+    ts: string;
+    until?: string;
+  };
 };
+
+export type ReviewAction = "accept" | "false-positive" | "risk-accept-until";
+
+export async function reviewFinding(
+  findingId: string,
+  body: { action: ReviewAction; reason: string; until?: string; reviewer?: string }
+): Promise<Finding> {
+  const r = await fetch(`${BASE}/findings/${findingId}/review`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error((await r.text()) || `HTTP ${r.status}`);
+  return r.json();
+}
 
 export type SweepSummary = {
   sweep_id: string;

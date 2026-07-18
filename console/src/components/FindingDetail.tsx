@@ -1,9 +1,19 @@
-import type { Finding } from "../lib/api";
-import { attestationUrl } from "../lib/api";
+import { useState } from "react";
+
+import type { Finding, ReviewAction } from "../lib/api";
+import { attestationUrl, reviewFinding } from "../lib/api";
 import { IconAttestation, IconCheck } from "./Icons";
 import { PresencePanel } from "./PresencePanel";
 
-export function FindingDetail({ finding, sweepId }: { finding: Finding; sweepId?: string | null }) {
+export function FindingDetail({
+  finding,
+  sweepId,
+  onFindingUpdated,
+}: {
+  finding: Finding;
+  sweepId?: string | null;
+  onFindingUpdated?: (updated: Finding) => void;
+}) {
   const verified = finding.tier === "verified";
   const fixed = finding.state === "confirmed-fixed";
   return (
@@ -101,6 +111,8 @@ export function FindingDetail({ finding, sweepId }: { finding: Finding; sweepId?
             />
           </div>
         </Panel>
+
+        <ReviewPanel finding={finding} onUpdated={onFindingUpdated} />
 
         {finding.evidence.sandbox && (
           <Panel title="Sandbox (hostile-input containment)">
@@ -423,5 +435,235 @@ function StatChip({ label, value, good }: { label: string; value: string; good: 
       {good && <IconCheck size={10} />}
       <span>{value}</span>
     </span>
+  );
+}
+
+
+/**
+ * ReviewPanel — C4 · analyst verdict + signed audit thread.
+ *
+ * Three verdicts:
+ *   accept              — real, ship the fix
+ *   false-positive      — Spotlight was wrong, skip
+ *   risk-accept-until   — real, but accepted-until an ISO date
+ *
+ * Every click POSTs to /findings/{id}/review, which signs the verdict into
+ * the finding's chain of custody. The panel shows previously-signed reviews
+ * inline so an auditor sees the full analyst history without leaving the
+ * finding. Terminal reviews aren't reversed — a new review appends a new
+ * signed entry that supersedes the old visible state.
+ */
+function ReviewPanel({
+  finding,
+  onUpdated,
+}: {
+  finding: Finding;
+  onUpdated?: (updated: Finding) => void;
+}) {
+  const [action, setAction] = useState<ReviewAction | null>(null);
+  const [reason, setReason] = useState("");
+  const [until, setUntil] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const review = finding.review;
+  const cocEntries =
+    ((finding.audit as { chain_of_custody?: Array<Record<string, unknown>> } | undefined)
+      ?.chain_of_custody ?? []) as Array<{
+      actor_kind: string;
+      actor_id: string;
+      action: string;
+      ts: string;
+      key_fingerprint?: string;
+    }>;
+  const reviewEntries = cocEntries.filter(
+    (e) => e.actor_kind === "human" && e.action?.startsWith("review.")
+  );
+
+  async function submit() {
+    if (!action || !reason.trim()) {
+      setErr("Reason is required.");
+      return;
+    }
+    if (action === "risk-accept-until" && !until) {
+      setErr("Until date is required for risk-accept-until.");
+      return;
+    }
+    setSubmitting(true);
+    setErr(null);
+    try {
+      const updated = await reviewFinding(finding.id, {
+        action,
+        reason: reason.trim(),
+        until: action === "risk-accept-until" ? until : undefined,
+      });
+      onUpdated?.(updated);
+      setAction(null);
+      setReason("");
+      setUntil("");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "review failed");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Panel title="Analyst review">
+      {review ? (
+        <div className="mb-3 flex items-center gap-2 text-xs">
+          <ReviewStateChip state={review.state} />
+          <span className="text-paper-700">
+            by <span className="mono">{review.reviewer}</span>
+          </span>
+          {review.until && (
+            <span className="text-paper-500 mono text-2xs uppercase tracking-wider">
+              until {review.until}
+            </span>
+          )}
+          <span className="text-2xs mono text-paper-400">
+            {new Date(review.ts).toLocaleString()}
+          </span>
+        </div>
+      ) : (
+        <div className="mb-3 text-xs text-paper-600">
+          No review yet. An analyst verdict lands as a signed entry on the
+          chain of custody — bank auditors see human decisions in the same
+          log as agent actions.
+        </div>
+      )}
+
+      {review?.reason && (
+        <div className="mb-3 text-sm text-paper-800 border-l-2 border-paper-300 pl-3 italic">
+          {review.reason}
+        </div>
+      )}
+
+      {action === null ? (
+        <div className="flex flex-wrap gap-2">
+          <ReviewBtn label="Accept" onClick={() => setAction("accept")} tone="ok" />
+          <ReviewBtn
+            label="False positive"
+            onClick={() => setAction("false-positive")}
+            tone="neutral"
+          />
+          <ReviewBtn
+            label="Risk-accept until…"
+            onClick={() => setAction("risk-accept-until")}
+            tone="warn"
+          />
+        </div>
+      ) : (
+        <div className="space-y-2 border border-paper-300 rounded-md p-3 bg-white">
+          <div className="text-2xs mono uppercase tracking-wider text-paper-500">
+            Verdict: {action}
+          </div>
+          <textarea
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="Reason (required) — one or two sentences"
+            rows={2}
+            className="w-full text-sm border border-paper-300 rounded px-2 py-1 focus:outline-none focus:border-accent"
+          />
+          {action === "risk-accept-until" && (
+            <input
+              type="date"
+              value={until}
+              onChange={(e) => setUntil(e.target.value)}
+              className="text-sm border border-paper-300 rounded px-2 py-1 focus:outline-none focus:border-accent"
+            />
+          )}
+          {err && <div className="text-2xs text-sev-high">{err}</div>}
+          <div className="flex items-center gap-2">
+            <button
+              disabled={submitting}
+              onClick={submit}
+              className="px-3 py-1 rounded bg-accent text-white text-xs uppercase mono tracking-wider disabled:opacity-50"
+            >
+              {submitting ? "Signing…" : "Sign & submit"}
+            </button>
+            <button
+              disabled={submitting}
+              onClick={() => {
+                setAction(null);
+                setReason("");
+                setUntil("");
+                setErr(null);
+              }}
+              className="px-3 py-1 rounded border border-paper-300 text-xs uppercase mono tracking-wider text-paper-700"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {reviewEntries.length > 0 && (
+        <div className="mt-4">
+          <div className="text-2xs mono uppercase tracking-wider text-paper-500 mb-2">
+            Signed review history
+          </div>
+          <ul className="space-y-1 text-2xs">
+            {reviewEntries.map((e, i) => (
+              <li key={i} className="flex items-center gap-2 text-paper-600">
+                <span className="mono text-paper-800">{e.action.replace("review.", "")}</span>
+                <span className="text-paper-500">·</span>
+                <span className="mono">{e.actor_id}</span>
+                <span className="text-paper-500">·</span>
+                <span className="mono">{new Date(e.ts).toLocaleString()}</span>
+                {e.key_fingerprint && (
+                  <span
+                    className="mono text-paper-400 truncate"
+                    title={`key fingerprint ${e.key_fingerprint}`}
+                  >
+                    · fp {e.key_fingerprint.slice(0, 12)}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function ReviewStateChip({ state }: { state: string }) {
+  const map: Record<string, string> = {
+    accepted: "bg-accent-soft text-accent border-accent/40",
+    "false-positive": "bg-paper-200 text-paper-700 border-paper-400",
+    "risk-accepted": "bg-yellow-50 text-yellow-800 border-yellow-300",
+  };
+  return (
+    <span
+      className={`text-2xs mono uppercase tracking-wider px-2 py-0.5 rounded-full border ${map[state] ?? "bg-paper-200 text-paper-700 border-paper-400"}`}
+    >
+      {state}
+    </span>
+  );
+}
+
+function ReviewBtn({
+  label,
+  onClick,
+  tone,
+}: {
+  label: string;
+  onClick: () => void;
+  tone: "ok" | "warn" | "neutral";
+}) {
+  const cls =
+    tone === "ok"
+      ? "border-accent/40 bg-accent-soft text-accent hover:brightness-95"
+      : tone === "warn"
+        ? "border-yellow-300 bg-yellow-50 text-yellow-800 hover:brightness-95"
+        : "border-paper-300 bg-white text-paper-700 hover:bg-paper-100";
+  return (
+    <button
+      onClick={onClick}
+      className={`text-xs uppercase mono tracking-wider px-3 py-1.5 rounded border ${cls}`}
+    >
+      {label}
+    </button>
   );
 }
