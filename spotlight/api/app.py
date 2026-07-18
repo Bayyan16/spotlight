@@ -206,6 +206,34 @@ def healthz() -> dict:
     return {"ok": True, "service": "spotlight-api", "storage": "postgres" if store_enabled() else "memory"}
 
 
+@app.get("/verify-key")
+def workspace_verify_key() -> dict:
+    """Publish the workspace Ed25519 public key + fingerprint.
+
+    Anyone with this key can offline-verify every chain-of-custody entry
+    Spotlight has ever signed under the current workspace key — no
+    Spotlight infrastructure required. Load the raw 32-byte key from
+    base64 into any Ed25519 library and call `verify(signature,
+    f"{ts}|{actor_kind}|{actor_id}|{action}|{payload_hash}".encode())`.
+
+    Documented under the "Non-repudiation ledger" section of the arch
+    doc; this route closes the gap between that promise and reality.
+    """
+    try:
+        from spotlight.non_repudiation import Signer
+
+        signer = Signer()
+        return {
+            "algorithm": "ed25519",
+            "format": "raw",
+            "public_key_b64": signer.public_key_b64(),
+            "fingerprint": signer.fingerprint,
+            "signing_input_template": "{ts}|{actor_kind}|{actor_id}|{action}|{payload_hash}",
+        }
+    except Exception as exc:
+        raise HTTPException(500, f"signer unavailable: {exc!r}")
+
+
 @app.get("/targets")
 def list_targets() -> list[dict]:
     root = Path(__file__).resolve().parents[2] / "targets"
