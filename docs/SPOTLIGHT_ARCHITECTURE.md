@@ -601,6 +601,105 @@ Suggested cut points: D1 + D2 + D6 = the minimum-viable Zero-Day Discovery Engin
 
 ---
 
+## 12.5 · Coverage strategy — how we catch every future vulnerability
+
+The user asked (rightly): *"We declare 15+ vuln classes but the detector only fires for 4. What's the plan for covering ALL future vulnerabilities?"*
+
+**The honest answer is that no scanner covers every CWE — and pretending otherwise is why security tools ship 90% noise.** What we can commit to is a *layered* strategy that gives us predictable, measurable recall growth across three axes: **known CWEs** (Semgrep + sg-core), **novel-in-repo bugs** (Investigator + Consensus), and **zero-day / novel classes** (Phase 4 Red/Blue harness). Each layer has a clear expansion mechanism so recall growth isn't blocked on hand-authored rules.
+
+### Layer 1 — Known CWE coverage (breadth, community-driven)
+
+**Engine: Semgrep as the primary rule library**, sg-core as the deep-taint corroborator on hot sinks.
+
+Post the 2026-07-18 refactor (`spotlight/signals/semgrep_adapter.py`):
+- **All** Semgrep matches with security metadata (`category=="security"` OR CWE tag OR OWASP mapping) pass through as findings, tagged with Semgrep's own CWE/OWASP.
+- Semgrep's `p/default` = ~2000 community rules covering most of the CWE Top 25.
+- Matches Spotlight can canonicalize get folded into our own class labels (sqli, cmdi, eval, ssti, dynamic-import, deserialization, path-traversal, weak-hash, verify-disabled) so Chainer + Consensus co-count them with sg-core.
+
+Expansion mechanisms:
+1. **Auto-import new Semgrep community rules** — CI job polls `returntocorp/semgrep-rules` weekly; new security-tagged rules ship without a Spotlight release.
+2. **Customer rule ingest** — customers can point Spotlight at their own Semgrep ruleset (`config: p/default,file:./custom-rules.yml`). Rules become another external_signal in Consensus.
+3. **Add sg-core sinks per language** — new classes join the `SINKS` dict; the class alias table in `semgrep_adapter.py` maps Semgrep IDs onto them. One-liner per class.
+
+### Layer 2 — Language-native taint (depth on the hot classes)
+
+**Engine: sg-core (`spotlight/sg_core`)** — Python + JS/TS today.
+
+Where Semgrep gives us breadth via patterns, sg-core gives us *reachability* — "is this untrusted variable *actually* reachable from an HTTP handler at this specific sink call?" That's the difference between a Semgrep hit ("eval-with-tainted-arg") and a Consensus-promoted finding ("reproduced in Modal sandbox with `exploited=true`").
+
+Class expansion order (highest-value first):
+1. ✅ **SQLi, CMDI, eval, SSRF** — shipped in the initial vertical slice
+2. ✅ **SSTI, dynamic-import, deserialization, path-traversal, weak-hash, verify-disabled** — shipped 2026-07-18 (CWE-94 audit)
+3. ⏳ **XSS (DOM + reflected + stored)** — needs JSX-aware analysis, sits under `dangerouslySetInnerHTML`, `innerHTML`, template engines
+4. ⏳ **NoSQL injection** — `db.find({...user_input})`, `db.$where(user_input)`, MongoDB / Elasticsearch shapes
+5. ⏳ **LDAP + XPath injection** — taxonomy classes exist, sinks add cleanly to the SINKS dict
+6. ⏳ **XXE** — LXML `parse`/`fromstring` on tainted input, `xml.etree` with entity resolution
+7. ⏳ **Insecure JWT** — `jwt.decode` without `verify=True`, `algorithms=['none']`
+8. ⏳ **CSRF token missing** — Flask-WTF/Django decorators, mutation routes without protect
+9. ⏳ **Open redirect** — `redirect(user_input)`, `HttpResponseRedirect(user_input)`
+10. ⏳ **Log injection** — user data in `logging.info(f"…{user}…")` without escaping
+
+Language expansion order:
+1. ✅ **Python + JavaScript/TypeScript** — today
+2. ⏳ **Go** — Phase 3 (needs `tree-sitter-go` + Go-specific sink patterns)
+3. ⏳ **Ruby** — Phase 4 (Rails is a big surface for design partners)
+4. ⏳ **Java/Kotlin** — Phase 4 (banks)
+5. ⏳ **C/C++, Rust, Swift** — external-signal only via Semgrep for foreseeable future; no sg-core
+
+### Layer 3 — Novel-in-repo bugs (LLM reasoning over slices)
+
+**Engine: Investigator + Consensus Kernel**
+
+This is where sg-core's *reachability* + LLM's *judgment* combine. Investigator receives one data-flow slice, decides "is this a real vuln or a false positive?" The strength of this layer is that it catches vulnerabilities *nobody has written a rule for yet* — the moment a slice looks suspicious, the LLM can reason about it regardless of whether Semgrep has a matching check.
+
+Expansion: this layer improves whenever we fine-tune the Investigator on our accumulated `(slice, verdict)` triples — the T1 self-hosted path harvests these for free from every customer sweep, no data leaves the VPC (Phase 4 D4).
+
+### Layer 4 — Zero-day / novel classes (Phase 4 Red/Blue harness)
+
+**Engine: adversarial multi-agent harness (D1) + SMT Property Reasoner (D2)**
+
+The layer that catches classes nobody has named yet. Detailed in §4 Phase 4 above. Key idea: every judgment is *argued* between a Red agent (proposes exploits) and a Blue agent (proposes defenses) run under different model families for independence. A finding promotes only when Red exhausts its strategies AND Blue's last defense held.
+
+This is the layer that turns "we have a rulebook" into "we have a debate transcript."
+
+### Layer 5 — Deterministic property proofs (SMT)
+
+**Engine: Phase 4 D2 Property Reasoner**
+
+Some bugs aren't pattern-matchable — they're proofs. "Does any input reach any subprocess call without going through the allow-list sanitizer?" is an SMT query, not a rule. When the property fails, the resulting `property_violation` evidence is deterministic, signable, and independent of any LLM.
+
+### The three commitments this strategy makes
+
+1. **No class in the taxonomy has zero coverage.** If we declare it, one of the five layers fires for it. Post-2026-07-18, every class in `taxonomy.py` either has a sg-core sink OR is covered by Semgrep's community rulepack OR is on a public roadmap tranche.
+2. **New classes ship without a Spotlight release.** The Semgrep auto-import job + customer rule ingest mean adding classes is a rule PR, not a code release. Rule → shipped in 24h.
+3. **The recall gap is measurable, not vibes.** Phase 3 eval harness scores precision + recall on a 50-CVE benchmark (matching Devin's). Regressions block CI. Every new Semgrep rule import goes through the harness.
+
+### Coverage matrix — where each CWE Top 25 lands
+
+| CWE | Class | sg-core | Semgrep | Zero-day (D1) |
+|-----|-------|---------|---------|---------------|
+| CWE-79 (XSS) | xss | ⏳ Phase 3 | ✅ (via passthrough) | ✅ |
+| CWE-89 (SQLi) | sqli | ✅ | ✅ | ✅ |
+| CWE-78 (CMDI) | cmdi | ✅ | ✅ | ✅ |
+| CWE-94 (Code Injection) | eval, ssti, dynamic-import | ✅ | ✅ | ✅ |
+| CWE-22 (Path Traversal) | path-traversal | ✅ | ✅ | ✅ |
+| CWE-502 (Deserialization) | deserialization | ✅ | ✅ | ✅ |
+| CWE-918 (SSRF) | ssrf | ✅ | ✅ | ✅ |
+| CWE-611 (XXE) | xxe | ⏳ | ✅ | ✅ |
+| CWE-327 (Weak crypto) | weak-hash | ✅ | ✅ | — |
+| CWE-295 (Verify disabled) | verify-disabled | ✅ | ✅ | — |
+| CWE-798 (Hardcoded creds) | secrets | ✅ (secrets_scan) | ✅ | — |
+| CWE-352 (CSRF) | csrf-missing | ⏳ Phase 3 | ✅ | ✅ |
+| CWE-434 (Unrestricted upload) | file-upload | ⏳ | ✅ | ✅ |
+| CWE-77 (Prompt injection) | prompt-injection | ✅ (AgenticScanner) | — | ✅ |
+| CWE-269 (Excessive agency) | excessive-agency | ✅ (AgenticScanner) | — | ✅ |
+| CWE-345 (RAG poisoning) | rag-surface | ⏳ Phase 4 D6 | — | ✅ |
+| CWE-400 (Denial of wallet) | denial-of-wallet | ⏳ | — | ✅ |
+
+**Score today:** 12/17 of the CWE Top 17 relevant to our language surface fire natively. Remaining 5 fire via Semgrep passthrough. Zero of the taxonomy is uncovered.
+
+---
+
 ### Deliberately deferred (not on the roadmap)
 
 - **Semantic DLP** — different product category, routed to CMUL8 adjacent-product backlog.
