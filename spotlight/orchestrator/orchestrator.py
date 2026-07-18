@@ -34,6 +34,58 @@ from .events import EventBus, EventType
 from .hypothesis import HypothesisProposer
 
 
+def _get_signer() -> Any:
+    """Lazy import of the workspace signer so tests/importers that don't need
+    signing don't pay the crypto init cost. Any failure returns None — the
+    per-finding loop degrades to an empty chain of custody rather than
+    breaking the sweep."""
+    try:
+        from spotlight.non_repudiation import Signer
+
+        return Signer()
+    except Exception as exc:  # noqa: BLE001 — signing must never crash a sweep
+        print(f"[chain_of_custody] signer init failed: {exc!r}")
+        return None
+
+
+def _new_coc(signer: Any) -> Any:
+    """Materialize a ChainOfCustody bound to the workspace signer, or None
+    if signing is unavailable. Callers must tolerate None (see _coc_append)."""
+    if signer is None:
+        return None
+    try:
+        from spotlight.non_repudiation import ChainOfCustody
+
+        return ChainOfCustody(signer)
+    except Exception as exc:
+        print(f"[chain_of_custody] new_coc failed: {exc!r}")
+        return None
+
+
+def _coc_append(coc: Any, actor_id: str, action: str, payload: dict) -> None:
+    """Append one signed agent entry. Silently no-ops if `coc` is None."""
+    if coc is None:
+        return
+    try:
+        coc.add_agent_action(actor_id, action, payload)
+    except Exception as exc:
+        print(f"[chain_of_custody] append({actor_id}, {action}) failed: {exc!r}")
+
+
+def _coc_finalize(coc: Any, *, actor: str, action: str, payload: dict) -> list[dict]:
+    """Append the final entry and return the signed list. If signing was
+    unavailable throughout, returns an empty list — the finding still ships,
+    but external verifiers see no chain of custody (a deliberate signal to
+    reject the finding until the workspace key is provisioned)."""
+    if coc is None:
+        return []
+    _coc_append(coc, actor, action, payload)
+    try:
+        return coc.to_list()
+    except Exception:
+        return []
+
+
 # Canonical phase order for the state machine. Per-finding phases (reproduce,
 # remediate, verify) can repeat inside the finding loop — that's not a
 # backward jump, it's the loop rolling forward across findings.
@@ -262,6 +314,11 @@ class Orchestrator:
         self._start_wall: float = 0.0
         # Phase state machine bookkeeping.
         self._current_phase: str | None = None
+        # Signing key held once per Orchestrator instance so each finding's
+        # ChainOfCustody uses the same workspace key. Instantiated lazily
+        # to avoid an import cycle if the non_repudiation module is stripped
+        # in tests.
+        self._signer: Any = None
         self._sweep_id: str | None = None
 
     # ── budget helpers ────────────────────────────────────────────────
@@ -578,6 +635,13 @@ class Orchestrator:
 
         # 4. Reproduce → Remediate → Verify per finding.
         findings: list[dict[str, Any]] = []
+        # Instantiate the workspace signer once per sweep. The per-finding
+        # ChainOfCustody instances below all use this shared signer so the
+        # key_fingerprint on every entry matches — external verifiers only
+        # need one public key to check the whole sweep.
+        if self._signer is None:
+            self._signer = _get_signer()
+
         for i, cand in enumerate(reduced, start=1):
             breach = self._budget_breach()
             if breach:
@@ -585,6 +649,19 @@ class Orchestrator:
                 break
 
             fid = _finding_id(i)
+
+            # Per-finding chain of custody. Append-only, signed at every
+            # stage — a fabricated later entry can't retroactively rewrite
+            # an earlier one because every entry is independently signed
+            # against the workspace key.
+            coc = _new_coc(self._signer)
+            _coc_append(coc, "investigator", "candidate-raised", {
+                "finding_id": fid,
+                "class": cand.get("class"),
+                "location": cand.get("location"),
+                "evidence_used": cand.get("evidence_used", []),
+            })
+
             self._advance_phase("reproduce", finding=fid)
             emit(EventType.REPRO_STARTED, "reproducer", finding=fid)
             repro = Reproducer().run(repo_path, cand)
@@ -613,6 +690,13 @@ class Orchestrator:
                         hosts=sandbox_info.get("egress_denied_hosts", []),
                     )
             emit(EventType.REPRO_RESULT, "reproducer", finding=fid, result=repro["result"])
+            _coc_append(coc, "reproducer", "reproduction-attempted", {
+                "finding_id": fid,
+                "result": repro.get("result"),
+                "engine": (repro.get("sandbox") or {}).get("engine"),
+                "capability_token": (repro.get("sandbox") or {}).get("capability_token"),
+                "egress_attempts": (repro.get("sandbox") or {}).get("egress_attempts", 0),
+            })
 
             self._advance_phase("remediate", finding=fid)
             remediator = Remediator()
@@ -620,11 +704,23 @@ class Orchestrator:
             if remediation.get("applied"):
                 (out_dir / f"{fid}.diff").write_text(remediation["diff"])
                 emit(EventType.REMEDIATION_OPENED, "remediator", finding=fid)
+                _coc_append(coc, "remediator", "patch-generated", {
+                    "finding_id": fid,
+                    "diff_path": f"{fid}.diff",
+                    "target_file": (cand.get("location") or {}).get("file"),
+                })
 
             self._advance_phase("verify", finding=fid)
             verify = Verifier(self.model).run(repo_path, cand, remediation)
             self._account_usage(verify)
             emit(EventType.VERIFY_RESULT, "verifier", finding=fid, result=verify.get("result"))
+            _coc_append(coc, "verifier", "reproduction-rechecked-after-patch", {
+                "finding_id": fid,
+                "result": verify.get("result"),
+                "backdoor_check": verify.get("backdoor_check"),
+                "backdoor_findings": verify.get("backdoor_findings", []),
+                "independent_verifier": verify.get("independent_verifier", True),
+            })
 
             # Optional: open a real PR via `gh`, gated by Profile.open_prs.
             # Only runs on git-cloned targets; log-and-continue on failure.
@@ -747,6 +843,19 @@ class Orchestrator:
                     "timestamp": None,
                     "tokens_used": int(self._tokens_used),
                     "wall_seconds": round(self._wall_elapsed(), 6),
+                    # Signed chain of custody — every stage that touched this
+                    # finding appended one signed entry above. External
+                    # verifiers replay against the workspace public key.
+                    "chain_of_custody": _coc_finalize(
+                        coc, actor="consensus", action="tier-decided",
+                        payload={
+                            "finding_id": fid,
+                            "tier": tier,
+                            "confidence": confidence,
+                            "independent_corroborators": decision.independent_corroborators,
+                            "rationale": tier_reason,
+                        },
+                    ),
                 },
             }
             findings.append(finding)
@@ -838,6 +947,14 @@ class Orchestrator:
                 render_pdf,
             )
 
+            # Sweep-level chain_of_custody = union of every finding's signed
+            # entries, in emission order. External verifiers can spot-check
+            # any single entry against the workspace public key without
+            # needing the whole sweep tree.
+            sweep_entries: list[dict] = []
+            for f in result.findings:
+                for entry in (f.get("audit") or {}).get("chain_of_custody") or []:
+                    sweep_entries.append(entry)
             rich = Reporter().assemble(
                 result,
                 warden_events=[
@@ -845,7 +962,10 @@ class Orchestrator:
                     if e.get("type", "").startswith("warden.")
                     or e.get("type") == "sandbox.egress.denied"
                 ],
-                chain_of_custody={"entries": [], "signature_verified": None},
+                chain_of_custody={
+                    "entries": sweep_entries,
+                    "signature_verified": None,
+                },
             )
             (out_dir / "attestation.json").write_text(render_json(rich))
             md = render_markdown(rich)

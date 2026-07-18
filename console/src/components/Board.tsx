@@ -55,7 +55,14 @@ export function Board({
   }, [rows]);
 
   const rollup = useMemo(() => summarize(rows ?? [], findingsByThought), [rows, findingsByThought]);
-  const chartPoints = useMemo(() => buildDailyPoints(rows ?? []), [rows]);
+  const [granularity, setGranularity] = useState<"day" | "hour">("day");
+  const chartPoints = useMemo(
+    () =>
+      granularity === "day"
+        ? buildDailyPoints(rows ?? [])
+        : buildHourlyPoints(rows ?? []),
+    [rows, granularity]
+  );
 
   async function onDelete(id: string) {
     if (!confirm(`Delete sweep ${id}?`)) return;
@@ -118,9 +125,35 @@ export function Board({
           <div className="text-sm text-paper-900 font-medium">
             Findings <span className="text-accent">↗ {rollup.totalFindings}</span>
           </div>
-          <div className="ml-auto flex items-center gap-1 text-2xs mono uppercase tracking-wider text-paper-500">
-            <span className="h-1.5 w-1.5 rounded-full bg-accent" />
-            Total
+          <div className="ml-auto flex items-center gap-3 text-2xs mono uppercase tracking-wider text-paper-500">
+            <div className="inline-flex items-center gap-0 rounded border border-paper-300 overflow-hidden">
+              <button
+                onClick={() => setGranularity("day")}
+                aria-pressed={granularity === "day"}
+                className={`px-2 py-0.5 ${
+                  granularity === "day"
+                    ? "bg-paper-200 text-paper-900"
+                    : "text-paper-500 hover:bg-paper-100"
+                }`}
+              >
+                Day
+              </button>
+              <button
+                onClick={() => setGranularity("hour")}
+                aria-pressed={granularity === "hour"}
+                className={`px-2 py-0.5 border-l border-paper-300 ${
+                  granularity === "hour"
+                    ? "bg-paper-200 text-paper-900"
+                    : "text-paper-500 hover:bg-paper-100"
+                }`}
+              >
+                Hour
+              </button>
+            </div>
+            <span className="inline-flex items-center gap-1">
+              <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+              Total
+            </span>
           </div>
         </div>
         <AreaChart
@@ -384,6 +417,36 @@ function buildDailyPoints(rows: SweepSummary[]) {
   return Object.entries(buckets).map(([iso, v]) => {
     const [_, m, day] = iso.split("-");
     return { label: `${monthLabel(+m - 1)} ${+day}`, value: v };
+  });
+}
+
+function buildHourlyPoints(rows: SweepSummary[]) {
+  if (rows.length === 0) return [];
+  // Bucket findings_count by hour over the last 48 hours — the demo window
+  // where sparse sweep activity would otherwise look flat on the daily chart.
+  const hours = 48;
+  const now = new Date();
+  now.setMinutes(0, 0, 0);
+  const buckets: Record<string, number> = {};
+  const keyOrder: string[] = [];
+  for (let i = hours - 1; i >= 0; i--) {
+    const d = new Date(now);
+    d.setHours(d.getHours() - i);
+    const key = d.toISOString().slice(0, 13); // yyyy-mm-ddTHH
+    keyOrder.push(key);
+    buckets[key] = 0;
+  }
+  for (const r of rows) {
+    if (!r.started_at) continue;
+    const key = new Date(r.started_at).toISOString().slice(0, 13);
+    if (buckets[key] !== undefined) {
+      buckets[key] += r.findings_count || 0;
+    }
+  }
+  return keyOrder.map((iso) => {
+    const hh = iso.slice(11, 13);
+    const day = iso.slice(8, 10);
+    return { label: `${day} · ${hh}:00`, value: buckets[iso] };
   });
 }
 

@@ -26,18 +26,18 @@ import sqlite3
 import requests
 from flask import Flask, jsonify, request
 
-# LangChain imports are guarded so the module loads even in a stripped
-# sandbox (Spotlight's Modal Reproducer). The Agentic scanner does STATIC
-# text analysis — the mere presence of the import + usage names is what
-# triggers detection. Runtime is independent.
-try:
-    from langchain.agents import AgentExecutor, Tool
-    from langchain.chains import LLMChain
-    from langchain.prompts import ChatPromptTemplate
-    from langchain_openai import ChatOpenAI
-    _LANGCHAIN_AVAILABLE = True
-except ImportError:
-    _LANGCHAIN_AVAILABLE = False
+# NOTE: LangChain imports are deferred into the `/support` route so this
+# module loads in a stripped sandbox (Spotlight's Modal Reproducer) without
+# waiting on langchain — which is absent in the Modal image and previously
+# dragged cold-start past the 60 s PoC timeout on the SQLi reproducer.
+#
+# Detection is unaffected: Spotlight's AgenticScanner does STATIC text
+# analysis on the source file, so it still sees `ChatPromptTemplate`,
+# `Tool`, `AgentExecutor`, etc. even when the imports are inside a function
+# body. `_lazy_langchain()` returns None when the deps are absent — /support
+# then returns 503, but the SQLi and secrets findings still land at the
+# `verified` tier because the SQLi PoC only touches the Flask test client
+# and never imports langchain.
 
 # --- ISSUE 2: hardcoded credentials ------------------------------------------
 AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE"
@@ -75,7 +75,21 @@ def support_bot_lookup_tool(url_from_llm: str) -> str:
     return requests.get(url_from_llm).text
 
 
-if _LANGCHAIN_AVAILABLE:
+@app.route("/support", methods=["POST"])
+def support():
+    # Deferred imports keep module load fast for the Modal Reproducer. Static
+    # analysis (AgenticScanner) walks the AST and matches these constructor
+    # names (`Tool`, `AgentExecutor`, `ChatPromptTemplate`) regardless of
+    # whether the import resolved at runtime — so LLM01/LLM05/LLM06 detection
+    # is unchanged.
+    try:
+        from langchain.agents import AgentExecutor, Tool
+        from langchain.chains import LLMChain
+        from langchain.prompts import ChatPromptTemplate
+        from langchain_openai import ChatOpenAI
+    except Exception:
+        return jsonify({"error": "langchain not installed"}), 503
+
     unrestricted_tool = Tool(
         name="lookup",
         func=support_bot_lookup_tool,
@@ -93,13 +107,8 @@ if _LANGCHAIN_AVAILABLE:
          ("user", "{ticket}")]  # <-- raw untrusted input
     )
     support_chain = LLMChain(llm=llm, prompt=prompt)
-    support_agent = AgentExecutor(agent=support_chain, tools=[unrestricted_tool])
+    _support_agent = AgentExecutor(agent=support_chain, tools=[unrestricted_tool])
 
-
-@app.route("/support", methods=["POST"])
-def support():
-    if not _LANGCHAIN_AVAILABLE:
-        return jsonify({"error": "langchain not installed"}), 503
     ticket = request.json.get("ticket", "") if request.is_json else ""
     # ISSUE 3 fires here: `ticket` is user-controlled and reaches the chain.
     result = support_chain.invoke({"ticket": ticket})
