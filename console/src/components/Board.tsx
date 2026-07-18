@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import {
   cleanupSweeps,
   deleteSweep,
@@ -35,6 +35,16 @@ export function Board({
   const [rows, setRows] = useState<SweepSummary[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [findingsByThought, setFindingsByThought] = useState<Record<string, Finding[]>>({});
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  function toggleExpanded(id: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
   useEffect(() => {
     listSweeps()
@@ -187,9 +197,11 @@ export function Board({
           <table className="w-full text-sm">
             <thead>
               <tr className="text-2xs mono uppercase tracking-wider text-paper-500 border-b border-paper-200">
-                <th className="text-left px-3 py-3 font-normal">Created by you</th>
+                <th className="w-6"></th>
+                <th className="text-left px-3 py-3 font-normal">Target</th>
+                <th className="text-left px-3 py-3 font-normal">Commit</th>
                 <th className="text-right px-3 py-3 font-normal">Total</th>
-                <th className="text-right px-3 py-3 font-normal">Critical</th>
+                <th className="text-right px-3 py-3 font-normal">Crit</th>
                 <th className="text-right px-3 py-3 font-normal">High</th>
                 <th className="text-right px-3 py-3 font-normal">Med</th>
                 <th className="text-right px-3 py-3 font-normal">Last Scan</th>
@@ -201,44 +213,98 @@ export function Board({
                 const findings = findingsByThought[r.sweep_id] ?? [];
                 const sev = countSeverities(findings);
                 const active = selected === r.sweep_id;
+                const isOpen = expanded.has(r.sweep_id);
                 return (
-                  <tr
-                    key={r.sweep_id}
-                    onClick={() => onSelect(r)}
-                    onDoubleClick={() => onOpen(r.sweep_id)}
-                    className={`border-b border-paper-200/60 last:border-none group cursor-pointer transition-colors ${
-                      active ? "bg-paper-100/60" : "hover:bg-paper-100/40"
-                    }`}
-                  >
-                    <td className="px-3 py-3.5">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <StatusDot status={r.status} />
-                        <span className="text-paper-900 font-medium truncate">{r.repo_name}</span>
-                        <span className="mono text-2xs text-paper-400 tabular-nums">
-                          {r.sweep_id.slice(0, 10)}
-                        </span>
-                      </div>
-                    </td>
-                    <TdNum n={r.findings_count} />
-                    <TdNum n={sev.critical} colorClass={sev.critical > 0 ? "text-sev-critical" : ""} />
-                    <TdNum n={sev.high} colorClass={sev.high > 0 ? "text-sev-high" : ""} />
-                    <TdNum n={sev.medium} colorClass={sev.medium > 0 ? "text-sev-medium" : ""} />
-                    <td className="px-3 py-3.5 text-right mono text-2xs text-paper-500 tabular-nums">
-                      {r.started_at ? relativeTime(r.started_at) : "—"}
-                    </td>
-                    <td className="px-2 text-right">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onDelete(r.sweep_id);
-                        }}
-                        disabled={busy === r.sweep_id}
-                        className="opacity-0 group-hover:opacity-100 text-2xs mono uppercase text-paper-400 hover:text-sev-critical px-1 py-0.5 rounded transition-all"
-                      >
-                        {busy === r.sweep_id ? "…" : "×"}
-                      </button>
-                    </td>
-                  </tr>
+                  <Fragment key={r.sweep_id}>
+                    <tr
+                      onClick={() => onSelect(r)}
+                      onDoubleClick={() => onOpen(r.sweep_id)}
+                      className={`border-b border-paper-200/60 last:border-none group cursor-pointer transition-colors ${
+                        active ? "bg-paper-100/60" : "hover:bg-paper-100/40"
+                      }`}
+                    >
+                      <td className="pl-3">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleExpanded(r.sweep_id);
+                          }}
+                          className="w-5 h-5 grid place-items-center text-paper-400 hover:text-paper-800 rounded"
+                          aria-label={isOpen ? "Collapse" : "Expand"}
+                          aria-expanded={isOpen}
+                        >
+                          <span
+                            className={`transition-transform inline-block ${isOpen ? "rotate-90" : ""}`}
+                          >
+                            ▸
+                          </span>
+                        </button>
+                      </td>
+                      <td className="px-3 py-3.5">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <StatusDot status={r.status} />
+                          <span className="text-paper-900 font-medium truncate">
+                            {r.org ? (
+                              <span>
+                                <span className="text-paper-500">{r.org}/</span>
+                                {r.repo_name}
+                              </span>
+                            ) : (
+                              r.repo_name
+                            )}
+                          </span>
+                          <span className="mono text-2xs text-paper-400 tabular-nums" title={r.sweep_id}>
+                            {r.sweep_id.slice(0, 10)}
+                          </span>
+                          {r.interactive && (
+                            <span
+                              className="text-2xs mono uppercase tracking-wider bg-accent-soft text-accent border border-accent/30 rounded-full px-1.5 py-0.5"
+                              title="Interactive-mode sweep"
+                            >
+                              interactive
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-3 py-3.5 mono text-2xs text-paper-600">
+                        <CommitCell
+                          sha={r.commit_sha ?? null}
+                          branch={r.commit_branch ?? null}
+                          source={r.source}
+                        />
+                      </td>
+                      <TdNum n={r.findings_count} />
+                      <TdNum n={sev.critical} colorClass={sev.critical > 0 ? "text-sev-critical" : ""} />
+                      <TdNum n={sev.high} colorClass={sev.high > 0 ? "text-sev-high" : ""} />
+                      <TdNum n={sev.medium} colorClass={sev.medium > 0 ? "text-sev-medium" : ""} />
+                      <td className="px-3 py-3.5 text-right mono text-2xs text-paper-500 tabular-nums">
+                        {r.started_at ? relativeTime(r.started_at) : "—"}
+                      </td>
+                      <td className="px-2 text-right">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onDelete(r.sweep_id);
+                          }}
+                          disabled={busy === r.sweep_id}
+                          className="opacity-0 group-hover:opacity-100 text-2xs mono uppercase text-paper-400 hover:text-sev-critical px-1 py-0.5 rounded transition-all"
+                        >
+                          {busy === r.sweep_id ? "…" : "×"}
+                        </button>
+                      </td>
+                    </tr>
+                    {isOpen && (
+                      <tr className="bg-paper-50 border-b border-paper-200/60">
+                        <td></td>
+                        <td colSpan={8} className="px-3 py-3">
+                          <SweepFindingsPreview
+                            findings={findings}
+                            onOpen={() => onOpen(r.sweep_id)}
+                          />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 );
               })}
             </tbody>
@@ -248,6 +314,138 @@ export function Board({
     </section>
   );
 }
+
+function CommitCell({
+  sha,
+  branch,
+  source,
+}: {
+  sha: string | null;
+  branch: string | null;
+  source: string;
+}) {
+  if (!sha) {
+    // Fixture targets have no git ancestry. Show the source kind so the
+    // table cell isn't a bald "—".
+    if (source === "fixture") {
+      return (
+        <span className="text-2xs mono uppercase tracking-wider text-paper-400">
+          fixture
+        </span>
+      );
+    }
+    return <span className="text-paper-400">—</span>;
+  }
+  return (
+    <div className="flex flex-col leading-tight">
+      <span className="mono text-paper-800 tabular-nums" title={sha}>
+        {sha.slice(0, 8)}
+      </span>
+      {branch && (
+        <span
+          className="mono text-[10px] uppercase tracking-wider text-paper-500 truncate max-w-[10ch]"
+          title={branch}
+        >
+          {branch}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Inline findings preview when a sweep row is expanded. Groups by class so
+ * a sweep with 15 findings doesn't dump a wall of duplicates — you see
+ * "sqli · 4  (critical, verified)" per class, with a "Open sweep" affordance
+ * for the full drilldown.
+ */
+function SweepFindingsPreview({
+  findings,
+  onOpen,
+}: {
+  findings: Finding[];
+  onOpen: () => void;
+}) {
+  if (findings.length === 0) {
+    return (
+      <div className="text-2xs mono uppercase tracking-wider text-paper-400 py-2">
+        no findings landed yet
+      </div>
+    );
+  }
+  // Bucket by class, then by severity within class.
+  const byClass = new Map<string, Finding[]>();
+  for (const f of findings) {
+    const arr = byClass.get(f.class) ?? [];
+    arr.push(f);
+    byClass.set(f.class, arr);
+  }
+  const sortedClasses = [...byClass.entries()].sort(
+    (a, b) => b[1].length - a[1].length
+  );
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-2xs mono uppercase tracking-wider text-paper-500">
+          Findings by class
+        </span>
+        <button
+          onClick={onOpen}
+          className="text-2xs mono uppercase tracking-wider text-accent hover:underline"
+        >
+          Open sweep →
+        </button>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+        {sortedClasses.map(([cls, list]) => {
+          const worst = list.reduce((acc, f) => {
+            const rank = SEV_RANK[f.severity] ?? 0;
+            return rank > (SEV_RANK[acc.severity] ?? 0) ? f : acc;
+          }, list[0]);
+          const verified = list.filter((f) => f.tier === "verified").length;
+          return (
+            <div
+              key={cls}
+              className="border border-paper-200 rounded-md bg-white px-2.5 py-2 flex items-center gap-2"
+            >
+              <span className="mono text-xs text-paper-900 font-semibold truncate">
+                {cls}
+              </span>
+              <span className="mono text-2xs text-paper-500 tabular-nums">
+                × {list.length}
+              </span>
+              <MiniSevChip sev={worst.severity} />
+              {verified > 0 && (
+                <span className="ml-auto text-2xs mono uppercase tracking-wider text-accent">
+                  {verified} verified
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+const SEV_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
+
+function MiniSevChip({ sev }: { sev: string }) {
+  const map: Record<string, string> = {
+    critical: "bg-sev-critical text-white",
+    high: "bg-sev-high text-white",
+    medium: "bg-sev-medium text-white",
+    low: "bg-sev-low text-white",
+  };
+  return (
+    <span
+      className={`text-[9px] mono uppercase tracking-wider px-1 py-0.5 rounded ${map[sev] ?? "bg-paper-400 text-white"}`}
+    >
+      {sev}
+    </span>
+  );
+}
+
 
 function StatPill({
   label,

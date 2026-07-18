@@ -309,6 +309,15 @@ def _persist_sweep_header(
 ) -> None:
     if not store_enabled():
         return
+    # Best-effort git introspection — captures org/commit_sha/branch so two
+    # sweeps of "acme-bank" months apart are distinguishable by commit.
+    ident: dict = {}
+    try:
+        from spotlight.git_ops import GitOps
+
+        ident = GitOps().head_info(repo_path)
+    except Exception:
+        pass
     try:
         with get_session() as sess:
             existing = sess.get(SweepRow, sweep_id)
@@ -322,6 +331,9 @@ def _persist_sweep_header(
                     source=source,
                     status="running",
                     interactive=interactive,
+                    org=ident.get("org") or None,
+                    commit_sha=ident.get("commit_sha") or None,
+                    commit_branch=ident.get("commit_branch") or None,
                 )
             )
     except Exception:
@@ -402,6 +414,11 @@ def list_sweeps() -> list[dict]:
                         "findings_count": r.findings_count,
                         "started_at": r.started_at.isoformat() if r.started_at else None,
                         "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+                        # Sweep identity — what code did this sweep see?
+                        "org": r.org,
+                        "commit_sha": r.commit_sha,
+                        "commit_branch": r.commit_branch,
+                        "interactive": r.interactive,
                     }
                     for r in rows
                 ]

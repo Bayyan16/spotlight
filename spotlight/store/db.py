@@ -68,6 +68,11 @@ _ADDITIVE_MIGRATIONS: list[tuple[str, str, str]] = [
     # Persistence follow-up — sweep-level interactive-mode flag so the
     # audit trail can distinguish auto-run from human-in-the-loop sweeps.
     ("sweeps", "interactive", "ALTER TABLE sweeps ADD COLUMN IF NOT EXISTS interactive BOOLEAN"),
+    # Sweep identity — org / commit_sha / commit_branch. Nullable so
+    # fixture sweeps (no git ancestry) load cleanly.
+    ("sweeps", "org", "ALTER TABLE sweeps ADD COLUMN IF NOT EXISTS org VARCHAR(128)"),
+    ("sweeps", "commit_sha", "ALTER TABLE sweeps ADD COLUMN IF NOT EXISTS commit_sha VARCHAR(64)"),
+    ("sweeps", "commit_branch", "ALTER TABLE sweeps ADD COLUMN IF NOT EXISTS commit_branch VARCHAR(128)"),
 ]
 
 

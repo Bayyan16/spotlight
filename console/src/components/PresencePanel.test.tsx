@@ -93,9 +93,7 @@ describe("PresencePanel", () => {
     expect(screen.getByText("1")).toBeInTheDocument();
     // The matching repo name (bold).
     expect(screen.getByText("payments-api")).toBeInTheDocument();
-    // sweep_id in monospace.
-    expect(screen.getByText("sw_other")).toBeInTheDocument();
-    // file:line.
+    // file:line at the collapsed level.
     expect(screen.getByText("src/db.py:42")).toBeInTheDocument();
     // tier chip.
     expect(screen.getByText(/verified/i)).toBeInTheDocument();

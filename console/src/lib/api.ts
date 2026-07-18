@@ -126,6 +126,11 @@ export type SweepSummary = {
   findings_count: number;
   started_at: string | null;
   finished_at: string | null;
+  // Sweep identity — what code did this sweep see?
+  org?: string | null;
+  commit_sha?: string | null;
+  commit_branch?: string | null;
+  interactive?: boolean | null;
 };
 
 export async function listTargets(): Promise<Target[]> {

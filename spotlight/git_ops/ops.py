@@ -82,6 +82,46 @@ class GitOps:
         except Exception:
             return False
 
+    # ------------------------------------------------------------------ head
+    def head_info(self, path: Path) -> dict:
+        """Best-effort identity block for a repo path.
+
+        Returns {org, commit_sha, commit_branch, clone_url} — any field is
+        empty string when we can't determine it. Never raises.
+
+        Used at sweep-start so every SweepRow knows *what code* the sweep
+        actually saw. Two sweeps of the same repo months apart are only
+        "the same" if commit_sha matches.
+        """
+        out = {"org": "", "commit_sha": "", "commit_branch": "", "clone_url": ""}
+        p = Path(path)
+        if not self.is_git_repo(p):
+            return out
+        try:
+            sha = self._capture(["git", "-C", str(p), "rev-parse", "HEAD"])
+            out["commit_sha"] = sha
+        except Exception:
+            pass
+        try:
+            branch = self._capture(["git", "-C", str(p), "rev-parse", "--abbrev-ref", "HEAD"])
+            out["commit_branch"] = branch if branch != "HEAD" else ""
+        except Exception:
+            pass
+        try:
+            url = self._capture(["git", "-C", str(p), "config", "--get", "remote.origin.url"])
+            out["clone_url"] = url
+            out["org"] = _org_from_url(url)
+        except Exception:
+            pass
+        return out
+
+    def _capture(self, args: list[str]) -> str:
+        """Run a git command and return trimmed stdout. Raises on non-zero."""
+        r = subprocess.run(args, capture_output=True, text=True, timeout=self.timeout)
+        if r.returncode != 0:
+            raise RuntimeError(r.stderr.strip() or f"git failed: {args}")
+        return r.stdout.strip()
+
     # ------------------------------------------------------------------ branch
     def create_scratch_branch(self, repo: Path, finding_id: str) -> str:
         """Create + checkout `spotlight/<finding_id>-<short>`. Return the
@@ -259,3 +299,36 @@ def _author_email(author: str) -> str:
     if "<" in author and ">" in author:
         return author.split("<", 1)[1].split(">", 1)[0].strip()
     return "bot@cmul8.com"
+
+
+def _org_from_url(url: str) -> str:
+    """Extract the org/user segment from a git remote URL.
+
+    Handles the common shapes:
+        https://github.com/acme/api.git         -> "acme"
+        git@github.com:acme/api.git             -> "acme"
+        https://gitlab.com/foo/bar/baz.git      -> "foo/bar"
+
+    Returns "" if the URL doesn't look parseable.
+    """
+    url = (url or "").strip()
+    if not url:
+        return ""
+    # Strip protocol.
+    if "://" in url:
+        _, _, rest = url.partition("://")
+    elif url.startswith("git@"):
+        _, _, rest = url.partition(":")
+    else:
+        rest = url
+    # rest = host/path OR path (ssh-form).
+    if "/" not in rest:
+        return ""
+    _, _, path = rest.partition("/")
+    # Drop trailing .git and any /repo segment (the LAST segment is the repo).
+    if path.endswith(".git"):
+        path = path[:-4]
+    parts = path.split("/")
+    if len(parts) < 2:
+        return ""
+    return "/".join(parts[:-1])

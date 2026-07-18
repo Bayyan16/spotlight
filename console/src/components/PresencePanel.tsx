@@ -70,6 +70,9 @@ function PresenceSkeleton() {
 }
 
 function PresenceBody({ data }: { data: PresenceResult }) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [showAll, setShowAll] = useState(false);
+
   if (data.presence_count === 0) {
     return (
       <div className="flex items-center gap-2 text-xs text-paper-600">
@@ -80,6 +83,49 @@ function PresenceBody({ data }: { data: PresenceResult }) {
       </div>
     );
   }
+
+  // Group matches by repo — a single repo with N findings of the same class
+  // should read as ONE entry, not N. Preserves ordering: repos with the most
+  // matches first (most impact), then most-recent within each repo.
+  type Match = PresenceResult["matches"][number];
+  const byRepo = new Map<string, Match[]>();
+  for (const m of data.matches) {
+    const arr = byRepo.get(m.repo_name) ?? [];
+    arr.push(m);
+    byRepo.set(m.repo_name, arr);
+  }
+  const repos = [...byRepo.entries()]
+    .map(([repo, matches]) => {
+      const sorted = [...matches].sort((a, b) => {
+        const ta = a.sweep_started_at ? Date.parse(a.sweep_started_at) : 0;
+        const tb = b.sweep_started_at ? Date.parse(b.sweep_started_at) : 0;
+        return tb - ta;
+      });
+      return {
+        repo,
+        matches: sorted,
+        worstTier: sorted.reduce(
+          (acc, m) => (TIER_RANK[m.tier] > TIER_RANK[acc] ? m.tier : acc),
+          sorted[0].tier
+        ),
+        newest: sorted[0].sweep_started_at,
+      };
+    })
+    .sort((a, b) => b.matches.length - a.matches.length);
+
+  const COLLAPSED_LIMIT = 3;
+  const visibleRepos = showAll ? repos : repos.slice(0, COLLAPSED_LIMIT);
+  const hiddenCount = repos.length - visibleRepos.length;
+
+  function toggleRepo(repo: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(repo)) next.delete(repo);
+      else next.add(repo);
+      return next;
+    });
+  }
+
   return (
     <>
       <p className="text-sm text-paper-800 leading-relaxed mb-3">
@@ -89,39 +135,121 @@ function PresenceBody({ data }: { data: PresenceResult }) {
         </span>{" "}
         class is reachable in{" "}
         <span className="mono tabular-nums font-semibold text-paper-900">
-          {data.presence_count}
+          {repos.length}
         </span>{" "}
-        other repo{data.presence_count === 1 ? "" : "s"} in your workspace.
+        other repo{repos.length === 1 ? "" : "s"} in your workspace
+        {data.presence_count !== repos.length && (
+          <>
+            {" "}
+            (
+            <span className="mono tabular-nums font-semibold text-paper-900">
+              {data.presence_count}
+            </span>{" "}
+            findings total)
+          </>
+        )}
+        .
       </p>
-      <ul className="space-y-2">
-        {data.matches.map((m) => (
-          <li
-            key={m.finding_id}
-            className="flex items-center gap-3 border border-paper-200 rounded px-3 py-2 bg-paper-50"
-          >
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-sm font-semibold text-paper-900 truncate">
-                  {m.repo_name}
+      <ul className="space-y-1.5">
+        {visibleRepos.map((entry) => {
+          const isOpen = expanded.has(entry.repo);
+          const multi = entry.matches.length > 1;
+          return (
+            <li
+              key={entry.repo}
+              className="border border-paper-200 rounded bg-paper-50 overflow-hidden"
+            >
+              <button
+                onClick={() => (multi ? toggleRepo(entry.repo) : undefined)}
+                className={`w-full flex items-center gap-3 px-3 py-2 text-left ${
+                  multi ? "hover:bg-white cursor-pointer" : "cursor-default"
+                }`}
+              >
+                {multi && (
+                  <span
+                    className={`text-paper-400 transition-transform inline-block ${
+                      isOpen ? "rotate-90" : ""
+                    }`}
+                  >
+                    ▸
+                  </span>
+                )}
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm font-semibold text-paper-900 truncate">
+                      {entry.repo}
+                    </span>
+                    <span className="text-2xs mono tabular-nums text-paper-500">
+                      × {entry.matches.length}
+                    </span>
+                  </div>
+                  {!isOpen && (
+                    <div className="mt-1 text-2xs mono text-paper-500 truncate">
+                      {entry.matches[0].file}:{entry.matches[0].line}
+                      {multi && (
+                        <span className="text-paper-400"> · +{entry.matches.length - 1} more</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+                <TierChip tier={entry.worstTier} />
+                <span className="text-2xs mono uppercase tracking-wider text-paper-500 shrink-0 w-16 text-right">
+                  {relativeTime(entry.newest)}
                 </span>
-                <span className="text-2xs mono text-paper-500 truncate">
-                  {m.sweep_id}
-                </span>
-              </div>
-              <div className="mt-1 text-2xs mono text-paper-600 truncate">
-                {m.file}:{m.line}
-              </div>
-            </div>
-            <TierChip tier={m.tier} />
-            <span className="text-2xs mono uppercase tracking-wider text-paper-500 shrink-0 w-16 text-right">
-              {relativeTime(m.sweep_started_at)}
-            </span>
-          </li>
-        ))}
+              </button>
+              {isOpen && multi && (
+                <ul className="border-t border-paper-200 divide-y divide-paper-200 bg-white">
+                  {entry.matches.map((m) => (
+                    <li
+                      key={m.finding_id}
+                      className="flex items-center gap-3 px-3 py-1.5"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="text-2xs mono text-paper-700 truncate">
+                          {m.file}:{m.line}
+                        </div>
+                        <div className="text-[10px] mono text-paper-400 truncate">
+                          {m.sweep_id}
+                        </div>
+                      </div>
+                      <TierChip tier={m.tier} />
+                      <span className="text-2xs mono uppercase tracking-wider text-paper-500 shrink-0 w-16 text-right">
+                        {relativeTime(m.sweep_started_at)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </li>
+          );
+        })}
       </ul>
+      {hiddenCount > 0 && (
+        <button
+          onClick={() => setShowAll(true)}
+          className="mt-2 text-2xs mono uppercase tracking-wider text-accent hover:underline"
+        >
+          Show {hiddenCount} more repo{hiddenCount === 1 ? "" : "s"} →
+        </button>
+      )}
+      {showAll && repos.length > COLLAPSED_LIMIT && (
+        <button
+          onClick={() => setShowAll(false)}
+          className="mt-2 text-2xs mono uppercase tracking-wider text-paper-500 hover:text-paper-800"
+        >
+          Show less
+        </button>
+      )}
     </>
   );
 }
+
+const TIER_RANK: Record<string, number> = {
+  verified: 4,
+  "high-confidence": 3,
+  "needs-review": 2,
+  held: 1,
+};
 
 function TierChip({ tier }: { tier: string }) {
   if (tier === "verified") {

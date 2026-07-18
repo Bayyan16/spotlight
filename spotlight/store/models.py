@@ -47,6 +47,13 @@ class SweepRow(Base):
     # the audit trail can distinguish auto-run sweeps from human-in-the-loop
     # ones months later. Nullable=True for pre-C2 rows.
     interactive: Mapped[bool | None] = mapped_column(nullable=True, default=False)
+    # Sweep identity — what code did this sweep actually see? Two sweeps of
+    # "acme-bank" months apart are only meaningfully "the same" if the
+    # commit_sha matches. Populated from `git rev-parse` at sweep-start
+    # when the target is a git checkout; empty for pure fixture targets.
+    org: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    commit_branch: Mapped[str | None] = mapped_column(String(128), nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     findings_count: Mapped[int] = mapped_column(Integer, default=0)
