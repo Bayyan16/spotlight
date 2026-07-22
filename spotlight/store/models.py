@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
@@ -65,6 +65,33 @@ class SweepRow(Base):
 
     findings = relationship("FindingRow", back_populates="sweep", cascade="all, delete-orphan")
     events = relationship("EventRow", back_populates="sweep", cascade="all, delete-orphan")
+
+
+class SweepJobRow(Base):
+    """Durable execution intent and lease for a sweep worker."""
+
+    __tablename__ = "sweep_jobs"
+
+    sweep_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("sweeps.id", ondelete="CASCADE"), primary_key=True
+    )
+    request: Mapped[Any] = mapped_column(JsonType)
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # P1.1 — worker heartbeat. Separate from `lease_until` so recovery can
+    # distinguish "lease renewed on time" from "lease has slack because we
+    # gave it a long TTL." The worker updates this every heartbeat_interval;
+    # a running job whose heartbeat_at is much older than the TTL is a
+    # crashed worker even if lease_until hasn't fired yet. Nullable for
+    # backward compatibility with pre-P1.1 rows.
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
 
 
 class PrWatchRow(Base):
@@ -155,6 +182,15 @@ class FindingRow(Base):
 
 class EventRow(Base):
     __tablename__ = "events"
+
+    # P1.3 — an append-only uniqueness invariant on (sweep_id, seq) makes
+    # event insertion idempotent under crash-retry. The event bus assigns
+    # `seq` monotonically per-sweep; if a worker crashes mid-write and
+    # replays, ON CONFLICT DO NOTHING prevents duplicate rows without
+    # requiring a read-then-write dance.
+    __table_args__ = (
+        UniqueConstraint("sweep_id", "seq", name="uq_events_sweep_seq"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     sweep_id: Mapped[str] = mapped_column(String(64), ForeignKey("sweeps.id", ondelete="CASCADE"))
