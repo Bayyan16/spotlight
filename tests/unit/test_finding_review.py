@@ -45,7 +45,10 @@ def sweep_with_findings(client):
     """Seed a real sweep against the acme-bank fixture so the endpoint has
     something to review. Uses the app's own POST /sweeps to stay close to
     production behavior."""
-    resp = client.post("/sweeps", json={"repo": "targets/acme-bank"})
+    # Intake accepts fixture *names* (validated by _FIXTURE_NAME), not paths.
+    # The API resolves the name against `targets_root`; sending a slash-bearing
+    # value hits the hardened rejection path in spotlight.api.intake.
+    resp = client.post("/sweeps", json={"repo": "acme-bank"})
     assert resp.status_code == 200, resp.text
     sweep_id = resp.json()["sweep_id"]
     import time

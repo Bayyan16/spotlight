@@ -133,7 +133,14 @@ def test_pr_watch_persists_across_process(client, sqlite_db, monkeypatch):
     # Patch start_sweep so we don't clone a real repo.
     from spotlight.api import app as app_mod
 
-    monkeypatch.setattr(app_mod, "start_sweep", lambda req: {"sweep_id": "sw_persist"})
+    # start_sweep's signature is (req: SweepRequest, request: Request).
+    # The `request` positional is used for cookie-auth same-origin enforcement
+    # in the hardened intake; we don't touch it here.
+    monkeypatch.setattr(
+        app_mod,
+        "start_sweep",
+        lambda req, request: {"sweep_id": "sw_persist"},
+    )
     # Insert a matching sweep row so the FK on pr_watches doesn't reject the write.
     from spotlight.store import SweepRow, get_session, init_schema
 

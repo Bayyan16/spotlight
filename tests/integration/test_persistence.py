@@ -71,11 +71,18 @@ def test_delete_removes_sweep(api_client):
     r = client.post("/sweeps", json={"repo": "vuln-bank-api"})
     sweep_id = r.json()["sweep_id"]
     import time
-    for _ in range(50):
+    # Active sweeps cannot be deleted (Week 3 durability guard). Wait for the
+    # sweep to reach a terminal state before attempting the delete; a longer
+    # ceiling than pre-hardening because the sweep now flushes durable
+    # events + attestation state before flipping to "finished".
+    terminal_states = {"finished", "failed"}
+    for _ in range(300):
         s = client.get(f"/sweeps/{sweep_id}").json()
-        if s["status"] == "finished":
+        if s["status"] in terminal_states:
             break
         time.sleep(0.1)
+    else:
+        pytest.fail(f"sweep {sweep_id} never reached terminal state; last status={s.get('status')}")
 
     d = client.delete(f"/sweeps/{sweep_id}").json()
     assert d == {"deleted": sweep_id}
