@@ -1,0 +1,72 @@
+# Alembic migrations for Spotlight
+
+Real database migrations for the persistent store (Postgres in
+production, SQLite in dev / tests). Replaces the pre-P1.4 best-effort
+`Base.metadata.create_all` on API startup.
+
+## Where things live
+
+- `alembic.ini`            — top-level Alembic config; the sqlalchemy.url
+                              is overridden at runtime by env.py when
+                              `DATABASE_URL` is set.
+- `alembic/env.py`          — loads `spotlight.store.models.Base.metadata`
+                              as the autogenerate target and normalises
+                              the `postgres://` → `postgresql+psycopg://`
+                              scheme SQLAlchemy 2.0 requires.
+- `alembic/versions/`       — every migration script. Files are prefixed
+                              with a random 12-char id and a short slug.
+
+## Runbook
+
+Apply the current schema to a fresh database:
+
+```
+DATABASE_URL=postgresql+psycopg://user:pass@host/db alembic upgrade head
+```
+
+Autogenerate a new migration after editing models:
+
+```
+alembic revision --autogenerate -m "short slug describing the change"
+# review the generated file — the Text() import in JSONB.astext_type is
+# frequently omitted, add `from sqlalchemy import Text` if so
+alembic upgrade head        # apply locally
+```
+
+Roll back one revision (dev / testing only):
+
+```
+alembic downgrade -1
+```
+
+## Deploy hook
+
+`infra/Dockerfile.api` runs `alembic upgrade head` before starting the
+API process. The command is idempotent — re-running with no pending
+migrations is a no-op — so it is safe on every container start.
+
+When we split the API and worker into separate services (P1.2), the
+worker's Dockerfile uses the same entrypoint pattern. Both replicas will
+attempt the upgrade; Alembic uses a table-level advisory lock (Postgres)
+so only the first one actually applies changes.
+
+## Development / test convenience
+
+`spotlight.store.init_schema()` continues to call
+`Base.metadata.create_all` for unit tests and CLI runners that use an
+in-memory SQLite database — running `alembic upgrade head` per test
+would be wasteful. Production paths never touch `init_schema` — they
+rely on `alembic upgrade head` in the container entrypoint.
+
+## Baseline revision
+
+`ef7e82e2bcc5_baseline_schema.py` captures the entire schema at
+paper-v1 / Week 3 durability landing:
+
+- sweeps, findings, events, sweep_jobs, pr_watches, workspace_prefs,
+  findings_filter_prefs
+- sweep_jobs.heartbeat_at (P1.1 — multi-worker lease heartbeat)
+- events UNIQUE(sweep_id, seq) as uq_events_sweep_seq (P1.3 — idempotent
+  event insert under crash-retry)
+
+All future migrations chain off this baseline.

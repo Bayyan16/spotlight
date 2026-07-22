@@ -14,10 +14,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pyproject.toml ./
 COPY spotlight ./spotlight
 COPY targets ./targets
+COPY data ./data
+COPY alembic.ini ./alembic.ini
+COPY alembic ./alembic
 COPY --from=console /console/dist ./console/dist
 
 RUN pip install --no-cache-dir -e .
 
 EXPOSE 8000
 
-CMD ["python", "-u", "-m", "uvicorn", "spotlight.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+# Deploy hook: apply pending Alembic migrations, then start the API.
+# `alembic upgrade head` is idempotent — re-running with no pending
+# migrations is a no-op — so it is safe to run on every container start.
+# When we split the API and worker into separate services (P1.2), the
+# worker service uses the same entrypoint pattern.
+CMD ["sh", "-c", "alembic upgrade head && python -u -m uvicorn spotlight.api.app:app --host 0.0.0.0 --port 8000"]
