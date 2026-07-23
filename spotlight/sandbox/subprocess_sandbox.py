@@ -63,10 +63,16 @@ class SubprocessSandbox(SandboxRunner):
         script_path: str,
     ) -> SandboxResult:
         start = time.monotonic()
-        # Egress-off best effort: strip proxy vars.
-        run_env = {**os.environ, **(env or {})}
-        for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
-            run_env.pop(k, None)
+        # Never inherit the parent API environment: it can contain database,
+        # model-provider, signing, GitHub, and deployment credentials. This is
+        # still a development-only fallback, but secret isolation is absolute.
+        run_env = {
+            "PATH": os.defpath,
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "PYTHONUNBUFFERED": "1",
+            **(env or {}),
+        }
         cwd = token.ro_paths[0] if token.ro_paths else None
         try:
             proc = subprocess.run(

@@ -137,7 +137,7 @@ def test_pull_request_captures_pr_number(client, monkeypatch):
             return (app_mod.Path("/tmp"), "git-url")
 
     monkeypatch.setattr(
-        app_mod, "start_sweep", lambda req: {"sweep_id": "sw_TEST"}
+        app_mod, "start_sweep", lambda req, request: {"sweep_id": "sw_TEST"}
     )
     body = json.dumps(
         {

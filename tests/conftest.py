@@ -12,4 +12,23 @@ import pytest
 def _no_real_model(monkeypatch):
     for var in ("MOONSHOT_API_KEY", "MOONSHOT_BASE_URL", "MOONSHOT_MODEL"):
         monkeypatch.delenv(var, raising=False)
+    # Never let a developer's deployment shell make the local test suite
+    # behave like production. Individual security tests opt in explicitly.
+    for var in (
+        "SPOTLIGHT_ENV",
+        "RAILWAY_ENVIRONMENT",
+        "SPOTLIGHT_AUTH_MODE",
+        "SPOTLIGHT_API_KEY",
+        "SPOTLIGHT_CORS_ORIGINS",
+        "SPOTLIGHT_GIT_HOSTS",
+        "SPOTLIGHT_ALLOW_LOCAL_REPOS",
+        "SPOTLIGHT_LOCAL_REPO_ROOTS",
+        "SPOTLIGHT_MAX_REPO_BYTES",
+        "SPOTLIGHT_MAX_REPO_FILES",
+        "SPOTLIGHT_MAX_ACTIVE_SWEEPS",
+        "SPOTLIGHT_SWEEPS_PER_HOUR",
+        "SPOTLIGHT_LOGIN_FAILURE_LIMIT",
+        "SPOTLIGHT_LOGIN_WINDOW_SECONDS",
+    ):
+        monkeypatch.delenv(var, raising=False)
     yield

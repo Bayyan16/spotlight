@@ -2,7 +2,7 @@ from .capability import CapabilityToken
 from .base import SandboxResult, SandboxRunner
 from .modal_sandbox import ModalSandbox
 from .subprocess_sandbox import SubprocessSandbox
-from .router import get_sandbox
+from .router import get_sandbox, validate_sandbox_configuration
 
 __all__ = [
     "CapabilityToken",
@@ -11,4 +11,5 @@ __all__ = [
     "ModalSandbox",
     "SubprocessSandbox",
     "get_sandbox",
+    "validate_sandbox_configuration",
 ]

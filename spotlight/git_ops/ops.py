@@ -11,7 +11,9 @@ tail so the caller can log-and-continue.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -46,20 +48,32 @@ class GitOps:
         checkout dir (i.e. the `src/` inside the workdir tempdir)."""
         workdir = Path(tempfile.mkdtemp(prefix="spotlight-clone-"))
         target = workdir / "src"
-        # For a pinned SHA we don't know how far back to go, so fetch full
-        # history. For plain HEAD we shallow-clone.
-        if sha:
-            self._run(
-                ["git", "clone", repo_url, str(target)],
-                cwd=None,
-            )
-            self._run(["git", "checkout", sha], cwd=target)
-        else:
-            self._run(
-                ["git", "clone", "--depth", "1", repo_url, str(target)],
-                cwd=None,
-            )
-        return target
+        try:
+            # Fetch only the requested commit instead of cloning full history.
+            # This makes paired-CVE scans reproducible without letting a caller
+            # force an unbounded history download merely by supplying a SHA.
+            if sha:
+                target.mkdir()
+                self._run(["git", "init", "--quiet"], cwd=target)
+                self._run(["git", "remote", "add", "origin", repo_url], cwd=target)
+                self._run(
+                    ["git", "fetch", "--depth", "1", "--no-tags", "origin", sha],
+                    cwd=target,
+                )
+                self._run(["git", "checkout", "--quiet", "--detach", "FETCH_HEAD"], cwd=target)
+            else:
+                self._run(
+                    [
+                        "git", "clone", "--quiet", "--depth", "1", "--no-tags",
+                        "--filter=blob:none", "--", repo_url, str(target),
+                    ],
+                    cwd=None,
+                )
+            self._enforce_checkout_limits(target)
+            return target
+        except Exception:
+            shutil.rmtree(workdir, ignore_errors=True)
+            raise
 
     # ------------------------------------------------------------------ probe
     def is_git_repo(self, path: Path) -> bool:
@@ -257,6 +271,27 @@ class GitOps:
                 f"git command failed ({args[:3]}...): {r.stderr.strip()[:400]}"
             )
         return r
+
+    def _enforce_checkout_limits(self, target: Path) -> None:
+        max_bytes = int(os.environ.get("SPOTLIGHT_MAX_REPO_BYTES", str(250 * 1024 * 1024)))
+        max_files = int(os.environ.get("SPOTLIGHT_MAX_REPO_FILES", "100000"))
+        total_bytes = 0
+        total_files = 0
+        for root, dirs, files in os.walk(target, followlinks=False):
+            # Never traverse symlinked directories from an untrusted checkout.
+            dirs[:] = [d for d in dirs if not (Path(root) / d).is_symlink()]
+            for name in files:
+                path = Path(root) / name
+                try:
+                    stat = path.lstat()
+                except OSError:
+                    continue
+                total_files += 1
+                total_bytes += stat.st_size
+                if total_files > max_files:
+                    raise RuntimeError(f"repository exceeds file limit ({max_files})")
+                if total_bytes > max_bytes:
+                    raise RuntimeError(f"repository exceeds size limit ({max_bytes} bytes)")
 
 
 def _append_trailers(message: str, trailers: dict[str, str] | None) -> str:

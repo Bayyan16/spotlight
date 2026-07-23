@@ -107,11 +107,13 @@ beforeEach(() => {
 describe("App", () => {
   it("renders the sweeps-history default view with CMUL8 brand + New-scan CTA", async () => {
     render(<App />);
-    expect(screen.getAllByText(/CMUL8/).length).toBeGreaterThan(0);
     // TopBar's single start-affordance is now "New scan" (the wizard opener);
     // the fixture/git/profile pickers moved into the wizard itself so there
     // is exactly one place to configure a sweep.
-    expect(screen.getAllByText(/New scan/i).length).toBeGreaterThan(0);
+    await waitFor(() => {
+      expect(screen.getAllByText(/New scan/i).length).toBeGreaterThan(0);
+    });
+    expect(screen.getAllByText(/CMUL8/).length).toBeGreaterThan(0);
   });
 
   it("shows targets in the Board or empty-state as appropriate", async () => {

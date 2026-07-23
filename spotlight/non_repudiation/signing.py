@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 import os
 import sys
@@ -110,6 +111,23 @@ def get_or_create_workspace_keys() -> tuple[SigningKey, VerifyKey]:
     return priv, priv.public_key()
 
 
+def validate_signing_configuration(*, require_persistent: bool = False) -> None:
+    """Validate key material without generating an ephemeral replacement."""
+    b64 = os.environ.get(_ENV_VAR, "").strip()
+    if require_persistent and not b64:
+        raise RuntimeError(
+            f"{_ENV_VAR} is required in production so audit signatures survive restarts"
+        )
+    if not b64:
+        return
+    try:
+        raw = base64.b64decode(b64, validate=True)
+    except Exception as exc:
+        raise RuntimeError(f"{_ENV_VAR} is not valid base64") from exc
+    if len(raw) != 32:
+        raise RuntimeError(f"{_ENV_VAR} must decode to exactly 32 bytes")
+
+
 class Signer:
     """Convenience wrapper around a workspace signing key.
 
@@ -155,6 +173,7 @@ class Signer:
             "action": action,
             "ts": ts,
             "payload_hash": ph,
+            "payload": payload,
             "signature": base64.b64encode(sig).decode("ascii"),
             "key_fingerprint": self._fp,
         }
@@ -195,6 +214,12 @@ def verify_action(entry: dict, public_key: VerifyKey | None = None) -> bool:
         sig_b64 = entry["signature"]
     except (KeyError, TypeError):
         return False
+    if "payload" in entry:
+        try:
+            if not hmac.compare_digest(_payload_hash(entry["payload"]), payload_hash):
+                return False
+        except Exception:
+            return False
     if public_key is None:
         _, public_key = get_or_create_workspace_keys()
     try:

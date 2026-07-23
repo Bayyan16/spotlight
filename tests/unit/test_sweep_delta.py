@@ -124,3 +124,31 @@ def test_delta_identical_sweeps(client):
         assert body["counts"] == {"new": 0, "resolved": 0, "still_open": 2}
     finally:
         del SWEEPS["sw_same"]
+
+
+def test_delta_ignores_ephemeral_checkout_prefix(client):
+    from spotlight.api.app import SWEEPS
+
+    previous = _StubSweep(
+        sweep_id="sw_old_checkout",
+        findings=[_f("SPOT-OLD", "eval", "/tmp/spotlight-clone-one/src/pkg/run.py", "run")],
+    )
+    current = _StubSweep(
+        sweep_id="sw_new_checkout",
+        findings=[_f("SPOT-NEW", "eval", "/private/tmp/spotlight-clone-two/src/pkg/run.py", "run")],
+    )
+    SWEEPS[previous.sweep_id] = previous
+    SWEEPS[current.sweep_id] = current
+    try:
+        response = client.get(
+            f"/sweeps/{current.sweep_id}/delta?since={previous.sweep_id}"
+        )
+        assert response.status_code == 200
+        assert response.json()["counts"] == {
+            "new": 0,
+            "resolved": 0,
+            "still_open": 1,
+        }
+    finally:
+        del SWEEPS[previous.sweep_id]
+        del SWEEPS[current.sweep_id]

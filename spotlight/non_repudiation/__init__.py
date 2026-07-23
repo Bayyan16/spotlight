@@ -23,6 +23,7 @@ from .signing import (
     VerifyKey,
     get_or_create_workspace_keys,
     sign_action,
+    validate_signing_configuration,
     verify_action,
 )
 
@@ -33,5 +34,6 @@ __all__ = [
     "VerifyKey",
     "get_or_create_workspace_keys",
     "sign_action",
+    "validate_signing_configuration",
     "verify_action",
 ]

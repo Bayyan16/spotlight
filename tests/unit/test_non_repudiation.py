@@ -81,6 +81,15 @@ def test_verify_fails_when_payload_hash_tampered():
     assert verify_action(tampered2, signer.public_key) is False
 
 
+def test_verify_fails_when_signed_payload_is_tampered():
+    signer = Signer(private_key=Ed25519PrivateKey.generate())
+    entry = signer.sign("agent", "reproducer", "confirm", {"result": "confirmed"})
+    tampered = dict(entry)
+    tampered["payload"] = {"result": "not-confirmed"}
+
+    assert verify_action(tampered, signer.public_key) is False
+
+
 def test_verify_fails_on_missing_fields():
     signer = _fresh_signer()
     entry = signer.sign("agent", "Verifier", "run_poc", {"passed": True})

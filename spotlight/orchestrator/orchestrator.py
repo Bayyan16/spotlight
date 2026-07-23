@@ -27,6 +27,7 @@ from spotlight.agents import Investigator, Recon, Reducer, Remediator, Reproduce
 from spotlight.agents.model import MockModelClient, ModelClient
 from spotlight.agents.moonshot import maybe_from_env
 from spotlight.consensus import ConsensusKernel, EvidenceItem
+from spotlight.finding_identity import canonical_repo_path, finding_identity, stable_finding_id
 from spotlight.profiles import Profile, get_profile
 
 from .chainer import Chainer
@@ -433,10 +434,6 @@ class SweepResult:
     usage_events: list[dict[str, Any]] = field(default_factory=list)
 
 
-def _finding_id(i: int) -> str:
-    return f"SPOT-{i:04d}"
-
-
 def _promote_tier_legacy(finding: dict[str, Any], repro: dict[str, Any] | None) -> tuple[str, float, str]:
     """DEPRECATED (Phase 2 Tranche B2) — kept as a rollback for the old
     orchestrator-inline promotion path.
@@ -735,9 +732,10 @@ class Orchestrator:
         out_dir: str | Path | None = None,
         *,
         interactive: bool = False,
+        sweep_id: str | None = None,
     ) -> SweepResult:
         repo_path = Path(repo_path).resolve()
-        sweep_id = f"sw_{uuid4().hex[:12]}"
+        sweep_id = sweep_id or f"sw_{uuid4().hex[:12]}"
         out_dir = Path(out_dir) if out_dir else Path.cwd() / "sweep-run" / sweep_id
         out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1042,13 +1040,13 @@ class Orchestrator:
         if self._signer is None:
             self._signer = _get_signer()
 
-        for i, cand in enumerate(reduced, start=1):
+        for cand in reduced:
             breach = self._budget_breach()
             if breach:
                 self._emit_budget_breach(*breach)
                 break
 
-            fid = _finding_id(i)
+            fid = stable_finding_id(cand, repo_root=repo_path)
 
             # Per-finding chain of custody. Append-only, signed at every
             # stage — a fabricated later entry can't retroactively rewrite
@@ -1157,6 +1155,8 @@ class Orchestrator:
                 state = "detected"
             elif verify.get("result") == "repro-now-blocked" and verify.get("backdoor_check") == "pass":
                 state = "confirmed-fixed"
+            elif tier == "verified" and repro.get("result") == "confirmed":
+                state = "confirmed-open"
             else:
                 state = "candidate"
 
@@ -1176,11 +1176,14 @@ class Orchestrator:
             # sending the analyst on a file-fetching detour.
             loc = dict(cand.get("location") or {})
             file_hint = loc.get("file", "")
-            repo_relative = _repo_relative_path(file_hint, repo_path)
+            repo_relative = canonical_repo_path(file_hint, repo_path)
             loc["repo_relative_path"] = repo_relative
             code_preview = _capture_code_preview(
                 file_hint, line=loc.get("line", 0), context=6
             )
+            # Persist and expose only the canonical path. The original
+            # checkout path is ephemeral and can contain host information.
+            loc["file"] = repo_relative
 
             # Plain-language "why this matters" — best-effort; a model
             # exception falls back to a stub with the class name so the UI
@@ -1200,6 +1203,7 @@ class Orchestrator:
 
             finding = {
                 "id": fid,
+                "identity": finding_identity({**cand, "location": loc}),
                 "surface": cand.get("surface", "code"),
                 "title": cand["title"],
                 "severity": cand["severity"],

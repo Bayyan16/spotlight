@@ -15,8 +15,10 @@ import { WardenView } from "./components/WardenView";
 import { Cmul8Mark } from "./components/Cmul8Mark";
 import { IconPlay } from "./components/Icons";
 import {
+  getAuthSession,
   getFindings,
   getWorkspacePref,
+  loginWithApiKey,
   listTargets,
   openSweepStream,
   startSweep,
@@ -30,6 +32,108 @@ import { invalidateWorkspaceFindings, useWorkspaceData } from "./hooks/useWorksp
 const NAV_ORDER: NavKey[] = ["home", "sweeps", "findings", "paths", "warden", "delta", "attestations"];
 
 export default function App() {
+  return (
+    <AuthBoundary>
+      <WorkspaceApp />
+    </AuthBoundary>
+  );
+}
+
+function AuthBoundary({ children }: { children: React.ReactNode }) {
+  const [state, setState] = useState<"checking" | "authenticated" | "required" | "error">(
+    "checking"
+  );
+  const [apiKey, setApiKey] = useState("");
+  const [message, setMessage] = useState("");
+
+  async function checkSession() {
+    setState("checking");
+    try {
+      const session = await getAuthSession();
+      setState(!session.required || session.authenticated ? "authenticated" : "required");
+    } catch {
+      setMessage("Spotlight could not reach the control plane.");
+      setState("error");
+    }
+  }
+
+  useEffect(() => {
+    void checkSession();
+    const requireAuth = () => setState("required");
+    window.addEventListener("spotlight:auth-required", requireAuth);
+    return () => window.removeEventListener("spotlight:auth-required", requireAuth);
+  }, []);
+
+  if (state === "authenticated") return <>{children}</>;
+
+  return (
+    <main className="h-screen w-screen grid place-items-center bg-paper-50 text-paper-900">
+      <section className="w-full max-w-sm rounded-xl border border-paper-300 bg-white p-7 shadow-card">
+        <div className="flex justify-center mb-5">
+          <Cmul8Mark size={52} />
+        </div>
+        <h1 className="text-xl font-semibold text-center">Spotlight workspace</h1>
+        {state === "checking" ? (
+          <p className="mt-3 text-sm text-center text-paper-500">Checking secure session…</p>
+        ) : state === "error" ? (
+          <div className="mt-4 text-center">
+            <p className="text-sm text-red-700">{message}</p>
+            <button
+              className="mt-4 px-3 py-2 rounded bg-accent text-white text-sm"
+              onClick={() => void checkSession()}
+            >
+              Retry
+            </button>
+          </div>
+        ) : (
+          <form
+            className="mt-5"
+            onSubmit={async (event) => {
+              event.preventDefault();
+              setMessage("");
+              try {
+                await loginWithApiKey(apiKey);
+                setApiKey("");
+                setState("authenticated");
+              } catch (error) {
+                setMessage(error instanceof Error ? error.message : "Authentication failed.");
+              }
+            }}
+          >
+            <label
+              className="block text-xs uppercase tracking-wider text-paper-600 mono"
+              htmlFor="workspace-key"
+            >
+              Workspace API key
+            </label>
+            <input
+              id="workspace-key"
+              type="password"
+              autoComplete="current-password"
+              autoFocus
+              required
+              value={apiKey}
+              onChange={(event) => setApiKey(event.target.value)}
+              className="mt-2 w-full rounded border border-paper-300 bg-paper-50 px-3 py-2 text-sm focus:border-accent outline-none"
+            />
+            {message && <p className="mt-2 text-sm text-red-700">{message}</p>}
+            <button
+              type="submit"
+              className="mt-4 w-full rounded bg-accent px-3 py-2 text-sm text-white hover:brightness-95"
+            >
+              Enter workspace
+            </button>
+            <p className="mt-3 text-xs leading-relaxed text-paper-500">
+              The key is exchanged for an HttpOnly same-site session and is not stored in browser JavaScript.
+            </p>
+          </form>
+        )}
+      </section>
+    </main>
+  );
+}
+
+function WorkspaceApp() {
   const [nav, setNav] = useState<NavKey>("home");
   const [targets, setTargets] = useState<Target[]>([]);
   // No hardcoded fixture default — target gets set from the wizard when

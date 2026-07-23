@@ -12,33 +12,58 @@ import hmac
 import json
 import os
 import shutil
+import tempfile
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
+from uuid import uuid4
 
 from fastapi import (
     FastAPI, Header, HTTPException, Query, Request, Response,
     WebSocket, WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import desc
 
 from spotlight.orchestrator import EventBus, Orchestrator, SweepResult
+from spotlight.api.admission import SWEEP_ADMISSION
+from spotlight.api.intake import resolve_repo_input, validate_commit_sha
+from spotlight.api.security import (
+    AUTH_COOKIE,
+    SECURITY_HEADERS,
+    auth_required,
+    authenticate_request,
+    authenticate_websocket,
+    cors_origins,
+    create_session_token,
+    clear_login_failures,
+    is_production,
+    is_public_path,
+    request_origin_is_allowed,
+    record_failed_login,
+    validate_security_configuration,
+    workspace_api_key,
+)
+from spotlight.finding_identity import comparison_key
+from spotlight.intel.kev import enrich_finding, get_kev_entry, kev_status
 from spotlight.profiles import get_profile, list_profiles
 from spotlight.redaction import Redactor
 from spotlight.taxonomy import ALL_CLASSES, counts_by_surface
 from spotlight.store import (
     EventRow,
     FindingRow,
+    SweepJobRow,
     SweepRow,
     get_session,
     init_schema,
     is_enabled as store_enabled,
 )
+from spotlight.store import leasing as job_leasing
 
 # Chokepoint (c): scrub any string in an outbound JSON response body.
 # Used on endpoints that return Finding / Attestation / event payloads.
@@ -60,7 +85,10 @@ def _find_finding_anywhere(finding_id: str) -> tuple[dict | None, str | None]:
     must call `_persist_finding_update` to persist to Postgres if the store
     is enabled.
     """
-    for s in SWEEPS.values():
+    # Stable IDs intentionally recur across sweeps. Bare finding-id routes
+    # resolve to the newest hot-cache occurrence; sweep-scoped routes remain
+    # available when a caller needs historical precision.
+    for s in reversed(list(SWEEPS.values())):
         for f in s.findings:
             if f["id"] == finding_id:
                 return f, s.sweep_id
@@ -114,35 +142,82 @@ def _find_finding_row(sess, finding_id: str):
 
 app = FastAPI(title="Spotlight API", version="0.1.0")
 
+_CORS_ORIGINS = cors_origins()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_CORS_ORIGINS,
+    allow_credentials=bool(_CORS_ORIGINS),
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Spotlight-API-Key"],
 )
+
+
+def _apply_security_headers(response: Response) -> Response:
+    for name, value in SECURITY_HEADERS.items():
+        response.headers.setdefault(name, value)
+    if is_production():
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
+    return response
+
+
+@app.middleware("http")
+async def _security_boundary(request: Request, call_next):
+    path = request.url.path
+    is_spa_navigation = (
+        request.method == "GET"
+        and "text/html" in request.headers.get("accept", "")
+        and not path.startswith(
+            (
+                "/api/",
+                "/sweeps",
+                "/findings",
+                "/prefs",
+                "/paths",
+                "/attestations",
+                "/profiles",
+                "/taxonomy",
+                "/targets",
+                "/prs",
+                "/verify-key",
+                "/intel",
+                "/openapi.json",
+                "/docs",
+                "/redoc",
+            )
+        )
+    )
+    if request.method != "OPTIONS" and not is_public_path(path) and not is_spa_navigation:
+        auth = authenticate_request(request)
+        if auth is None:
+            return _apply_security_headers(
+                JSONResponse(
+                    {"detail": "authentication required"},
+                    status_code=401,
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            )
+        if auth.mechanism == "cookie" and not request_origin_is_allowed(request):
+            return _apply_security_headers(
+                JSONResponse({"detail": "cross-origin mutation denied"}, status_code=403)
+            )
+        request.state.auth_subject = auth.subject
+        request.state.auth_mechanism = auth.mechanism
+    response = await call_next(request)
+    return _apply_security_headers(response)
 
 
 @app.on_event("startup")
 def _startup() -> None:
+    validate_security_configuration()
+    from spotlight.sandbox import validate_sandbox_configuration
+    from spotlight.non_repudiation import validate_signing_configuration
+
+    validate_sandbox_configuration()
+    validate_signing_configuration(require_persistent=is_production())
     init_schema()
-    _mark_orphaned_running_as_failed()
-
-
-def _mark_orphaned_running_as_failed() -> None:
-    """Any sweep still marked 'running' from a previous container instance is
-    an orphan — the process that owned it is dead. Mark them 'failed' on
-    startup so they don't pollute the history."""
-    if not store_enabled():
-        return
-    try:
-        with get_session() as sess:
-            rows = sess.query(SweepRow).filter(SweepRow.status == "running").all()
-            for r in rows:
-                r.status = "failed"
-                if r.finished_at is None:
-                    r.finished_at = datetime.now(timezone.utc)
-    except Exception as exc:
-        print(f"[startup] orphan cleanup failed: {exc!r}")
+    _recover_durable_jobs()
 
 
 # In-memory registries — used when DATABASE_URL isn't set (tests), *and* as a
@@ -150,7 +225,6 @@ def _mark_orphaned_running_as_failed() -> None:
 SWEEPS: dict[str, SweepResult] = {}
 BUSES: dict[str, EventBus] = {}
 _running_threads: dict[str, threading.Thread] = {}
-_git_workdirs: dict[str, Path] = {}
 
 
 class SweepRequest(BaseModel):
@@ -184,6 +258,102 @@ class ResumeRequest(BaseModel):
     reviewer: str = "analyst"
 
 
+class SessionRequest(BaseModel):
+    api_key: str
+
+
+def _recover_durable_jobs() -> None:
+    """Requeue unfinished jobs, sweep expired leases, and fail legacy rows.
+
+    Called on API startup and safe to call while other workers are running:
+    `spotlight.store.leasing.sweep_expired_leases` only affects rows whose
+    lease has already expired, so it never steals work from a live worker.
+
+    Ownership-transfer for jobs that this replica should re-launch (queued
+    or previously owned by this process) still happens inline for the
+    single-worker Railway deployment; a future multi-worker deployment
+    will call sweep_expired_leases on a schedule and rely on the leasing
+    module's atomic claim rather than blindly requeuing everything.
+    """
+    if not store_enabled():
+        return
+    recover: list[tuple[str, dict]] = []
+    try:
+        with get_session() as sess:
+            # First, atomically return any expired leases to the queued pool.
+            reclaimed = job_leasing.sweep_expired_leases(sess)
+            if reclaimed:
+                print(f"[startup] reclaimed {reclaimed} expired-lease sweep jobs")
+
+            jobs = (
+                sess.query(SweepJobRow)
+                .filter(SweepJobRow.status.in_(("queued", "running")))
+                .all()
+            )
+            for job in jobs:
+                # Return every unfinished job to the queued pool so this
+                # process can re-launch it. On a true multi-worker deploy,
+                # this blanket requeue is replaced by "sweep expired leases
+                # and leave live ones alone" — see P1.2 worker split.
+                job.status = "queued"
+                job.lease_owner = None
+                job.lease_until = None
+                recover.append((job.sweep_id, dict(job.request or {})))
+            job_ids = {sweep_id for sweep_id, _ in recover}
+            legacy = sess.query(SweepRow).filter(SweepRow.status == "running").all()
+            for row in legacy:
+                if row.id not in job_ids:
+                    row.status = "failed"
+                    row.finished_at = row.finished_at or datetime.now(timezone.utc)
+    except Exception as exc:
+        print(f"[startup] durable job recovery failed: {exc!r}")
+        return
+    for sweep_id, payload in recover:
+        try:
+            _launch_sweep_job(sweep_id, SweepRequest(**payload))
+        except Exception as exc:
+            _mark_sweep_failed(sweep_id, repr(exc))
+            _finish_job(sweep_id, error=repr(exc))
+
+
+@app.get("/auth/session")
+def auth_session_status(request: Request) -> dict:
+    auth = authenticate_request(request)
+    return {
+        "required": auth_required(),
+        "authenticated": auth is not None,
+        "subject": auth.subject if auth else None,
+    }
+
+
+@app.post("/auth/session")
+def create_auth_session(body: SessionRequest, response: Response, request: Request) -> dict:
+    expected = workspace_api_key()
+    principal = request.client.host if request.client else "unknown-client"
+    if auth_required():
+        if not expected or not hmac.compare_digest(body.api_key, expected):
+            record_failed_login(principal)
+            raise HTTPException(401, "invalid workspace API key")
+        clear_login_failures(principal)
+        ttl = int(os.environ.get("SPOTLIGHT_SESSION_TTL_SECONDS", str(8 * 60 * 60)))
+        response.set_cookie(
+            AUTH_COOKIE,
+            create_session_token(expected, ttl_seconds=ttl),
+            max_age=ttl,
+            httponly=True,
+            secure=is_production(),
+            samesite="strict",
+            path="/",
+        )
+    return {"authenticated": True, "required": auth_required()}
+
+
+@app.delete("/auth/session")
+def delete_auth_session(response: Response) -> dict:
+    response.delete_cookie(AUTH_COOKIE, path="/", samesite="strict")
+    return {"authenticated": False}
+
+
 @app.get("/profiles")
 def get_profiles() -> list[dict]:
     return [p.to_dict() for p in list_profiles()]
@@ -209,7 +379,25 @@ def get_taxonomy() -> dict:
 
 @app.get("/healthz")
 def healthz() -> dict:
-    return {"ok": True, "service": "spotlight-api", "storage": "postgres" if store_enabled() else "memory"}
+    return {
+        "ok": True,
+        "service": "spotlight-api",
+        "storage": "postgres" if store_enabled() else "memory",
+        "active_sweeps": SWEEP_ADMISSION.active_count(),
+    }
+
+
+@app.get("/intel/kev/status")
+def cisa_kev_status() -> dict:
+    return kev_status()
+
+
+@app.get("/intel/kev/{cve_id}")
+def cisa_kev_lookup(cve_id: str) -> dict:
+    entry = get_kev_entry(cve_id)
+    if entry is None:
+        raise HTTPException(404, "CVE is not present in the cached CISA KEV catalog")
+    return entry
 
 
 @app.get("/verify-key")
@@ -250,53 +438,219 @@ def list_targets() -> list[dict]:
         if not p.is_dir() or p.name.startswith(".") or p.name == "sweep-run":
             continue
         gt = p / "ground_truth.json"
-        out.append({"name": p.name, "path": str(p), "has_ground_truth": gt.exists()})
+        # Never expose server-local filesystem paths to the Console.
+        out.append({"name": p.name, "path": p.name, "has_ground_truth": gt.exists()})
     return out
 
 
-@app.post("/sweeps")
-def start_sweep(req: SweepRequest) -> dict:
-    repo_path, source = _resolve_repo(req.repo, commit_sha=req.commit_sha)
-    profile = get_profile(req.profile_id)
-    bus = EventBus()
-    orch = Orchestrator(bus=bus, profile=profile)
+def _validate_sweep_request(req: SweepRequest) -> tuple[str, str]:
+    targets_root = Path(__file__).resolve().parents[2] / "targets"
+    resolved, source = resolve_repo_input(req.repo, targets_root=targets_root)
+    validate_commit_sha(req.commit_sha)
+    if source == "git-url":
+        repo_name = Path(urlsplit(str(resolved)).path).stem
+    else:
+        repo_name = Path(resolved).name
+    get_profile(req.profile_id)
+    return source, repo_name
 
-    def _worker():
-        result = None
+
+def _persist_queued_job(sweep_id: str, req: SweepRequest, source: str, repo_name: str) -> None:
+    if not store_enabled():
+        return
+    payload = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+    with get_session() as sess:
+        sess.add(
+            SweepRow(
+                id=sweep_id,
+                repo_path=req.repo,
+                repo_name=repo_name,
+                source=source,
+                status="queued",
+                interactive=req.interactive,
+            )
+        )
+        sess.add(SweepJobRow(sweep_id=sweep_id, request=payload, status="queued"))
+
+
+def _claim_job(sweep_id: str) -> bool:
+    """Claim the job for this process. Multi-worker safe via
+    spotlight.store.leasing (FOR UPDATE SKIP LOCKED under Postgres).
+
+    Store-disabled shortcut returns True so unit tests and CLI runners
+    that do not persist can still execute the sweep inline.
+    """
+    if not store_enabled():
+        return True
+    with get_session() as sess:
+        return job_leasing.claim_specific(sess, sweep_id)
+
+
+def _finish_job(sweep_id: str, *, error: str | None = None) -> None:
+    """Release the job's lease. Guarded by owner so a late reclaim by
+    a different worker doesn't get overwritten."""
+    if not store_enabled():
+        return
+    with get_session() as sess:
+        job_leasing.release(sess, sweep_id, error=error)
+
+
+def _persist_live_event(event) -> None:
+    """Persist one event row idempotently.
+
+    P1.3 — the events table has a `UNIQUE(sweep_id, seq)` constraint, so
+    inserting the same (sweep_id, seq) twice is a no-op instead of a
+    duplicate row. This handles crash-retry within one worker attempt
+    without a TOCTOU race between SELECT and INSERT.
+
+    Under a reclaim by a different worker, the reclaiming worker seeds its
+    EventBus from `max(seq)` on the sweep so its own emissions skip the
+    already-committed prefix — the constraint is a safety net, not the
+    primary de-dup mechanism.
+    """
+    if not store_enabled():
+        return
+    try:
+        with get_session() as sess:
+            _upsert_event(sess, event)
+    except Exception as exc:
+        print(f"[persist_event] failed: {exc!r}")
+
+
+def _upsert_event(sess, event) -> None:
+    """Dialect-aware INSERT ... ON CONFLICT DO UPDATE against events."""
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+    values = {
+        "sweep_id": event.sweep_id,
+        "seq": event.seq,
+        "ts": event.ts,
+        "type": event.type,
+        "actor": event.actor,
+        "payload": event.payload,
+    }
+    dialect = sess.bind.dialect.name if sess.bind is not None else "sqlite"
+    if dialect == "postgresql":
+        stmt = pg_insert(EventRow).values(**values)
+        stmt = stmt.on_conflict_do_update(
+            constraint="uq_events_sweep_seq",
+            set_={
+                "ts": stmt.excluded.ts,
+                "type": stmt.excluded.type,
+                "actor": stmt.excluded.actor,
+                "payload": stmt.excluded.payload,
+            },
+        )
+        sess.execute(stmt)
+    elif dialect == "sqlite":
+        stmt = sqlite_insert(EventRow).values(**values)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["sweep_id", "seq"],
+            set_={
+                "ts": stmt.excluded.ts,
+                "type": stmt.excluded.type,
+                "actor": stmt.excluded.actor,
+                "payload": stmt.excluded.payload,
+            },
+        )
+        sess.execute(stmt)
+    else:
+        # Fallback for unusual dialects — SELECT-then-UPDATE-or-INSERT.
+        # Not atomic under concurrency, but the UNIQUE constraint will
+        # still catch a duplicate INSERT.
+        existing = (
+            sess.query(EventRow)
+            .filter(EventRow.sweep_id == event.sweep_id, EventRow.seq == event.seq)
+            .first()
+        )
+        if existing is not None:
+            existing.ts = event.ts
+            existing.type = event.type
+            existing.actor = event.actor
+            existing.payload = event.payload
+        else:
+            sess.add(EventRow(**values))
+
+
+def _launch_sweep_job(
+    sweep_id: str,
+    req: SweepRequest,
+    *,
+    admission_token: str | None = None,
+) -> bool:
+    if not _claim_job(sweep_id):
+        if admission_token:
+            SWEEP_ADMISSION.release(admission_token)
+        return False
+    bus = BUSES.get(sweep_id) or EventBus()
+    BUSES[sweep_id] = bus
+    bus.subscribe(_persist_live_event)
+
+    def _worker() -> None:
+        repo_path: Path | None = None
+        source = "unknown"
         try:
-            result = orch.run(repo_path, interactive=req.interactive)
-            SWEEPS[result.sweep_id] = result
+            repo_path, source = _resolve_repo(req.repo, commit_sha=req.commit_sha)
+            _persist_sweep_header(
+                sweep_id, repo_path, source, interactive=req.interactive
+            )
+            profile = get_profile(req.profile_id)
+            result = Orchestrator(bus=bus, profile=profile).run(
+                repo_path,
+                interactive=req.interactive,
+                sweep_id=sweep_id,
+            )
+            SWEEPS[sweep_id] = result
             _persist_sweep(result, source=source, repo_name=repo_path.name)
+            _finish_job(sweep_id)
         except Exception as exc:
-            # Mark the row as failed so it doesn't pollute history.
+            reason = repr(exc)[:1000]
             try:
-                if bus.all():
-                    fid = bus.all()[0].sweep_id
-                    _mark_sweep_failed(fid, repr(exc)[:200])
+                from spotlight.orchestrator.events import EventType
+
+                bus.emit(sweep_id, EventType.SWEEP_FAILED, "orchestrator", error=reason)
             except Exception:
                 pass
+            _mark_sweep_failed(sweep_id, reason)
+            _finish_job(sweep_id, error=reason)
         finally:
-            wd = _git_workdirs.pop(result.sweep_id if result else "", None)
-            if wd and wd.exists():
-                shutil.rmtree(wd, ignore_errors=True)
+            _running_threads.pop(sweep_id, None)
+            if repo_path is not None and source == "git-url":
+                _remove_ephemeral_checkout(repo_path)
+            if admission_token:
+                SWEEP_ADMISSION.release(admission_token)
 
-    thread = threading.Thread(target=_worker, daemon=True)
-    thread.start()
-    import time as _t
-    for _ in range(200):
-        if bus.all():
-            break
-        _t.sleep(0.005)
-    if not bus.all():
-        raise HTTPException(500, "sweep failed to start")
-    sweep_id = bus.all()[0].sweep_id
-    BUSES[sweep_id] = bus
+    thread = threading.Thread(target=_worker, daemon=True, name=f"sweep-{sweep_id}")
     _running_threads[sweep_id] = thread
-    if source == "git-url":
-        _git_workdirs[sweep_id] = repo_path
-    # Persist the sweep header immediately so it's visible in history.
-    _persist_sweep_header(sweep_id, repo_path, source, interactive=req.interactive)
-    return {"sweep_id": sweep_id, "status": "running", "repo_name": repo_path.name, "source": source}
+    thread.start()
+    return True
+
+
+@app.post("/sweeps")
+def start_sweep(req: SweepRequest, request: Request) -> dict:
+    principal = getattr(request.state, "auth_subject", None) or (
+        request.client.host if request.client else "unknown-client"
+    )
+    admission_token = SWEEP_ADMISSION.admit(principal)
+    try:
+        source, repo_name = _validate_sweep_request(req)
+        sweep_id = f"sw_{uuid4().hex[:12]}"
+        _persist_queued_job(sweep_id, req, source, repo_name)
+    except Exception:
+        SWEEP_ADMISSION.release(admission_token)
+        raise
+    if not _launch_sweep_job(sweep_id, req, admission_token=admission_token):
+        raise HTTPException(409, "sweep job was already claimed")
+    return {"sweep_id": sweep_id, "status": "queued", "repo_name": repo_name, "source": source}
+
+
+def _remove_ephemeral_checkout(repo_path: Path) -> None:
+    """Remove only a GitOps-created spotlight-clone-* directory."""
+    resolved = repo_path.resolve()
+    workdir = resolved.parent
+    if workdir.name.startswith("spotlight-clone-") and workdir.parent == Path(tempfile.gettempdir()).resolve():
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 def _resolve_repo(repo: str, commit_sha: str | None = None) -> tuple[Path, str]:
@@ -307,22 +661,17 @@ def _resolve_repo(repo: str, commit_sha: str | None = None) -> tuple[Path, str]:
 
     Returns (path, source_kind).
     """
-    if repo.startswith(("http://", "https://", "git@")) and repo.endswith(".git"):
+    targets_root = Path(__file__).resolve().parents[2] / "targets"
+    resolved, source = resolve_repo_input(repo, targets_root=targets_root)
+    pinned_sha = validate_commit_sha(commit_sha)
+    if source == "git-url":
         from spotlight.git_ops import GitOps
         try:
-            target = GitOps().clone_at(repo, sha=commit_sha)
+            target = GitOps().clone_at(str(resolved), sha=pinned_sha)
         except RuntimeError as exc:
             raise HTTPException(400, f"git clone failed: {str(exc)[:400]}")
         return target, "git-url"
-    # Bundled fixture — look up in targets/. commit_sha is ignored (fixtures
-    # don't have git ancestry).
-    p = Path(repo)
-    if not p.exists():
-        alt = Path(__file__).resolve().parents[2] / "targets" / repo
-        if alt.exists():
-            return alt, "fixture"
-        raise HTTPException(404, f"repo not found: {repo}")
-    return p, "fixture"
+    return Path(resolved), source
 
 
 def _mark_sweep_failed(sweep_id: str, reason: str) -> None:
@@ -360,6 +709,15 @@ def _persist_sweep_header(
         with get_session() as sess:
             existing = sess.get(SweepRow, sweep_id)
             if existing:
+                existing.repo_path = str(repo_path)
+                existing.repo_name = repo_path.name
+                existing.source = source
+                existing.status = "running"
+                existing.interactive = interactive
+                existing.org = ident.get("org") or None
+                existing.commit_sha = ident.get("commit_sha") or None
+                existing.commit_branch = ident.get("commit_branch") or None
+                existing.clone_url = ident.get("clone_url") or None
                 return
             sess.add(
                 SweepRow(
@@ -485,7 +843,18 @@ def get_sweep(sweep_id: str) -> dict:
         s = SWEEPS[sweep_id]
         return {"sweep_id": s.sweep_id, "repo": s.repo_path, "status": "finished", "findings_count": len(s.findings)}
     if sweep_id in BUSES:
-        return {"sweep_id": sweep_id, "status": "running"}
+        if store_enabled():
+            with get_session() as sess:
+                row = sess.get(SweepRow, sweep_id)
+                if row:
+                    return {
+                        "sweep_id": sweep_id,
+                        "repo": row.repo_path,
+                        "status": row.status,
+                        "findings_count": row.findings_count,
+                    }
+        failed = any(e.type == "sweep.failed" for e in BUSES[sweep_id].all())
+        return {"sweep_id": sweep_id, "status": "failed" if failed else "running"}
     if store_enabled():
         with get_session() as sess:
             row = sess.get(SweepRow, sweep_id)
@@ -501,6 +870,9 @@ def get_sweep(sweep_id: str) -> dict:
 
 @app.delete("/sweeps/{sweep_id}")
 def delete_sweep(sweep_id: str) -> dict:
+    thread = _running_threads.get(sweep_id)
+    if thread is not None and thread.is_alive():
+        raise HTTPException(409, "cannot delete an active sweep")
     SWEEPS.pop(sweep_id, None)
     BUSES.pop(sweep_id, None)
     _running_threads.pop(sweep_id, None)
@@ -633,7 +1005,7 @@ async def github_webhook(
     # Fire the sweep via the same POST /sweeps codepath. We construct the
     # SweepRequest in-process to reuse validation + the persistence flow.
     req = SweepRequest(repo=clone_url, profile_id=None, interactive=False)
-    started = start_sweep(req)
+    started = start_sweep(req, request)
 
     # Record the PR association BOTH in-memory (fast path for the current
     # process) AND in Postgres (survives API restarts, which is the whole
@@ -958,7 +1330,7 @@ def sweep_events(sweep_id: str, after: int = -1) -> list[dict]:
 @app.get("/sweeps/{sweep_id}/findings")
 def sweep_findings(sweep_id: str) -> list[dict]:
     if sweep_id in SWEEPS:
-        return _redact_response(SWEEPS[sweep_id].findings)
+        return _redact_response([enrich_finding(f) for f in SWEEPS[sweep_id].findings])
     if store_enabled():
         with get_session() as sess:
             rows = (
@@ -967,7 +1339,7 @@ def sweep_findings(sweep_id: str) -> list[dict]:
                 .order_by(FindingRow.id)
                 .all()
             )
-            return _redact_response([r.payload for r in rows])
+            return _redact_response([enrich_finding(r.payload) for r in rows])
     raise HTTPException(404, "sweep not found")
 
 
@@ -975,7 +1347,7 @@ def sweep_findings(sweep_id: str) -> list[dict]:
 def sweep_delta(sweep_id: str, since: str) -> dict:
     """C6 · Delta between two sweeps.
 
-    Returns three arrays keyed on the (class, file, function) fingerprint:
+    Returns three arrays keyed on Spotlight's versioned stable identity:
 
       * ``new``         — appears in `sweep_id` but not in `since`
       * ``resolved``    — appeared in `since` but not in `sweep_id`
@@ -993,16 +1365,8 @@ def sweep_delta(sweep_id: str, since: str) -> dict:
     if prev is None:
         raise HTTPException(404, f"sweep not found: {since}")
 
-    def fp(f: dict) -> tuple:
-        loc = f.get("location") or {}
-        return (
-            str(f.get("class") or ""),
-            str(loc.get("file") or ""),
-            str(loc.get("function") or ""),
-        )
-
-    prev_index = {fp(f): f for f in prev}
-    curr_index = {fp(f): f for f in curr}
+    prev_index = {comparison_key(f): f for f in prev}
+    curr_index = {comparison_key(f): f for f in curr}
 
     def _summarize(f: dict) -> dict:
         loc = f.get("location") or {}
@@ -1073,15 +1437,15 @@ def _load_findings_for_sweep(sweep_id: str) -> list[dict] | None:
 
 @app.get("/findings/{finding_id}")
 def get_finding(finding_id: str) -> dict:
-    for s in SWEEPS.values():
+    for s in reversed(list(SWEEPS.values())):
         for f in s.findings:
             if f["id"] == finding_id:
-                return _redact_response(f)
+                return _redact_response(enrich_finding(f))
     if store_enabled():
         with get_session() as sess:
             row = _find_finding_row(sess, finding_id)
             if row:
-                return _redact_response(row.payload)
+                return _redact_response(enrich_finding(row.payload))
     raise HTTPException(404, "finding not found")
 
 
@@ -1201,7 +1565,7 @@ def get_finding_presence(finding_id: str) -> dict:
     self_sweep_id: str | None = None
     self_repo_name: str | None = None
 
-    for s in SWEEPS.values():
+    for s in reversed(list(SWEEPS.values())):
         for f in s.findings:
             if f["id"] == finding_id:
                 self_row = f
@@ -1438,6 +1802,9 @@ def get_attestation(
 
 @app.websocket("/ws/sweeps/{sweep_id}")
 async def ws_sweep(ws: WebSocket, sweep_id: str) -> None:
+    if authenticate_websocket(ws) is None:
+        await ws.close(code=1008, reason="authentication required")
+        return
     await ws.accept()
     for _ in range(100):
         if sweep_id in BUSES:

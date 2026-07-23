@@ -6,12 +6,14 @@ from .models import (
     FindingsFilterPrefRow,
     PrWatchRow,
     SweepRow,
+    SweepJobRow,
     WorkspacePrefRow,
 )
 
 __all__ = [
     "Base",
     "SweepRow",
+    "SweepJobRow",
     "FindingRow",
     "EventRow",
     "PrWatchRow",

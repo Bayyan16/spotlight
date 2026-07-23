@@ -95,8 +95,32 @@ def test_delete_removes_sweep(api_client):
 
 def test_git_url_rejected_when_not_git(api_client):
     client, _ = api_client
-    # Non-git URL falls through to fixture lookup and 404s.
+    # Public intake rejects non-allow-listed/non-repository URLs before any
+    # network access or fixture fallback.
     r = client.post("/sweeps", json={"repo": "https://example.com/not-a-repo"})
-    # Currently we require .git suffix to trigger the git path — plain
-    # HTTPS URLs go through the fixture lookup and fail.
-    assert r.status_code == 404
+    assert r.status_code == 400
+
+
+def test_sweep_job_and_events_are_durable(api_client):
+    client, app_mod = api_client
+    from spotlight.store import EventRow, SweepJobRow
+
+    response = client.post("/sweeps", json={"repo": "vuln-bank-api"})
+    assert response.status_code == 200
+    sweep_id = response.json()["sweep_id"]
+
+    import time
+    for _ in range(100):
+        with app_mod.get_session() as session:
+            job = session.get(SweepJobRow, sweep_id)
+            event_count = (
+                session.query(EventRow).filter(EventRow.sweep_id == sweep_id).count()
+            )
+            status = job.status if job else None
+        if status == "finished":
+            break
+        time.sleep(0.05)
+
+    assert status == "finished"
+    assert job.attempts == 1
+    assert event_count > 0

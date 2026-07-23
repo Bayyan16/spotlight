@@ -365,7 +365,7 @@ class Reproducer:
                 "reason": "static-fact class (hardcoded credential) — no dynamic PoC to run",
                 "sandbox": {},
             }
-        if cls != "sqli":
+        if cls not in ("sqli", "cmdi", "ssrf"):
             return {
                 "result": "inconclusive",
                 "reason": f"no Phase-2 PoC template for class={cls}",
@@ -380,12 +380,25 @@ class Reproducer:
         # script doesn't have to know whether it's running under Modal (with a
         # /app/target mount) or subprocess (with cwd=repo_path).
         env = {"SPOTLIGHT_TARGET_ROOT": _target_root_for_engine(sandbox.engine, repo_path)}
+        env["SPOTLIGHT_TARGET_FUNCTION"] = str(
+            finding.get("location", {}).get("function", "")
+        )
 
         if file_hint.endswith((".js", ".ts", ".jsx", ".tsx")):
+            if cls != "sqli":
+                return {
+                    "result": "inconclusive",
+                    "reason": f"no JavaScript PoC template for class={cls}",
+                    "sandbox": {},
+                }
             script = _JS_POC_SCRIPT
             result = sandbox.run_node(script=script, token=token, env=env)
         else:
-            script = _PY_POC_SCRIPT
+            script = {
+                "sqli": _PY_POC_SCRIPT,
+                "cmdi": _PY_CMDI_POC_SCRIPT,
+                "ssrf": _PY_SSRF_POC_SCRIPT,
+            }[cls]
             result = sandbox.run_python(script=script, token=token, env=env)
 
         # Parse the last stdout line as JSON — the PoC template prints a
@@ -394,7 +407,11 @@ class Reproducer:
         outcome = "confirmed" if data.get("exploited") else "not-reproduced"
         return {
             "result": outcome,
-            "poc": {"path": "/accounts/' OR '1'='1", "method": "GET"},
+            "poc": {
+                "class": cls,
+                "method": "instrumented-sink",
+                "network_egress": False,
+            },
             "sandbox": {
                 "engine": result.engine,
                 "duration_s": round(result.duration_s, 3),
@@ -460,6 +477,95 @@ try:
     print(json.dumps({"status": resp.status_code, "rows": rows, "exploited": exploited}))
 except Exception as e:
     print(json.dumps({"error": repr(e), "traceback": traceback.format_exc()}))
+"""
+
+
+# CMDI proof replaces process-launch functions with recorders, then invokes
+# the exact finding function inside a Flask request context. No command is
+# executed; confirmation means the canary reached the command sink.
+_PY_CMDI_POC_SCRIPT = r"""
+import importlib.util, inspect, json, os, traceback
+
+root = os.environ.get("SPOTLIGHT_TARGET_ROOT", "/app/target")
+function_name = os.environ.get("SPOTLIGHT_TARGET_FUNCTION", "")
+canary = "spotlight-cmdi-canary;id"
+calls = []
+
+class Result:
+    returncode = 0
+    stdout = ""
+    stderr = ""
+
+def record(*args, **kwargs):
+    calls.append({"args": [str(a) for a in args], "kwargs": {k: str(v) for k, v in kwargs.items()}})
+    return Result()
+
+try:
+    spec = importlib.util.spec_from_file_location("target_app", root + "/app.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    if hasattr(mod, "subprocess"):
+        for name in ("run", "call", "Popen", "check_output", "check_call"):
+            if hasattr(mod.subprocess, name):
+                setattr(mod.subprocess, name, record)
+    if hasattr(mod, "os") and hasattr(mod.os, "system"):
+        mod.os.system = record
+    fn = getattr(mod, function_name)
+    context = mod.app.test_request_context(
+        "/?cmd=" + canary + "&command=" + canary + "&q=" + canary,
+        method="POST",
+        json={"cmd": canary, "command": canary},
+    )
+    with context:
+        params = inspect.signature(fn).parameters
+        fn(*([canary] if params else []))
+    exploited = any(canary in json.dumps(call) for call in calls)
+    print(json.dumps({"exploited": exploited, "sink_calls": calls}))
+except Exception as e:
+    print(json.dumps({"error": repr(e), "traceback": traceback.format_exc(), "sink_calls": calls}))
+"""
+
+
+# SSRF proof similarly replaces outbound clients with a recorder. The canary
+# is the cloud metadata address, but the script never opens a socket.
+_PY_SSRF_POC_SCRIPT = r"""
+import importlib.util, inspect, json, os, traceback
+
+root = os.environ.get("SPOTLIGHT_TARGET_ROOT", "/app/target")
+function_name = os.environ.get("SPOTLIGHT_TARGET_FUNCTION", "")
+canary = "http://169.254.169.254/latest/meta-data/spotlight-canary"
+calls = []
+
+class Response:
+    text = "blocked-test-response"
+    status_code = 200
+    content = b"blocked-test-response"
+    def json(self): return {"ok": True}
+
+def record(url, *args, **kwargs):
+    calls.append(str(url))
+    return Response()
+
+try:
+    spec = importlib.util.spec_from_file_location("target_app", root + "/app.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    if hasattr(mod, "requests"):
+        for name in ("get", "post", "put", "request"):
+            if hasattr(mod.requests, name): setattr(mod.requests, name, record)
+    fn = getattr(mod, function_name)
+    context = mod.app.test_request_context(
+        "/?url=" + canary,
+        method="POST",
+        json={"url": canary},
+    )
+    with context:
+        params = inspect.signature(fn).parameters
+        fn(*([canary] if params else []))
+    exploited = canary in calls
+    print(json.dumps({"exploited": exploited, "requested_urls": calls, "egress_performed": False}))
+except Exception as e:
+    print(json.dumps({"error": repr(e), "traceback": traceback.format_exc(), "requested_urls": calls}))
 """
 
 
@@ -696,5 +802,4 @@ class Verifier:
             "poc_result": data,
             "independent_verifier": True,
         }
-
 

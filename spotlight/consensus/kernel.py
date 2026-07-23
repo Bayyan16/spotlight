@@ -23,10 +23,10 @@ Tiers (§8.2):
   Needs review      corroborated but ambiguous / repro inconclusive
   Held              single-source, uncorroborated, unreproduced
 
-Legacy compat:
+Static facts:
   Static-fact classes (`secrets`, `hardcoded-secret`) with a static_fact
-  corroborator go straight to `verified` at confidence 0.95. This preserves
-  the pre-B2 behavior — the finding IS the static evidence, there's no PoC.
+  corroborator go straight to `verified` because the literal itself is the
+  proof. All other classes obey the reproduction/corroboration gates.
 """
 from __future__ import annotations
 
@@ -196,6 +196,18 @@ class ConsensusKernel:
                 candidate, independent, code_graph_slice, model
             )
 
+        # A model adjudicator is useful context, not a substitute for proof.
+        # Contradictory evidence can never be auto-promoted; an analyst must
+        # resolve the conflict and create a new signed decision.
+        if _disagreement(independent):
+            return TierDecision(
+                tier="needs-review",
+                confidence=0.5,
+                rationale="corroborators disagree; analyst resolution required",
+                independent_corroborators=n_independent,
+                adjudication=adjudication,
+            )
+
         # ── legacy behavior: static-fact classes short-circuit ────────
         # `secrets` / `hardcoded-secret` with a static_fact go straight to
         # verified at 0.95. Kept identical to _promote_tier_legacy.
@@ -233,14 +245,13 @@ class ConsensusKernel:
                 adjudication=adjudication,
             )
 
-        # Verified (legacy compat): reproduction alone at 0.85. PRD §8.2
-        # strictly requires an independent corroborator, but the old code
-        # already treated this as verified and the callers rely on it.
+        # Reproduction without an independent observation is strong evidence,
+        # but it does not meet the Verified definition.
         if has_reproduction:
             return TierDecision(
-                tier="verified",
-                confidence=0.85,
-                rationale="reproduction alone",
+                tier="needs-review",
+                confidence=0.65,
+                rationale="reproduction confirmed; independent corroborator missing",
                 independent_corroborators=n_independent,
                 adjudication=adjudication,
             )
@@ -259,25 +270,12 @@ class ConsensusKernel:
                 adjudication=adjudication,
             )
 
-        # Legacy: static-fact + repro=not-applicable → verified at 0.90.
-        # The old code path treated this as "definitely real, no PoC needed"
-        # and downstream callers expect it. Preserved.
-        if has_static_fact and repro_not_applicable:
-            return TierDecision(
-                tier="verified",
-                confidence=0.90,
-                rationale="static-analysis fact for static-only class",
-                independent_corroborators=n_independent,
-                adjudication=adjudication,
-            )
-
-        # High-confidence-ish single static fact — keep legacy label so
-        # existing consumers don't regress.
+        # A lone static result is not consensus, regardless of scanner quality.
         if has_static_fact:
             return TierDecision(
-                tier="high-confidence",
-                confidence=0.7,
-                rationale="static-analysis fact without reproduction",
+                tier="needs-review",
+                confidence=0.55,
+                rationale="single static-analysis fact; corroboration missing",
                 independent_corroborators=n_independent,
                 adjudication=adjudication,
             )

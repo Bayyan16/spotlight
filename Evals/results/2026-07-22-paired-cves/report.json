@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-07-22T18:34:31.589392+00:00",
+  "cases": [
+    {
+      "id": "CVE-2026-8838",
+      "passed": true,
+      "vulnerable_detected": true,
+      "fixed_clean": true,
+      "vulnerable_total_findings": 52,
+      "fixed_total_findings": 51,
+      "vulnerable_match_ids": [
+        "SPOT-F42F5E9CBCCB"
+      ],
+      "fixed_match_ids": []
+    }
+  ],
+  "metrics": {
+    "paired_cases": 1,
+    "paired_passed": 1,
+    "paired_recall": 1.0,
+    "fixed_false_positive_cases": 0
+  },
+  "gates": {
+    "min_paired_recall": 1.0,
+    "max_fixed_false_positive_cases": 0
+  },
+  "passed": true
+}

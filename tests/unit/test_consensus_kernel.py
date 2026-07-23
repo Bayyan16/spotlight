@@ -17,7 +17,7 @@ Coverage:
   * Static-fact class `secrets` with just a static_fact -> verified at 0.95
     (legacy compat preserved).
   * No evidence at all -> held.
-  * Reproduction alone -> verified at 0.85 (legacy compat preserved).
+  * Reproduction alone -> needs-review (no independent corroborator).
 """
 from __future__ import annotations
 
@@ -208,6 +208,7 @@ def test_disagreement_invokes_adjudicator_and_stores_decision():
     assert decision.adjudication["decision"] == "promote"
     assert decision.adjudication["side_taken"] == "static_analysis_fact"
     assert "sanitizer" in decision.adjudication["rationale"]
+    assert decision.tier == "needs-review"
 
 
 def test_secrets_class_with_static_fact_is_verified_at_0_95():
@@ -240,13 +241,8 @@ def test_no_evidence_yields_held():
     assert decision.confidence < 0.5
 
 
-def test_reproduction_alone_stays_verified_at_0_85():
-    """Legacy behavior preserved: reproduction alone -> verified at 0.85.
-
-    PRD §8.2 strictly wants ≥1 independent corroborator alongside repro, but
-    the pre-B2 orchestrator already used this shortcut and existing
-    downstream code expects it.
-    """
+def test_reproduction_alone_requires_review():
+    """A PoC needs an independent observation before it is Verified."""
     kernel = ConsensusKernel()
     evidence = [
         EvidenceItem(
@@ -257,9 +253,9 @@ def test_reproduction_alone_stays_verified_at_0_85():
     ]
     decision = kernel.promote(_sqli_candidate(), evidence)
 
-    assert decision.tier == "verified"
-    assert decision.confidence == pytest.approx(0.85)
-    assert "reproduction" in decision.rationale
+    assert decision.tier == "needs-review"
+    assert decision.confidence == pytest.approx(0.65)
+    assert "corroborator missing" in decision.rationale
 
 
 def test_evidence_item_independence_key_shape():

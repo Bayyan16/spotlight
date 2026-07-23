@@ -1,5 +1,35 @@
 const BASE = (import.meta as unknown as { env?: Record<string, string> }).env?.VITE_API ?? "";
 
+export async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const response = await fetch(input, { ...init, credentials: "same-origin" });
+  if (response.status === 401 && typeof window !== "undefined") {
+    window.dispatchEvent(new Event("spotlight:auth-required"));
+  }
+  return response;
+}
+
+export type AuthSession = {
+  required: boolean;
+  authenticated: boolean;
+  subject: string | null;
+};
+
+export async function getAuthSession(): Promise<AuthSession> {
+  const response = await fetch(`${BASE}/auth/session`, { credentials: "same-origin" });
+  if (!response.ok) throw new Error(`session check failed: HTTP ${response.status}`);
+  return response.json();
+}
+
+export async function loginWithApiKey(apiKey: string): Promise<void> {
+  const response = await fetch(`${BASE}/auth/session`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ api_key: apiKey }),
+  });
+  if (!response.ok) throw new Error("That workspace key was not accepted.");
+}
+
 export type Target = { name: string; path: string; has_ground_truth: boolean };
 
 export type SweepEvent = {
@@ -27,7 +57,7 @@ export type Profile = {
 };
 
 export async function listProfiles(): Promise<Profile[]> {
-  const r = await fetch(`${BASE}/profiles`);
+  const r = await apiFetch(`${BASE}/profiles`);
   return r.ok ? r.json() : [];
 }
 
@@ -130,7 +160,7 @@ export async function reviewFinding(
   findingId: string,
   body: { action: ReviewAction; reason: string; until?: string; reviewer?: string }
 ): Promise<Finding> {
-  const r = await fetch(`${BASE}/findings/${findingId}/review`, {
+  const r = await apiFetch(`${BASE}/findings/${findingId}/review`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -190,12 +220,12 @@ export function repoFileUrl(
 }
 
 export async function listTargets(): Promise<Target[]> {
-  const r = await fetch(`${BASE}/targets`);
+  const r = await apiFetch(`${BASE}/targets`);
   return r.json();
 }
 
 export async function listSweeps(): Promise<SweepSummary[]> {
-  const r = await fetch(`${BASE}/sweeps`);
+  const r = await apiFetch(`${BASE}/sweeps`);
   if (!r.ok) return [];
   return r.json();
 }
@@ -210,7 +240,7 @@ export type SweepEvents = Array<{
 }>;
 
 export async function getSweepEvents(id: string): Promise<SweepEvents> {
-  const r = await fetch(`${BASE}/sweeps/${id}/events`);
+  const r = await apiFetch(`${BASE}/sweeps/${id}/events`);
   if (!r.ok) return [];
   return r.json();
 }
@@ -234,7 +264,7 @@ export type Taxonomy = {
 };
 
 export async function getTaxonomy(): Promise<Taxonomy> {
-  const r = await fetch(`${BASE}/taxonomy`);
+  const r = await apiFetch(`${BASE}/taxonomy`);
   if (!r.ok) return { total: 0, counts_by_surface: {}, classes: [] };
   return r.json();
 }
@@ -244,7 +274,7 @@ export async function startSweep(
   profileId?: string,
   opts?: { interactive?: boolean }
 ): Promise<{ sweep_id: string }> {
-  const r = await fetch(`${BASE}/sweeps`, {
+  const r = await apiFetch(`${BASE}/sweeps`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -265,14 +295,14 @@ export async function startSweep(
 // cheap AbortController-safe fetch; every write is fire-and-forget so the
 // UI stays responsive. Callers that need reliability should await.
 export async function getWorkspacePref<T = unknown>(key: string): Promise<T | null> {
-  const r = await fetch(`${BASE}/prefs/workspace/${encodeURIComponent(key)}`);
+  const r = await apiFetch(`${BASE}/prefs/workspace/${encodeURIComponent(key)}`);
   if (!r.ok) return null;
   const body = (await r.json()) as { value: T | null };
   return body.value;
 }
 
 export async function setWorkspacePref<T = unknown>(key: string, value: T): Promise<void> {
-  await fetch(`${BASE}/prefs/workspace/${encodeURIComponent(key)}`, {
+  await apiFetch(`${BASE}/prefs/workspace/${encodeURIComponent(key)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ value }),
@@ -284,7 +314,7 @@ export async function getFindingsFilterPref<T = unknown>(
   name: string = "current"
 ): Promise<T | null> {
   const url = `${BASE}/prefs/findings-filter/${encodeURIComponent(profileId)}?name=${encodeURIComponent(name)}`;
-  const r = await fetch(url);
+  const r = await apiFetch(url);
   if (!r.ok) return null;
   const body = (await r.json()) as { value: T | null };
   return body.value;
@@ -296,7 +326,7 @@ export async function setFindingsFilterPref<T = unknown>(
   name: string = "current"
 ): Promise<void> {
   const url = `${BASE}/prefs/findings-filter/${encodeURIComponent(profileId)}?name=${encodeURIComponent(name)}`;
-  await fetch(url, {
+  await apiFetch(url, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ value }),
@@ -308,7 +338,7 @@ export async function resumeSweep(
   edits?: Record<string, unknown>,
   reviewer?: string
 ): Promise<{ sweep_id: string; resumed: boolean }> {
-  const r = await fetch(`${BASE}/sweeps/${encodeURIComponent(sweepId)}/resume`, {
+  const r = await apiFetch(`${BASE}/sweeps/${encodeURIComponent(sweepId)}/resume`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -324,29 +354,29 @@ export async function resumeSweep(
 }
 
 export async function deleteSweep(id: string): Promise<void> {
-  await fetch(`${BASE}/sweeps/${id}`, { method: "DELETE" });
+  await apiFetch(`${BASE}/sweeps/${id}`, { method: "DELETE" });
 }
 
 export async function cleanupSweeps(
   status: "failed" | "running" | "finished" = "failed"
 ): Promise<{ deleted: number }> {
-  const r = await fetch(`${BASE}/sweeps/cleanup?status=${status}`, { method: "POST" });
+  const r = await apiFetch(`${BASE}/sweeps/cleanup?status=${status}`, { method: "POST" });
   return r.ok ? r.json() : { deleted: 0 };
 }
 
 export async function getSweep(id: string): Promise<{ status: string; findings_count?: number }> {
-  const r = await fetch(`${BASE}/sweeps/${id}`);
+  const r = await apiFetch(`${BASE}/sweeps/${id}`);
   return r.json();
 }
 
 export async function getFindings(id: string): Promise<Finding[]> {
-  const r = await fetch(`${BASE}/sweeps/${id}/findings`);
+  const r = await apiFetch(`${BASE}/sweeps/${id}/findings`);
   if (!r.ok) return [];
   return r.json();
 }
 
 export async function getAttestation(id: string): Promise<unknown> {
-  const r = await fetch(`${BASE}/attestations/${id}`);
+  const r = await apiFetch(`${BASE}/attestations/${id}`);
   return r.json();
 }
 
@@ -379,7 +409,7 @@ export type PresenceResult = {
 };
 
 export async function getPresence(findingId: string): Promise<PresenceResult | null> {
-  const r = await fetch(`${BASE}/findings/${findingId}/presence`);
+  const r = await apiFetch(`${BASE}/findings/${findingId}/presence`);
   if (r.status === 404) return null;
   if (!r.ok) return null;
   return r.json();
@@ -413,7 +443,7 @@ export type ExploitPath = {
 };
 
 export async function getExploitPaths(sweepId: string): Promise<ExploitPath[]> {
-  const r = await fetch(`${BASE}/paths/${sweepId}`);
+  const r = await apiFetch(`${BASE}/paths/${sweepId}`);
   if (!r.ok) return [];
   return r.json();
 }
@@ -444,7 +474,7 @@ export async function getSweepDelta(
   sweepId: string,
   sinceSweepId: string
 ): Promise<SweepDelta | null> {
-  const r = await fetch(
+  const r = await apiFetch(
     `${BASE}/sweeps/${encodeURIComponent(sweepId)}/delta?since=${encodeURIComponent(sinceSweepId)}`
   );
   if (!r.ok) return null;

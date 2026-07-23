@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { attestationUrl } from "../lib/api";
+import { apiFetch, attestationUrl } from "../lib/api";
 import { useWorkspaceData } from "../hooks/useWorkspaceData";
 import { IconAttestation } from "./Icons";
 
@@ -31,7 +31,7 @@ export function AttestationsView({
   const [keyErr, setKeyErr] = useState(false);
 
   useEffect(() => {
-    fetch("/verify-key")
+    apiFetch("/verify-key")
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       .then((k) => setVerifyKey(k as VerifyKey))
       .catch(() => setKeyErr(true));
