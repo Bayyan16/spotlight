@@ -15,9 +15,15 @@ COPY pyproject.toml ./
 COPY spotlight ./spotlight
 COPY targets ./targets
 COPY data ./data
+COPY docs ./docs
 COPY alembic.ini ./alembic.ini
 COPY alembic ./alembic
 COPY --from=console /console/dist ./console/dist
+
+# Optional: injected by CI so /docs/architecture shows the build commit.
+# When absent, the doc page shows "dev".
+ARG GIT_SHA
+ENV GIT_SHA=${GIT_SHA:-dev}
 
 RUN pip install --no-cache-dir -e .
 

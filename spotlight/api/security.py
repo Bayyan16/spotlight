@@ -24,9 +24,14 @@ from fastapi import HTTPException, Request, WebSocket
 AUTH_COOKIE = "spotlight_session"
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _PUBLIC_EXACT = frozenset(
-    {"/", "/healthz", "/cmul8.svg", "/auth/session", "/webhooks/github"}
+    {
+        "/", "/healthz", "/cmul8.svg", "/auth/session", "/webhooks/github",
+        # Architecture doc is a design description, not workspace data.
+        # Exposed publicly so it can be linked from external contexts.
+        "/docs/architecture", "/docs/architecture.md", "/docs/architecture/meta",
+    }
 )
-_PUBLIC_PREFIXES = ("/assets/",)
+_PUBLIC_PREFIXES = ("/assets/", "/docs/architecture/diagrams/")
 _LOGIN_LOCK = threading.Lock()
 _LOGIN_FAILURES: dict[str, deque[float]] = defaultdict(deque)
 

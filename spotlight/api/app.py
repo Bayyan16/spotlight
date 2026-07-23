@@ -142,6 +142,9 @@ def _find_finding_row(sess, finding_id: str):
 
 app = FastAPI(title="Spotlight API", version="0.1.0")
 
+from spotlight.api.docs_router import router as _docs_router
+app.include_router(_docs_router)
+
 _CORS_ORIGINS = cors_origins()
 app.add_middleware(
     CORSMiddleware,

@@ -23,6 +23,7 @@ dependencies = [
     "reportlab>=4",
     "semgrep>=1.100",
     "alembic>=1.13",
+    "markdown>=3.7",
 ]
 
 [project.optional-dependencies]

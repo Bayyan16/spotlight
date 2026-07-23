@@ -83,6 +83,29 @@ export function NavRail({
         />
       </nav>
 
+      {/* External reference — architecture doc served live from the API. */}
+      <div className="px-4 pb-1 pt-4 text-2xs uppercase tracking-wider text-paper-500 mono">Reference</div>
+      <div className="px-2 pb-2 text-sm">
+        <a
+          href="/docs/architecture"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="group w-full flex items-center gap-2 px-2 py-1.5 rounded text-left text-paper-700 hover:bg-paper-200/70 hover:translate-x-0.5 transition-all outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+        >
+          <span className="text-paper-500 group-hover:text-paper-800 transition-colors">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M3 2h6l4 4v8a1 1 0 01-1 1H3a1 1 0 01-1-1V3a1 1 0 011-1z" stroke="currentColor" strokeWidth="1.2" fill="none"/>
+              <path d="M9 2v4h4" stroke="currentColor" strokeWidth="1.2" fill="none"/>
+              <path d="M5 9h6M5 11h6M5 7h3" stroke="currentColor" strokeWidth="1" strokeLinecap="round"/>
+            </svg>
+          </span>
+          <span className="truncate">Architecture</span>
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" xmlns="http://www.w3.org/2000/svg" className="ml-auto opacity-40 group-hover:opacity-80 transition-opacity">
+            <path d="M2.5 7.5L7.5 2.5M7.5 2.5H4M7.5 2.5V6" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+          </svg>
+        </a>
+      </div>
+
       {/* Bottom section: user + spotlight version */}
       <div className="mt-auto">
         <div className="px-3 pt-3 pb-2 border-t border-paper-300 flex items-center gap-2">
