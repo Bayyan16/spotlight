@@ -1,0 +1,4 @@
+{
+  "expected_findings": [],
+  "note": "Host allowlist + protocol pin prevent user-controlled outbound requests; no SSRF expected."
+}

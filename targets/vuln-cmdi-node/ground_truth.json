@@ -1,0 +1,9 @@
+{
+  "expected_findings": [
+    {
+      "class": "cmdi",
+      "cwe": "CWE-78",
+      "location": {"file": "app.js", "function": "run_command"}
+    }
+  ]
+}

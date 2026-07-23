@@ -385,14 +385,18 @@ class Reproducer:
         )
 
         if file_hint.endswith((".js", ".ts", ".jsx", ".tsx")):
-            if cls != "sqli":
+            js_script = {
+                "sqli": _JS_POC_SCRIPT,
+                "cmdi": _JS_CMDI_POC_SCRIPT,
+                "ssrf": _JS_SSRF_POC_SCRIPT,
+            }.get(cls)
+            if js_script is None:
                 return {
                     "result": "inconclusive",
                     "reason": f"no JavaScript PoC template for class={cls}",
                     "sandbox": {},
                 }
-            script = _JS_POC_SCRIPT
-            result = sandbox.run_node(script=script, token=token, env=env)
+            result = sandbox.run_node(script=js_script, token=token, env=env)
         else:
             script = {
                 "sqli": _PY_POC_SCRIPT,
@@ -596,6 +600,137 @@ _JS_POC_SCRIPT = r"""
     console.log(JSON.stringify({ status: resp.status, rows, exploited }));
   } catch (e) {
     console.log(JSON.stringify({ error: String(e) }));
+  }
+})();
+"""
+
+
+# JS CMDI proof: patch child_process methods with a recorder BEFORE loading
+# the target app so the app's own `require('child_process')` returns the
+# shared, patched module. No command is executed; confirmation means the
+# canary reached a child_process sink.
+_JS_CMDI_POC_SCRIPT = r"""
+(async () => {
+  const root = process.env.SPOTLIGHT_TARGET_ROOT || "/app/target";
+  const canary = "spotlight-cmdi-canary;id";
+  const calls = [];
+
+  const cp = require("child_process");
+  const record = (...args) => {
+    calls.push({ args: args.map(a => typeof a === "string" ? a : JSON.stringify(a)) });
+    const fake = { pid: 0, stdout: "", stderr: "", status: 0, on() { return this; }, kill() {} };
+    for (const a of args) {
+      if (typeof a === "function") { setImmediate(() => a(null, "", "")); break; }
+    }
+    return fake;
+  };
+  for (const name of ["exec", "execSync", "execFile", "execFileSync", "spawn", "spawnSync"]) {
+    if (cp[name]) cp[name] = record;
+  }
+
+  try {
+    const app = require(root + "/app.js");
+    const http = require("http");
+    const server = http.createServer(app);
+    await new Promise((r) => server.listen(0, r));
+    const port = server.address().port;
+    const path = "/run?cmd=" + encodeURIComponent(canary) + "&command=" + encodeURIComponent(canary);
+    const resp = await new Promise((resolve, reject) => {
+      const req = http.request({
+        host: "127.0.0.1", port, path, method: "POST",
+        headers: { "content-length": 0 },
+      }, (res) => {
+        let body = "";
+        res.on("data", (c) => (body += c));
+        res.on("end", () => resolve({ status: res.statusCode, body }));
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    await new Promise((r) => setImmediate(r));
+    server.close();
+    const exploited = calls.some(c => JSON.stringify(c).includes(canary));
+    console.log(JSON.stringify({ status: resp.status, exploited, sink_calls: calls, egress_performed: false }));
+  } catch (e) {
+    console.log(JSON.stringify({ error: String(e), stack: e.stack || "", sink_calls: calls }));
+  }
+})();
+"""
+
+
+# JS SSRF proof: patch http/https client methods with a recorder. The PoC
+# saves originals of http.request/http.get for its own outbound to the
+# local server so the test client is not affected by the patch. The canary
+# is a cloud-metadata URL but no socket is ever opened.
+_JS_SSRF_POC_SCRIPT = r"""
+(async () => {
+  const root = process.env.SPOTLIGHT_TARGET_ROOT || "/app/target";
+  const canary = "http://169.254.169.254/latest/meta-data/spotlight-canary";
+  const calls = [];
+
+  const http = require("http");
+  const https = require("https");
+  const origHttpRequest = http.request.bind(http);
+
+  const record = (opts, cbOrOptsB, maybeCb) => {
+    let url = "";
+    if (typeof opts === "string") url = opts;
+    else if (opts instanceof URL) url = opts.toString();
+    else if (opts && typeof opts === "object") {
+      const proto = opts.protocol || "http:";
+      const host = opts.hostname || opts.host || "";
+      const p = opts.path || "/";
+      url = proto + "//" + host + p;
+    }
+    calls.push(url);
+    const fakeRes = {
+      statusCode: 200, headers: {},
+      on(evt, fn) {
+        if (evt === "data") setImmediate(() => fn(Buffer.from("blocked")));
+        if (evt === "end") setImmediate(() => fn());
+        return this;
+      },
+      pipe() { return this; }, setEncoding() {},
+    };
+    const cb = typeof cbOrOptsB === "function" ? cbOrOptsB
+             : typeof maybeCb === "function"   ? maybeCb
+             : null;
+    if (cb) setImmediate(() => cb(fakeRes));
+    return {
+      on() { return this; }, end() { return this; },
+      write() { return this; }, abort() {}, setHeader() {},
+    };
+  };
+  http.get = record;
+  http.request = record;
+  https.get = record;
+  https.request = record;
+
+  try {
+    const app = require(root + "/app.js");
+    const server = http.createServer(app);
+    await new Promise((r) => server.listen(0, r));
+    const port = server.address().port;
+    const resp = await new Promise((resolve, reject) => {
+      const req = origHttpRequest({
+        host: "127.0.0.1", port,
+        path: "/fetch?url=" + encodeURIComponent(canary),
+        method: "POST",
+        headers: { "content-length": 0 },
+      }, (res) => {
+        let body = "";
+        res.on("data", (c) => (body += c));
+        res.on("end", () => resolve({ status: res.statusCode, body }));
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    await new Promise((r) => setImmediate(r));
+    server.close();
+    const exploited = calls.some(u => u.includes("169.254.169.254") || u.includes("spotlight-canary"));
+    console.log(JSON.stringify({ status: resp.status, exploited, requested_urls: calls, egress_performed: false }));
+  } catch (e) {
+    console.log(JSON.stringify({ error: String(e), stack: e.stack || "", requested_urls: calls }));
   }
 })();
 """

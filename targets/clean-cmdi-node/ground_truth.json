@@ -1,0 +1,4 @@
+{
+  "expected_findings": [],
+  "note": "Allowlist prevents shell interpolation of user input; no CMDI expected."
+}

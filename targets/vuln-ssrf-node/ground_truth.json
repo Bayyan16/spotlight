@@ -1,0 +1,9 @@
+{
+  "expected_findings": [
+    {
+      "class": "ssrf",
+      "cwe": "CWE-918",
+      "location": {"file": "app.js", "function": "fetch_url"}
+    }
+  ]
+}
