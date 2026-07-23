@@ -4,14 +4,19 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import re
+import threading
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import httpx
+
+
+log = logging.getLogger("spotlight.intel.kev")
 
 
 KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
@@ -193,6 +198,98 @@ def enrich_finding(finding: dict[str, Any]) -> dict[str, Any]:
     intel["correlation"] = "exact-cve-id"
     enriched["intelligence"] = intel
     return enriched
+
+
+# ---------- P4.1b: scheduled refresh ----------
+
+
+def refresh_enabled() -> bool:
+    """Env-gate the refresh loop. Default: enabled. Tests and single-shot
+    runs set SPOTLIGHT_KEV_REFRESH_ENABLED=false to opt out."""
+    return os.environ.get("SPOTLIGHT_KEV_REFRESH_ENABLED", "true").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+
+
+def refresh_interval_hours() -> float:
+    """Interval between refresh attempts. Default 24h; environment override
+    for staging/tests that want a shorter cadence."""
+    try:
+        return float(os.environ.get("SPOTLIGHT_KEV_REFRESH_INTERVAL_HOURS", "24"))
+    except (TypeError, ValueError):
+        return 24.0
+
+
+def boot_refresh_enabled() -> bool:
+    """Whether to sync at scheduler start. Default false — the on-disk
+    cache is a first-class artifact bundled with the deployment, and we
+    don't want every process boot to hit CISA. Enable in staging where
+    the cache may be stale relative to deploy cadence."""
+    return os.environ.get("SPOTLIGHT_KEV_BOOT_REFRESH", "false").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+
+
+def start_scheduler(
+    *,
+    interval_hours: float | None = None,
+    stop_event: threading.Event | None = None,
+    boot_refresh: bool | None = None,
+    on_error: Callable[[Exception], None] | None = None,
+    sync_fn: Callable[[], Any] | None = None,
+) -> tuple[threading.Thread, threading.Event]:
+    """Spawn a background thread that periodically calls sync_catalog().
+
+    Returns (thread, stop_event). Call `stop_event.set()` for a clean
+    shutdown; the thread checks it in its sleep window.
+
+    Failures are logged, not fatal — the last-known catalog persists on
+    disk and continues to serve exact-ID lookups. Enrichment remains a
+    prioritization metadata step; a stale KEV never blocks a sweep.
+
+    Injectable `sync_fn` exists for tests — production always uses
+    `sync_catalog`.
+    """
+    interval = interval_hours if interval_hours is not None else refresh_interval_hours()
+    if interval <= 0:
+        raise ValueError("refresh interval must be positive")
+    stop = stop_event or threading.Event()
+    sync = sync_fn or sync_catalog
+    do_boot = boot_refresh if boot_refresh is not None else boot_refresh_enabled()
+
+    def _loop() -> None:
+        # Optional boot-time sync.
+        if do_boot:
+            _run_once(sync, on_error)
+        interval_seconds = interval * 3600.0
+        while not stop.wait(timeout=interval_seconds):
+            _run_once(sync, on_error)
+
+    thread = threading.Thread(
+        target=_loop, daemon=True, name="kev-refresh",
+    )
+    thread.start()
+    log.info(
+        "KEV scheduler started: interval=%.2fh boot_refresh=%s",
+        interval, do_boot,
+    )
+    return thread, stop
+
+
+def _run_once(
+    sync_fn: Callable[[], Any],
+    on_error: Callable[[Exception], None] | None,
+) -> None:
+    try:
+        sync_fn()
+        log.info("KEV catalog refresh succeeded")
+    except Exception as exc:  # noqa: BLE001 — scheduler must never die
+        log.warning("KEV catalog refresh failed: %r", exc)
+        if on_error is not None:
+            try:
+                on_error(exc)
+            except Exception:  # noqa: BLE001
+                log.exception("on_error callback for KEV refresh raised")
 
 
 def main() -> int:

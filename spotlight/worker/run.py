@@ -36,6 +36,7 @@ from typing import Callable
 
 from sqlalchemy.exc import SQLAlchemyError
 
+from spotlight.intel import kev
 from spotlight.orchestrator import EventBus
 from spotlight.store import (
     SweepJobRow,
@@ -171,6 +172,12 @@ def main() -> int:
         _expiry_sweep_interval(),
     )
 
+    # Scheduled KEV refresh — the worker owns this so the API stays
+    # request-loop pure. Failures log-only; the bundled catalog persists.
+    kev_stop: threading.Event | None = None
+    if kev.refresh_enabled():
+        _, kev_stop = kev.start_scheduler()
+
     last_expiry_sweep = 0.0
     while not stop.is_set():
         now = time.monotonic()
@@ -209,6 +216,8 @@ def main() -> int:
         except Exception:  # noqa: BLE001
             log.exception("sweep %s crashed in worker loop", sweep_id)
 
+    if kev_stop is not None:
+        kev_stop.set()
     log.info("worker %s exiting cleanly", job_leasing.worker_id())
     return 0
 

@@ -241,3 +241,120 @@ def test_kev_status_provenance_null_when_never_synced(tmp_path, monkeypatch):
 def test_provenance_path_sits_next_to_cache_file(tmp_path, monkeypatch):
     monkeypatch.setenv("SPOTLIGHT_KEV_CACHE", str(tmp_path / "kev.json"))
     assert kev.provenance_path() == tmp_path / "kev.json.provenance.json"
+
+
+# ---------- P4.1b: scheduled refresh ----------
+
+
+def test_refresh_flag_defaults_to_enabled(monkeypatch):
+    monkeypatch.delenv("SPOTLIGHT_KEV_REFRESH_ENABLED", raising=False)
+    assert kev.refresh_enabled() is True
+
+
+def test_refresh_flag_respects_env_off(monkeypatch):
+    for val in ("false", "0", "no", "off", "FALSE"):
+        monkeypatch.setenv("SPOTLIGHT_KEV_REFRESH_ENABLED", val)
+        assert kev.refresh_enabled() is False, f"failed for {val!r}"
+
+
+def test_refresh_interval_defaults_to_24h(monkeypatch):
+    monkeypatch.delenv("SPOTLIGHT_KEV_REFRESH_INTERVAL_HOURS", raising=False)
+    assert kev.refresh_interval_hours() == 24.0
+
+
+def test_refresh_interval_respects_env(monkeypatch):
+    monkeypatch.setenv("SPOTLIGHT_KEV_REFRESH_INTERVAL_HOURS", "0.5")
+    assert kev.refresh_interval_hours() == 0.5
+
+
+def test_boot_refresh_defaults_to_false(monkeypatch):
+    monkeypatch.delenv("SPOTLIGHT_KEV_BOOT_REFRESH", raising=False)
+    assert kev.boot_refresh_enabled() is False
+
+
+def test_scheduler_boot_refresh_true_calls_sync_immediately():
+    import threading
+    calls = []
+    def fake_sync():
+        calls.append("sync")
+    stop = threading.Event()
+    thread, _ = kev.start_scheduler(
+        interval_hours=1.0,
+        stop_event=stop,
+        boot_refresh=True,
+        sync_fn=fake_sync,
+    )
+    # Give the thread a moment to run the boot sync, then stop.
+    import time
+    for _ in range(50):
+        if calls:
+            break
+        time.sleep(0.01)
+    stop.set()
+    thread.join(timeout=2)
+    assert calls == ["sync"], f"boot refresh should fire once at start; got {calls}"
+
+
+def test_scheduler_boot_refresh_false_waits_interval():
+    import threading, time
+    calls = []
+    def fake_sync():
+        calls.append("sync")
+    stop = threading.Event()
+    thread, _ = kev.start_scheduler(
+        interval_hours=1.0,  # 1 hour; won't fire during test
+        stop_event=stop,
+        boot_refresh=False,
+        sync_fn=fake_sync,
+    )
+    time.sleep(0.1)
+    stop.set()
+    thread.join(timeout=2)
+    assert calls == [], "no sync should fire before the interval elapses"
+
+
+def test_scheduler_survives_sync_failure():
+    """A failing sync must not kill the scheduler — production requirement."""
+    import threading
+    errors = []
+    def failing_sync():
+        raise RuntimeError("network unavailable")
+    stop = threading.Event()
+    thread, _ = kev.start_scheduler(
+        interval_hours=1.0,
+        stop_event=stop,
+        boot_refresh=True,
+        on_error=lambda e: errors.append(e),
+        sync_fn=failing_sync,
+    )
+    import time
+    for _ in range(50):
+        if errors:
+            break
+        time.sleep(0.01)
+    assert thread.is_alive(), "scheduler thread must survive a sync failure"
+    stop.set()
+    thread.join(timeout=2)
+    assert len(errors) == 1
+    assert "network unavailable" in str(errors[0])
+
+
+def test_scheduler_rejects_non_positive_interval():
+    with pytest.raises(ValueError, match="positive"):
+        kev.start_scheduler(interval_hours=0)
+    with pytest.raises(ValueError, match="positive"):
+        kev.start_scheduler(interval_hours=-1)
+
+
+def test_scheduler_stop_event_terminates_thread():
+    import threading, time
+    stop = threading.Event()
+    thread, returned_stop = kev.start_scheduler(
+        interval_hours=1.0,
+        stop_event=stop,
+        sync_fn=lambda: None,
+    )
+    assert returned_stop is stop
+    stop.set()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
