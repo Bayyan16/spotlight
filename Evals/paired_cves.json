@@ -1,8 +1,11 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "gates": {
     "min_paired_recall": 1.0,
-    "max_fixed_false_positive_cases": 0
+    "max_fixed_false_positive_cases": 0,
+    "max_negative_control_false_positive_cases": 0,
+    "per_class_min_recall": {},
+    "min_paired_cases": 1
   },
   "cases": [
     {
@@ -21,6 +24,67 @@
         "https://aws.amazon.com/security/security-bulletins/2026-033-aws/",
         "https://nvd.nist.gov/vuln/detail/CVE-2026-8838",
         "https://github.com/aws/amazon-redshift-python-driver/commit/69a69df"
+      ]
+    }
+  ],
+  "negative_controls": [
+    {
+      "id": "NEG-click-8.4.2",
+      "note": "pallets/click 8.4.2 tag: CLI-parsing library with no SQL, HTTP, or dynamic-exec surfaces; must not fire eval / SSRF / SQLi / CMDI advisory-family findings",
+      "repo": "https://github.com/pallets/click.git",
+      "commit": "c6b2d71ee056a96b8e6e06e6c29f67c1a766f8e4",
+      "expected_no_matches_for": [
+        {"cwe_family": "CWE-94"},
+        {"cwe_family": "CWE-89"},
+        {"cwe_family": "CWE-918"},
+        {"cwe_family": "CWE-78"}
+      ]
+    },
+    {
+      "id": "NEG-itsdangerous-2.2.0",
+      "note": "pallets/itsdangerous 2.2.0 tag: signed-token helper; no I/O, no SQL, no dynamic exec",
+      "repo": "https://github.com/pallets/itsdangerous.git",
+      "commit": "629bedb84ee95758388dda140cc740f12b52d4d5",
+      "expected_no_matches_for": [
+        {"cwe_family": "CWE-94"},
+        {"cwe_family": "CWE-89"},
+        {"cwe_family": "CWE-918"},
+        {"cwe_family": "CWE-78"}
+      ]
+    },
+    {
+      "id": "NEG-attrs-26.1.0",
+      "note": "python-attrs/attrs 26.1.0 tag: metaprogramming helpers; no network, no SQL, no untrusted-input sinks",
+      "repo": "https://github.com/python-attrs/attrs.git",
+      "commit": "61c0e096b70c00059cd7d29e8df07051d73f7b69",
+      "expected_no_matches_for": [
+        {"cwe_family": "CWE-94"},
+        {"cwe_family": "CWE-89"},
+        {"cwe_family": "CWE-918"},
+        {"cwe_family": "CWE-78"}
+      ]
+    },
+    {
+      "id": "NEG-black-26.5.1",
+      "note": "psf/black 26.5.1 tag: source formatter; parses & rewrites Python AST but does not eval/exec user input",
+      "repo": "https://github.com/psf/black.git",
+      "commit": "87928e6d6761a4a6d22250e1fee5601b3998086e",
+      "expected_no_matches_for": [
+        {"cwe_family": "CWE-89"},
+        {"cwe_family": "CWE-918"},
+        {"cwe_family": "CWE-78"}
+      ]
+    },
+    {
+      "id": "NEG-pluggy-1.6.0",
+      "note": "pytest-dev/pluggy 1.6.0 tag: plugin discovery framework; no I/O, no SQL",
+      "repo": "https://github.com/pytest-dev/pluggy.git",
+      "commit": "fd08ab5f811a9b2fa9124ae8cbbd393221151e2c",
+      "expected_no_matches_for": [
+        {"cwe_family": "CWE-94"},
+        {"cwe_family": "CWE-89"},
+        {"cwe_family": "CWE-918"},
+        {"cwe_family": "CWE-78"}
       ]
     }
   ]
