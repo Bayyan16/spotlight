@@ -627,6 +627,57 @@ def _launch_sweep_job(
     return True
 
 
+def _inline_execution_enabled() -> bool:
+    """Whether the web process should also run sweeps inline.
+
+    Default: true (dev / tests / single-container Railway deploys).
+    Set SPOTLIGHT_INLINE_EXECUTION=false when the web process is paired
+    with a dedicated `spotlight.worker` service — the web then only
+    enqueues, and the worker(s) claim + execute.
+    """
+    return os.environ.get("SPOTLIGHT_INLINE_EXECUTION", "true").lower() in {
+        "1", "true", "yes", "on"
+    }
+
+
+def _launch_sweep_job_inline(sweep_id: str, req: SweepRequest) -> None:
+    """Run a sweep synchronously in the current thread. Assumes the
+    caller already holds the lease (worker process path).
+
+    Distinct from `_launch_sweep_job` in that it does NOT claim the job
+    (the worker's `leasing.claim_next` already did) and does NOT spawn
+    a background thread (the worker's main loop is the thread).
+    """
+    bus = BUSES.get(sweep_id) or EventBus()
+    BUSES[sweep_id] = bus
+    bus.subscribe(_persist_live_event)
+
+    repo_path: Path | None = None
+    source = "unknown"
+    try:
+        repo_path, source = _resolve_repo(req.repo, commit_sha=req.commit_sha)
+        _persist_sweep_header(sweep_id, repo_path, source, interactive=req.interactive)
+        profile = get_profile(req.profile_id)
+        result = Orchestrator(bus=bus, profile=profile).run(
+            repo_path, interactive=req.interactive, sweep_id=sweep_id,
+        )
+        SWEEPS[sweep_id] = result
+        _persist_sweep(result, source=source, repo_name=repo_path.name)
+        _finish_job(sweep_id)
+    except Exception as exc:
+        reason = repr(exc)[:1000]
+        try:
+            from spotlight.orchestrator.events import EventType
+            bus.emit(sweep_id, EventType.SWEEP_FAILED, "orchestrator", error=reason)
+        except Exception:
+            pass
+        _mark_sweep_failed(sweep_id, reason)
+        _finish_job(sweep_id, error=reason)
+    finally:
+        if repo_path is not None and source == "git-url":
+            _remove_ephemeral_checkout(repo_path)
+
+
 @app.post("/sweeps")
 def start_sweep(req: SweepRequest, request: Request) -> dict:
     principal = getattr(request.state, "auth_subject", None) or (
@@ -640,6 +691,12 @@ def start_sweep(req: SweepRequest, request: Request) -> dict:
     except Exception:
         SWEEP_ADMISSION.release(admission_token)
         raise
+    if not _inline_execution_enabled():
+        # Enqueue-only mode: worker service picks up via leasing.claim_next.
+        # Release the admission token immediately — no in-process resource
+        # is being held.
+        SWEEP_ADMISSION.release(admission_token)
+        return {"sweep_id": sweep_id, "status": "queued", "repo_name": repo_name, "source": source}
     if not _launch_sweep_job(sweep_id, req, admission_token=admission_token):
         raise HTTPException(409, "sweep job was already claimed")
     return {"sweep_id": sweep_id, "status": "queued", "repo_name": repo_name, "source": source}

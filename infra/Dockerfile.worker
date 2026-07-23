@@ -1,0 +1,27 @@
+FROM python:3.12-slim
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc git && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml ./
+COPY spotlight ./spotlight
+COPY targets ./targets
+COPY data ./data
+COPY alembic.ini ./alembic.ini
+COPY alembic ./alembic
+
+RUN pip install --no-cache-dir -e .
+
+# Worker service — sibling to the API service. Runs the sweep-execution
+# loop that polls `sweep_jobs` via spotlight.store.leasing.claim_next.
+#
+# Deploy checklist:
+#   - The API service must run with SPOTLIGHT_INLINE_EXECUTION=false so
+#     it enqueues but does not execute; the worker service owns execution.
+#   - Both services share the same DATABASE_URL.
+#   - Both run `alembic upgrade head` on startup (idempotent under Postgres
+#     advisory lock).
+#   - The worker has the same production requirements as the API for
+#     signing key and Modal sandbox credentials.
+CMD ["sh", "-c", "alembic upgrade head && python -u -m spotlight.worker"]
