@@ -1,11 +1,12 @@
 {
   "schema_version": 2,
+  "_notes": "10 paired CVE cases across 6 CWE families (CWE-22, CWE-78, CWE-89, CWE-94, CWE-502, CWE-918) + 5 negative controls. Every commit SHA verified against the public GitHub repo. Each vulnerable_commit is either the fix commit's first parent (mainline pre-patch state) or, for merge-commit fixes, the mainline-side parent. See each case's `verification_notes` for the specific sink change. Cases marked 'validation-based' fix may or may not distinguish under a specific Spotlight rule — a curator should inspect actual findings before promoting them into the min_paired_recall gate.",
   "gates": {
     "min_paired_recall": 1.0,
     "max_fixed_false_positive_cases": 0,
     "max_negative_control_false_positive_cases": 0,
     "per_class_min_recall": {},
-    "min_paired_cases": 1
+    "min_paired_cases": 10
   },
   "cases": [
     {
@@ -24,7 +25,180 @@
         "https://aws.amazon.com/security/security-bulletins/2026-033-aws/",
         "https://nvd.nist.gov/vuln/detail/CVE-2026-8838",
         "https://github.com/aws/amazon-redshift-python-driver/commit/69a69df"
-      ]
+      ],
+      "verification_notes": "Real-world demo case. Fix replaces `eval(...)` in vector_in with a safe parser."
+    },
+    {
+      "id": "CVE-2023-39662",
+      "advisory": "GHSA-2xxc-73fv-36f7",
+      "repo": "https://github.com/run-llama/llama_index.git",
+      "vulnerable_commit": "2e8b0ef66f3b08088fd0d195c824b82460c46108",
+      "fixed_commit": "9f3e50a803f519af9ab62e63d413441c43001d81",
+      "expected": {
+        "class": "eval",
+        "cwe_family": "CWE-94",
+        "path": "llama_index/query_engine/pandas_query_engine.py",
+        "function": "default_output_processor"
+      },
+      "sources": [
+        "https://github.com/advisories/GHSA-2xxc-73fv-36f7",
+        "https://nvd.nist.gov/vuln/detail/CVE-2023-39662",
+        "https://github.com/run-llama/llama_index/commit/9f3e50a803f519af9ab62e63d413441c43001d81"
+      ],
+      "verification_notes": "HIGH CONFIDENCE clean sink-swap. Fix replaces `exec(ast.unparse(module), {}, local_vars)` + `eval(module_end_str, {'np': np}, local_vars)` in `default_output_processor` with `safe_exec` / `safe_eval` from a new `llama_index.exec_utils` module."
+    },
+    {
+      "id": "CVE-2025-61765",
+      "advisory": "GHSA-g8c6-8fjj-2r4m",
+      "repo": "https://github.com/miguelgrinberg/python-socketio.git",
+      "vulnerable_commit": "a59c6f520059eb095ab4472e5192ce3e486875d9",
+      "fixed_commit": "53f6be094257ed81476b0e212c8cddd6d06ca39a",
+      "expected": {
+        "class": "deserialization",
+        "cwe_family": "CWE-502",
+        "path": "src/socketio/pubsub_manager.py",
+        "function": "_thread"
+      },
+      "sources": [
+        "https://github.com/advisories/GHSA-g8c6-8fjj-2r4m",
+        "https://github.com/miguelgrinberg/python-socketio/security/advisories/GHSA-g8c6-8fjj-2r4m",
+        "https://github.com/miguelgrinberg/python-socketio/commit/53f6be094257ed81476b0e212c8cddd6d06ca39a"
+      ],
+      "verification_notes": "HIGH CONFIDENCE clean sink removal. Fix removes `pickle.loads(message)` fallback branch inside `PubSubManager._thread`; only `json.loads` remains. Same substitution applied in redis/kafka/kombu/zmq managers."
+    },
+    {
+      "id": "CVE-2024-11958",
+      "advisory": "GHSA-339r-cjv9-x78g",
+      "repo": "https://github.com/run-llama/llama_index.git",
+      "vulnerable_commit": "b71d4f76837728adf8d6e390192a3e0ce2497c21",
+      "fixed_commit": "35bd221e948e40458052d30c6ef2779bc965b6d0",
+      "expected": {
+        "class": "sqli",
+        "cwe_family": "CWE-89",
+        "path": "llama-index-integrations/retrievers/llama-index-retrievers-duckdb-retriever/llama_index/retrievers/duckdb_retriever/base.py",
+        "function": "_retrieve"
+      },
+      "sources": [
+        "https://github.com/advisories/GHSA-339r-cjv9-x78g",
+        "https://nvd.nist.gov/vuln/detail/CVE-2024-11958",
+        "https://github.com/run-llama/llama_index/commit/35bd221e948e40458052d30c6ef2779bc965b6d0"
+      ],
+      "verification_notes": "HIGH CONFIDENCE clean sink-swap. Fix replaces f-string SQL interpolation `fts_main_{...}.match_bm25({...}, '{query}')` with `?` placeholder + `duckdb.execute(sql, [query])` bind."
+    },
+    {
+      "id": "CVE-2026-30930",
+      "advisory": "GHSA-x46r-mf5g-xpr6",
+      "repo": "https://github.com/nicolargo/glances.git",
+      "vulnerable_commit": "faa29ac9143c89c7b8b157ee9d7064d1ed128196",
+      "fixed_commit": "39161f0d6fd723d83f534b48f24cdca722573336",
+      "expected": {
+        "class": "sqli",
+        "cwe_family": "CWE-89",
+        "path": "glances/exports/glances_timescaledb/__init__.py",
+        "function": "export"
+      },
+      "sources": [
+        "https://github.com/advisories/GHSA-x46r-mf5g-xpr6",
+        "https://nvd.nist.gov/vuln/detail/CVE-2026-30930",
+        "https://github.com/nicolargo/glances/commit/39161f0d6fd723d83f534b48f24cdca722573336"
+      ],
+      "verification_notes": "HIGH CONFIDENCE clean sink-swap. Fix replaces raw f-string queries with `%s` bind params + `psycopg.sql.Identifier` for CREATE TABLE."
+    },
+    {
+      "id": "CVE-2022-24439",
+      "advisory": "NVD-CVE-2022-24439",
+      "repo": "https://github.com/gitpython-developers/GitPython.git",
+      "vulnerable_commit": "17ff2630af26b37f82ac1158ee3495c4390da699",
+      "fixed_commit": "787359d80d80225095567340aa5e7ec01847fa9a",
+      "expected": {
+        "class": "cmdi",
+        "cwe_family": "CWE-78",
+        "path": "git/remote.py",
+        "function": "fetch"
+      },
+      "sources": [
+        "https://nvd.nist.gov/vuln/detail/CVE-2022-24439",
+        "https://github.com/gitpython-developers/GitPython/pull/1518",
+        "https://github.com/gitpython-developers/GitPython/issues/1515",
+        "https://github.com/gitpython-developers/GitPython/commit/787359d80d80225095567340aa5e7ec01847fa9a"
+      ],
+      "verification_notes": "MEDIUM CONFIDENCE (validation-based fix). Fix inserts `--` argument separator into `git.fetch/pull/push`, blocking `ext::sh -c` remotes. Subprocess call site unchanged — a generic cmdi rule may flag both commits. Vulnerable_commit is the merge fix's first parent (mainline pre-merge)."
+    },
+    {
+      "id": "CVE-2026-42563",
+      "advisory": "GHSA-9277-mp7x-85jf",
+      "repo": "https://github.com/jelmer/dulwich.git",
+      "vulnerable_commit": "957f0dec2f095d5c87ba12eec383f75ffd021350",
+      "fixed_commit": "e3331b3b3a122fc313460182f928f59723580b7b",
+      "expected": {
+        "class": "cmdi",
+        "cwe_family": "CWE-78",
+        "path": "dulwich/merge_drivers.py",
+        "function": "merge"
+      },
+      "sources": [
+        "https://github.com/advisories/GHSA-9277-mp7x-85jf",
+        "https://nvd.nist.gov/vuln/detail/CVE-2026-42563",
+        "https://github.com/jelmer/dulwich/commit/e3331b3b3a122fc313460182f928f59723580b7b"
+      ],
+      "verification_notes": "MEDIUM CONFIDENCE (validation-based fix). Fix wraps `%O/%A/%B/%L/%P` placeholders with `_shell_quote()` (shlex.quote / CMD escaping) before `subprocess.run(cmd, shell=True)`. Sink function unchanged."
+    },
+    {
+      "id": "CVE-2026-35587",
+      "advisory": "GHSA-g5pq-48mj-jvw8",
+      "repo": "https://github.com/nicolargo/glances.git",
+      "vulnerable_commit": "fdfb977b1d91b5e410bc06c4e19f8bedb0005ce9",
+      "fixed_commit": "d6808be66728956477cc4b544bab1acd71ac65fb",
+      "expected": {
+        "class": "ssrf",
+        "cwe_family": "CWE-918",
+        "path": "glances/plugins/ip/__init__.py",
+        "function": "_fetch_public_ip_info"
+      },
+      "sources": [
+        "https://github.com/advisories/GHSA-g5pq-48mj-jvw8",
+        "https://nvd.nist.gov/vuln/detail/CVE-2026-35587",
+        "https://github.com/nicolargo/glances/commit/d6808be66728956477cc4b544bab1acd71ac65fb"
+      ],
+      "verification_notes": "MEDIUM CONFIDENCE (validation-based fix). Fix validates the config-supplied public_api URL scheme is http/https and gates credential-carrying `urlopen_auth` behind explicit config. Outbound URL fetch itself remains."
+    },
+    {
+      "id": "CVE-2026-44439",
+      "advisory": "GHSA-687h-xw6f-q2qw",
+      "repo": "https://github.com/Lookyloo/PlaywrightCapture.git",
+      "vulnerable_commit": "796845642e15d4583721431a250249430fead2c5",
+      "fixed_commit": "49e289eba756e4fbac1322c33cfd111411562405",
+      "expected": {
+        "class": "ssrf",
+        "cwe_family": "CWE-918",
+        "path": "playwrightcapture/capture.py",
+        "function": "open_page"
+      },
+      "sources": [
+        "https://github.com/advisories/GHSA-687h-xw6f-q2qw",
+        "https://nvd.nist.gov/vuln/detail/CVE-2026-44439",
+        "https://github.com/Lookyloo/PlaywrightCapture/commit/49e289eba756e4fbac1322c33cfd111411562405"
+      ],
+      "verification_notes": "MEDIUM CONFIDENCE (validation-based fix). Fix adds `only_global_lookup` + two Playwright `route()` handlers rejecting `file://` and non-global IPs. `page.goto()` sink still present in fixed commit."
+    },
+    {
+      "id": "CVE-2026-59924",
+      "advisory": "GHSA-r4rv-85jg-w4mf",
+      "repo": "https://github.com/lepture/mistune.git",
+      "vulnerable_commit": "c7101fcbb6e8790e8e39157c5ca2238fc6dd6cbc",
+      "fixed_commit": "1bef343ade163fc3bb95572b15be720084cdb993",
+      "expected": {
+        "class": "path-traversal",
+        "cwe_family": "CWE-22",
+        "path": "src/mistune/directives/include.py",
+        "function": "parse"
+      },
+      "sources": [
+        "https://github.com/advisories/GHSA-r4rv-85jg-w4mf",
+        "https://nvd.nist.gov/vuln/detail/CVE-2026-59924",
+        "https://github.com/lepture/mistune/commit/1bef343ade163fc3bb95572b15be720084cdb993"
+      ],
+      "verification_notes": "MEDIUM CONFIDENCE (validation-based fix). Fix adds `os.path.commonpath` containment check + circular-include tracking around the pre-existing `open(dest, 'rb')` sink."
     }
   ],
   "negative_controls": [
