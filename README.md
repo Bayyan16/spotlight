@@ -2,6 +2,8 @@
 
 The AI security engineer. Phase 1 MVP — vertical slice.
 
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
 ## What Phase 1 ships
 
 - **sg-core**: Python code graph with source→sink data-flow reachability. Deterministic taint propagation, parameterized-query sanitizer detection.
@@ -52,3 +54,11 @@ cd console && npm install && npm run dev     # open http://localhost:5173
 ## Not in Phase 1
 
 Real model wiring (Codex exec / direct loop), Warden, Cognition Sweep, cross-surface Exploit Paths, Postgres persistence, full Consensus Kernel with adjudicator. See `docs/SPOTLIGHT_ARCHITECTURE.md`.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md). Found a security issue? Read [SECURITY.md](SECURITY.md).
+
+## License
+
+[Apache License 2.0](LICENSE) — Copyright 2026 CMUL8.
