@@ -110,10 +110,10 @@ def test_diagram_endpoint_rejects_path_traversal(client):
     the SPA index) or gets rejected by our safe-filename regex. Either
     way, the response body must NOT contain content from the target file
     outside the diagrams folder."""
-    resp = client.get("/docs/architecture/diagrams/..%2F..%2FCLAUDE_CODE_HANDOFF_2026-07-23.md")
-    # The handoff doc contains this literal string. It must not appear
+    resp = client.get("/docs/architecture/diagrams/..%2F..%2FSPOTLIGHT_ARCHITECTURE.md")
+    # The architecture doc contains this literal string. It must not appear
     # in the response — that would prove the traversal succeeded.
-    assert "Spotlight hardening handoff for Claude Code" not in resp.text
+    assert "Spotlight — the guided tour" not in resp.text
 
 
 def test_diagram_endpoint_rejects_smuggled_slash(client):

@@ -17,6 +17,13 @@ console/dist/
 console/.vite/
 .claude/scheduled_tasks.lock
 targets/**/*.patched.py
+# Internal planning & feedback docs — not for public distribution
+Spotlight_MVP_Phased_Plan.md
+Spotlight_MVP_PRD*.md
+docs/BANK_FEEDBACK_*.md
+docs/CLAUDE_CODE_HANDOFF_*.md
+# Competitor UI screenshots / design notes
+UI inspo/
 # Evals — detailed per-case sweep artifacts
 # Keep the compact per-run report.json but skip the multi-megabyte
 # raw sweep outputs. Re-run `python -m spotlight.eval.paired_cve`

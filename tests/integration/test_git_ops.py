@@ -112,8 +112,8 @@ def test_open_pr_parses_url_from_gh_stdout(local_repo_and_bare, monkeypatch):
     src, _, _ = local_repo_and_bare
     gh = GitOps()
 
-    canned_url = "https://github.com/AbhiK24/Spotlight/pull/42"
-    fake_stdout = f"Creating pull request for scratch into main in AbhiK24/Spotlight\n\n{canned_url}\n"
+    canned_url = "https://github.com/CMUL8/Spotlight/pull/42"
+    fake_stdout = f"Creating pull request for scratch into main in CMUL8/Spotlight\n\n{canned_url}\n"
 
     calls: list[list[str]] = []
 
@@ -236,7 +236,7 @@ def test_remediator_open_pr_end_to_end_with_mocked_gh(tmp_path, monkeypatch):
         "patched_path": str(src / "app.patched.py"),
     }
 
-    canned_url = "https://github.com/AbhiK24/Spotlight/pull/7"
+    canned_url = "https://github.com/CMUL8/Spotlight/pull/7"
 
     def fake_run(args, **kwargs):
         # Only intercept `gh`; let real git commands pass through.

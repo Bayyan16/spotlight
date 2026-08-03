@@ -51,4 +51,4 @@ cd console && npm install && npm run dev     # open http://localhost:5173
 
 ## Not in Phase 1
 
-Real model wiring (Codex exec / direct loop), Warden, Cognition Sweep, cross-surface Exploit Paths, Postgres persistence, full Consensus Kernel with adjudicator. See `Spotlight_MVP_Phased_Plan.md`.
+Real model wiring (Codex exec / direct loop), Warden, Cognition Sweep, cross-surface Exploit Paths, Postgres persistence, full Consensus Kernel with adjudicator. See `docs/SPOTLIGHT_ARCHITECTURE.md`.

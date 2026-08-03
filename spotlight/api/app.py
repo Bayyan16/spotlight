@@ -1613,7 +1613,7 @@ def get_finding_presence(finding_id: str) -> dict:
     """Cross-surface presence — is this same vulnerability *class* reachable
     in other repos in the workspace?
 
-    Bank feedback wedge (docs/BANK_FEEDBACK_2026-07-16.md): scanners answer
+    Bank security wedge: scanners answer
     the per-repo question ("what did you find here?") but nobody answers
     the fleet question ("is this same class reachable in my other repos?").
     This endpoint groups findings by class across sweeps and returns every

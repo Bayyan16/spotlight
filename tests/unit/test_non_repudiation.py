@@ -299,7 +299,7 @@ def test_open_pr_body_contains_non_repudiation_section(tmp_git_repo, monkeypatch
         return subprocess.CompletedProcess(
             args,
             0,
-            stdout="https://github.com/AbhiK24/Spotlight/pull/1\n",
+            stdout="https://github.com/CMUL8/Spotlight/pull/1\n",
             stderr="",
         )
 

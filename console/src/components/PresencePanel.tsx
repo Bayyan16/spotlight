@@ -5,8 +5,8 @@ import { IconCheck } from "./Icons";
 /**
  * PresencePanel — cross-surface presence (Tranche B7).
  *
- * Answers the wedge question from the bank-security review
- * (docs/BANK_FEEDBACK_2026-07-16.md): every scanner tells you what it
+ * Answers the wedge question from the bank-security review:
+ * every scanner tells you what it
  * found in *this* repo; nobody tells you whether the same class is also
  * reachable in your *other* repos. This panel fetches the /findings/
  * {id}/presence endpoint and renders one row per matching sweep.

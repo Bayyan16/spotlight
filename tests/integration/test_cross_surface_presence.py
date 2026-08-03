@@ -1,6 +1,6 @@
 """Cross-surface presence — Tranche B7.
 
-The bank-security wedge (docs/BANK_FEEDBACK_2026-07-16.md): every scanner
+The bank-security wedge: every scanner
 answers "what did you find in *this* repo?", but nobody answers "is this
 same vulnerability class also reachable in my OTHER repos?" The
 `GET /findings/{id}/presence` endpoint is Spotlight's answer.

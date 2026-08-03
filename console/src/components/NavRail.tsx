@@ -110,11 +110,11 @@ export function NavRail({
       <div className="mt-auto">
         <div className="px-3 pt-3 pb-2 border-t border-paper-300 flex items-center gap-2">
           <div className="h-7 w-7 rounded-full bg-gradient-to-br from-paper-400/50 to-paper-500/50 grid place-items-center text-paper-800 text-xs font-semibold ring-1 ring-paper-300">
-            AK
+            OP
           </div>
           <div className="text-xs min-w-0">
-            <div className="text-paper-800 truncate">Abhijeet Katte</div>
-            <div className="text-paper-500 text-2xs truncate">CMUL8 Workspace</div>
+            <div className="text-paper-800 truncate">Operator</div>
+            <div className="text-paper-500 text-2xs truncate">Local workspace</div>
           </div>
           <button
             className="ml-auto text-paper-500 hover:text-paper-800 hover:rotate-45 transition-transform duration-300"
