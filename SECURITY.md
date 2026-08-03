@@ -5,7 +5,7 @@ Spotlight is a security tool, so we take reports seriously.
 ## Reporting a vulnerability
 
 **Do not open a public issue** for security problems. Instead, email the
-maintainers directly at [INSERT SECURITY CONTACT EMAIL] with:
+maintainers directly at abhijeet@cmul8.work with:
 
 - A description of the issue and its impact
 - Steps to reproduce (minimal code or config)
