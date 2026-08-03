@@ -31,3 +31,5 @@ UI inspo/
 Evals/results/**/cve-*/
 # Local Alembic dev DB
 spotlight-local.db
+# Launch assets — agent-internal, not for public distribution
+launch/
