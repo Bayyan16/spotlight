@@ -1,14 +1,30 @@
-"""Moonshot (Kimi) model client — OpenAI-compatible chat.completions endpoint.
+"""OpenAI-compatible chat-completions model client — the real-inference adapter.
 
-Used as a T0 real-inference path so we can move off the MockModelClient. The
-Investigator, Recon, and Verifier roles get real reasoning; everything else
-(the code graph, the reproducer, the remediator, the verifier's PoC run) is
-already real code.
+This is the reference implementation of the ``ModelClient`` protocol (see
+``model.py``) that talks to an actual LLM. It speaks the OpenAI
+``/chat/completions`` wire format — Bearer auth, a ``messages`` array, and
+``response_format: {"type": "json_object"}`` — so the same client works against
+ANY OpenAI-compatible endpoint. Point it wherever you like:
 
-Contract: returns a schema-valid dict for the role. The prompt asks Moonshot
-to emit JSON; we then json.loads it. Fallback to a schema-safe stub if the
-model returns malformed JSON (Phase-1 policy per PRD §13.7 — "malformed output
-→ mark inconclusive and continue").
+    Provider          base_url                              example model
+    ----------------  ------------------------------------  ---------------------
+    OpenAI            https://api.openai.com/v1             gpt-4o-mini
+    Moonshot (Kimi)   https://api.moonshot.cn/v1            moonshot-v1-128k
+    Together          https://api.together.xyz/v1           <together model id>
+    Groq              https://api.groq.com/openai/v1        llama-3.3-70b-versatile
+    OpenRouter        https://openrouter.ai/api/v1          <openrouter model id>
+    Ollama (local)    http://localhost:11434/v1             llama3.1
+    vLLM (local)      http://localhost:8000/v1              <served model name>
+
+The class is named ``MoonshotModelClient`` for backwards compatibility; the
+provider-neutral alias ``OpenAICompatibleModelClient`` points at the same class
+and is the preferred name in new code.
+
+Contract: ``.complete(role, prompt, context)`` returns a schema-valid dict for
+the role. The prompt asks the model to emit JSON, which we ``json.loads``. If
+the model returns malformed JSON or the HTTP call fails, we fall back to the
+deterministic ``MockModelClient`` for that one call and tag it in the audit
+trail — so a single model hiccup never breaks a sweep.
 """
 from __future__ import annotations
 
@@ -200,12 +216,58 @@ def _parse_json_safely(content: str, role: str, ctx: dict[str, Any]) -> dict[str
         return fallback
 
 
+# Provider-neutral alias — same client, clearer name for new code / docs.
+OpenAICompatibleModelClient = MoonshotModelClient
+
+
 def maybe_from_env() -> "MoonshotModelClient | None":
+    """Build a real model client from the environment, or return None.
+
+    Priority (first match wins):
+
+      1. ``SPOTLIGHT_LLM_API_KEY`` — recommended, provider-neutral. Pair with
+         ``SPOTLIGHT_LLM_BASE_URL`` (default: OpenAI) and ``SPOTLIGHT_LLM_MODEL``.
+         Works for OpenAI, Together, Groq, Ollama, vLLM — any OpenAI-compatible
+         endpoint.
+      2. ``MOONSHOT_API_KEY`` — Moonshot (Kimi) preset.
+      3. ``OPENAI_API_KEY`` — convenience for the plain-OpenAI case.
+
+    Returns ``None`` when no key is set, so ``Orchestrator()`` transparently
+    falls back to the deterministic ``MockModelClient`` (offline, reproducible,
+    no cost). That fallback is also why the whole test suite runs without any
+    API access.
+
+    Example — point Spotlight at a local Ollama server, no cloud key needed::
+
+        export SPOTLIGHT_LLM_API_KEY=ollama          # any non-empty string
+        export SPOTLIGHT_LLM_BASE_URL=http://localhost:11434/v1
+        export SPOTLIGHT_LLM_MODEL=llama3.1
+    """
+    # 1) Provider-neutral config — the documented default path.
+    key = os.environ.get("SPOTLIGHT_LLM_API_KEY")
+    if key:
+        return OpenAICompatibleModelClient(
+            api_key=key,
+            base_url=os.environ.get("SPOTLIGHT_LLM_BASE_URL", "https://api.openai.com/v1"),
+            model=os.environ.get("SPOTLIGHT_LLM_MODEL", "gpt-4o-mini"),
+            family=os.environ.get("SPOTLIGHT_LLM_FAMILY", "openai-compatible"),
+        )
+    # 2) Moonshot (Kimi) preset.
     key = os.environ.get("MOONSHOT_API_KEY")
-    if not key:
-        return None
-    return MoonshotModelClient(
-        api_key=key,
-        base_url=os.environ.get("MOONSHOT_BASE_URL", "https://api.moonshot.cn/v1"),
-        model=os.environ.get("MOONSHOT_MODEL", "moonshot-v1-128k"),
-    )
+    if key:
+        return MoonshotModelClient(
+            api_key=key,
+            base_url=os.environ.get("MOONSHOT_BASE_URL", "https://api.moonshot.cn/v1"),
+            model=os.environ.get("MOONSHOT_MODEL", "moonshot-v1-128k"),
+        )
+    # 3) Plain-OpenAI convenience (also matches most self-hosted gateways
+    #    that reuse the OPENAI_* variable names).
+    key = os.environ.get("OPENAI_API_KEY")
+    if key:
+        return OpenAICompatibleModelClient(
+            api_key=key,
+            base_url=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+            model=os.environ.get("SPOTLIGHT_LLM_MODEL", "gpt-4o-mini"),
+            family="openai",
+        )
+    return None

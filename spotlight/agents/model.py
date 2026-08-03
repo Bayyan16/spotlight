@@ -1,9 +1,36 @@
-"""Model adapter — Phase 1 is deterministic/mocked.
+"""The ModelClient protocol — Spotlight's LLM plug-in point.
 
-The real thing (M0 spike) will drive `codex exec` or a direct-loop against a
-configured model endpoint. For the vertical slice we use a mock that
-generates schema-valid outputs keyed on the fixture, so tests are
-reproducible and CI doesn't need model access.
+Every agent role (recon, investigator, planner, verifier, ...) reaches an LLM
+only through the ``ModelClient.complete()`` method below. Nothing else in the
+codebase talks to a model directly, so this one interface is where you bring
+your own provider.
+
+Spotlight ships two implementations:
+
+  * ``MockModelClient`` — deterministic, offline, schema-valid outputs. This is
+    the default, and what the whole test suite runs against: no API keys, no
+    network, fully reproducible. Great for CI and for trying the pipeline
+    end-to-end before you wire up a real model.
+  * ``OpenAICompatibleModelClient`` (see ``agents/moonshot.py``) — the
+    real-inference adapter. It speaks the OpenAI ``/chat/completions`` wire
+    format, so it works against OpenAI, Moonshot/Kimi, Together, Groq, Ollama,
+    vLLM, or any OpenAI-compatible endpoint.
+
+To plug in a provider we don't cover, implement this Protocol:
+
+    class MyModelClient:
+        family = "my-provider"          # shows up in the signed audit trail
+        def complete(self, *, role, prompt, context):
+            # call your model however you like, then return the role's
+            # schema-valid dict (same shape MockModelClient returns below)
+            ...
+
+Then either pass it in explicitly::
+
+    Orchestrator(model=MyModelClient())
+
+or set an env var (``SPOTLIGHT_LLM_API_KEY`` & friends) and let
+``agents.moonshot.maybe_from_env()`` pick it up automatically.
 """
 from __future__ import annotations
 
@@ -12,6 +39,8 @@ from typing import Any, Protocol
 
 
 class ModelClient(Protocol):
+    """The one interface an LLM provider must satisfy. See module docstring."""
+
     def complete(self, *, role: str, prompt: str, context: dict[str, Any]) -> dict[str, Any]:
         """Return the role's schema-valid output as a dict."""
         ...
@@ -19,10 +48,12 @@ class ModelClient(Protocol):
 
 @dataclass
 class MockModelClient:
-    """Deterministic model client. Produces role-appropriate JSON outputs.
+    """Deterministic, offline model client — the default when no API key is set.
 
-    Keyed off the slice/candidate the orchestrator passed in — no LLM call.
-    Real ModelClient will honor deployment_tier (T0 hosted / T1 self-hosted).
+    Produces role-appropriate JSON keyed off the slice/candidate the
+    orchestrator passed in, with no LLM call. This is what keeps the test
+    suite hermetic. Swap in a real provider via ``Orchestrator(model=...)`` or
+    the ``SPOTLIGHT_LLM_*`` env vars (see ``agents/moonshot.py``).
     """
 
     family: str = "mock"

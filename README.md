@@ -1,63 +1,129 @@
-# Spotlight by CMUL8
+# Spotlight
 
-The AI security engineer. Phase 1 MVP — vertical slice.
+**An open-source, multi-agent AI security engineer.** Point it at a repository
+and it reviews the code, reproduces the vulnerabilities it finds by actually
+exploiting them in an isolated sandbox, writes and independently verifies a fix,
+and signs every step so the whole chain can be audited later. Not a scanner that
+emits alerts — an engineer that hands you evidence.
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-## What Phase 1 ships
+## What it does
 
-- **sg-core**: Python code graph with source→sink data-flow reachability. Deterministic taint propagation, parameterized-query sanitizer detection.
-- **Orchestrator**: Recon → Investigate → Reduce → Reproduce → Remediate → Verify → Attest, wired to an event bus.
-- **Agent roster**: Recon, Investigator, Reducer, Reproducer (in-process PoC), Remediator (parameterized-query fix), independent Verifier (fresh context + backdoor-check).
-- **Fixture targets**: `targets/vuln-bank-api` (planted SQLi) + `targets/clean-bank-api` (precision negative).
-- **FastAPI backend**: REST + WebSocket streaming of the sweep event log.
-- **Spotlight Console**: React SPA with phase tracker, live swarm grid, event log, findings inbox, "Why you can trust this" evidence detail.
-- **CLI**: `spotlight sweep <repo>` end-to-end.
+A sweep runs seven stages, gated by a consensus step so only findings that clear
+verification are promoted:
 
-Model calls go through a deterministic **MockModelClient** so Phase-1 tests are reproducible without model access. The M0 spike (real `codex exec` + direct-loop fallback) lands in Phase 2.
+1. **Recon** — reads every file, builds a code graph, and marks where untrusted
+   input enters and which dangerous sinks it can reach.
+2. **Investigate** — agents fan out in parallel, each tracing a different
+   source→sink path and checking whether a sanitizer breaks the chain.
+3. **Reduce** — deduplicates and classifies findings against a taxonomy of 67
+   vulnerability classes mapped to CWE and OWASP.
+4. **Reproduce** — spins up an isolated sandbox with **network egress denied**,
+   fires a real exploit payload, and confirms the app is actually exploitable.
+   A finding that can't be demonstrated is never marked confirmed.
+5. **Remediate** — writes the patch and can open a real GitHub pull request.
+6. **Verify** — an **independent** agent with a fresh context (it never sees the
+   remediator's reasoning) re-runs the exploit against the patched code and
+   backdoor-scans the diff (did the "fix" disable a test, drop an auth check,
+   log a secret?).
+7. **Attest** — emits a signed report (JSON · Markdown · PDF) recording every
+   action, offline-verifiable against the workspace's Ed25519 public key.
+
+Supporting machinery: the **Consensus Kernel** (prices agent agreement by
+independence, promotes disagreement to human review instead of averaging it
+away), the **Warden** control plane (prompt-injection detection, backdoor
+scanning, capability tokens, three-chokepoint secret redaction), a
+cross-surface **Chainer** for code + AI-layer exploit paths, and Ed25519
+**non-repudiation** on every action. Four scan profiles ship, from a two-class
+CI gate (Fast) to a full pre-release audit (Deep).
+
+## Plugging in your LLM
+
+Every agent role reaches a model **only** through the `ModelClient` protocol in
+[`spotlight/agents/model.py`](spotlight/agents/model.py) — that one interface is
+the plug-in point. Two implementations ship:
+
+- **`MockModelClient`** — deterministic, offline, schema-valid outputs. This is
+  the default when no API key is set, and what the entire test suite runs
+  against. You can try the whole pipeline end to end with no model at all.
+- **`OpenAICompatibleModelClient`** ([`agents/moonshot.py`](spotlight/agents/moonshot.py))
+  — the real-inference adapter. It speaks the OpenAI `/chat/completions` format,
+  so it works against **any OpenAI-compatible endpoint**: OpenAI, Moonshot/Kimi,
+  Together, Groq, OpenRouter, or a local Ollama / vLLM server.
+
+Select a provider with environment variables (copy [`.env.example`](.env.example)
+to `.env`):
+
+```bash
+# Recommended, provider-neutral:
+export SPOTLIGHT_LLM_API_KEY=sk-...
+export SPOTLIGHT_LLM_BASE_URL=https://api.openai.com/v1   # default
+export SPOTLIGHT_LLM_MODEL=gpt-4o-mini                    # default
+
+# …or a fully local model, no cloud key required:
+export SPOTLIGHT_LLM_API_KEY=ollama
+export SPOTLIGHT_LLM_BASE_URL=http://localhost:11434/v1
+export SPOTLIGHT_LLM_MODEL=llama3.1
+```
+
+`MOONSHOT_API_KEY` and `OPENAI_API_KEY` are also honored. To bring a provider
+that isn't OpenAI-compatible, implement the protocol and pass it in directly:
+
+```python
+class MyModelClient:
+    family = "my-provider"          # appears in the signed audit trail
+    def complete(self, *, role, prompt, context):
+        ...                         # call your model, return the role's dict
+
+from spotlight.orchestrator.orchestrator import Orchestrator
+Orchestrator(model=MyModelClient()).run("path/to/repo")
+```
 
 ## Quickstart
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]" flask
-pytest -v                                    # 18 tests: sg-core + vertical slice + API
+pip install -e ".[dev]"
+pytest -q                                    # runs fully offline (mock model)
 
-# CLI
-python -m spotlight.cli.main sweep targets/vuln-bank-api
+# Run a sweep on a bundled vulnerable fixture (no API key needed):
+spotlight sweep targets/vuln-bank-api
 
-# Console
+# API + Console (optional)
 uvicorn spotlight.api.app:app --port 8000 &
-cd console && npm install && npm run dev     # open http://localhost:5173
+cd console && npm install && npm run dev      # open http://localhost:5173
 ```
 
-## Test bar (from Phase 1 plan)
-
-| Test | Proves |
-|---|---|
-| `test_vuln_fixture_produces_reachable_sqli_slice` | Recall: sg-core sees the SQLi |
-| `test_clean_fixture_produces_zero_reachable_sqli_slices` | Precision: parameterized query is NOT flagged |
-| `test_vuln_bank_api_produces_verified_confirmed_fixed_finding` | End-to-end: verified tier, state=confirmed-fixed |
-| `test_clean_bank_api_produces_zero_promoted_findings` | Precision at the orchestrator level |
-| `test_reproduction_uses_classic_sqli_payload_and_exploits` | The `' OR '1'='1` PoC actually exploits the app |
-| `test_reproduction_on_clean_fixture_does_not_exploit` | Same PoC returns [] against the patched app |
-| `test_verifier_is_independent_of_remediator` | Fresh context + distinct system prompt |
-| `test_event_stream_records_full_sweep` | Every phase transition emits an event |
-| `test_websocket_streams_events` | UI can subscribe live |
+The test suite is deterministic and offline: **575 passing, 4 skipped**, run
+against the `MockModelClient` with no API keys or network. Bundled targets under
+[`targets/`](targets/) include matched vulnerable/clean pairs (SQLi, command
+injection, SSRF, and an agentic LangChain example) so you can watch Spotlight
+confirm a real bug and correctly stay silent on the patched twin.
 
 ## Deploy
 
-- **Railway**: `railway up` — `railway.json` points at `infra/Dockerfile.api`, healthcheck on `/healthz`.
-- **GitHub Actions**: runs backend + frontend on every push.
-- **Local**: `docker compose -f infra/docker-compose.yml up` — Postgres, Redis, MinIO, API, Console.
+- **Docker Compose (local):** `docker compose -f infra/docker-compose.yml up` —
+  Postgres, Redis, MinIO, API, and Console.
+- **Railway:** `railway up` — `railway.json` points at `infra/Dockerfile.api`,
+  healthcheck on `/healthz`.
+- **CI:** GitHub Actions runs the backend and frontend on every push.
 
-## Not in Phase 1
+For real sandboxed reproduction, set `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET`
+(see [`.env.example`](.env.example)); otherwise reproductions run in a local
+subprocess sandbox suitable for development.
 
-Real model wiring (Codex exec / direct loop), Warden, Cognition Sweep, cross-surface Exploit Paths, Postgres persistence, full Consensus Kernel with adjudicator. See `docs/SPOTLIGHT_ARCHITECTURE.md`.
+## Architecture
+
+See [`docs/SPOTLIGHT_ARCHITECTURE.md`](docs/SPOTLIGHT_ARCHITECTURE.md) for the
+full design — the agent roster, the Consensus Kernel, the Warden control plane,
+the non-repudiation chain of custody, and the data-flow engine (`sg-core`).
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md). Found a security issue? Read [SECURITY.md](SECURITY.md).
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) and the
+[Code of Conduct](CODE_OF_CONDUCT.md). Found a security issue? Please read
+[SECURITY.md](SECURITY.md) first.
 
 ## License
 
