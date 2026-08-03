@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spotlight Launch Preview</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 40px 20px;
+            background-color: #f9fafb;
+        }
+        h1 {
+            text-align: center;
+            color: #111827;
+            margin-bottom: 40px;
+        }
+        .screenshot-container {
+            background: #fff;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            padding: 32px;
+            margin-bottom: 48px;
+        }
+        .screenshot-header {
+            margin-bottom: 24px;
+            border-bottom: 1px solid #e5e7eb;
+            padding-bottom: 16px;
+        }
+        .screenshot-header h2 {
+            margin: 0 0 8px 0;
+            color: #111827;
+        }
+        .screenshot-header p {
+            margin: 0;
+            color: #6b7280;
+            font-size: 0.95em;
+        }
+        .img-wrapper {
+            background: #f3f4f6;
+            border-radius: 8px;
+            padding: 2px;
+            border: 1px dashed #e5e7eb;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 400px;
+        }
+        .img-wrapper img {
+            max-width: 100%;
+            height: auto;
+            border-radius: 6px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .placeholder {
+            color: #9ca3af;
+            text-align: center;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Spotlight Launch Assets</h1>
+
+    <div class="screenshot-container">
+        <div class="screenshot-header">
+            <h2>1. The Pure Result (Spotlight Console)</h2>
+            <p>Showcasing Spotlight's workspace: detailed findings, dynamic capability verification, and clear mitigation paths.</p>
+        </div>
+        <div class="img-wrapper">
+            <!-- AGENT INSTRUCTION: Drop the pure result screenshot here -->
+            <img src="./screenshots/result.png" alt="Spotlight finding result UI" onerror="this.outerHTML='<div class=\'placeholder\'><p>Missing: ./screenshots/result.png</p><p>Please save the pure result screenshot here.</p></div>'">
+        </div>
+    </div>
+
+    <div class="screenshot-container">
+        <div class="screenshot-header">
+            <h2>2. Head-to-Head Comparison (Not for direct use)</h2>
+            <p>Internal/Draft reference comparing Spotlight against competitors (e.g., Devin's Security Swarm). Highlights cryptographic non-repudiation, offline verification, and live reasoning.</p>
+        </div>
+        <div class="img-wrapper">
+            <!-- AGENT INSTRUCTION: Drop the comparison screenshot here -->
+            <img src="./screenshots/comparison.png" alt="Spotlight feature comparison table" onerror="this.outerHTML='<div class=\'placeholder\'><p>Missing: ./screenshots/comparison.png</p><p>Please save the comparison screenshot here.</p></div>'">
+        </div>
+    </div>
+
+</body>
+</html>
