@@ -212,7 +212,7 @@ class MoonshotModelClient:
             ) from exc
 
         if not isinstance(repaired, dict):
-            raise ValueError(
+            raise TypeError(
                 "Deterministic JSON repair did not return an object"
             )
 
@@ -399,16 +399,16 @@ def _parse_json_safely(
     try:
         out = json.loads(content)
         if not isinstance(out, dict):
-            raise ValueError("Model output must be a JSON object")
+            raise TypeError("Model output must be a JSON object")
         return out
-    except Exception as strict_error:
+    except (json.JSONDecodeError, TypeError):
         # Accept one valid leading JSON object followed only by provider/model
         # prose. This covers models that violate json_object mode by appending
         # an explanation after the object.
         try:
             out, end = json.JSONDecoder().raw_decode(content)
             if not isinstance(out, dict):
-                raise ValueError("Model output must be a JSON object")
+                raise TypeError("Model output must be a JSON object")
 
             trailing = content[end:].strip()
             if not trailing:

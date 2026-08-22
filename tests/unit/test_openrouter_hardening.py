@@ -119,13 +119,12 @@ def test_http_failure_fails_closed_instead_of_mock_fallback():
     with patch(
         "spotlight.agents.moonshot.httpx.post",
         side_effect=RuntimeError("provider unavailable"),
-    ):
-        with pytest.raises(RuntimeError, match="Live model call failed"):
-            client.complete(
-                role="recon",
-                prompt="test",
-                context=_recon_context(),
-            )
+    ), pytest.raises(RuntimeError, match="Live model call failed"):
+        client.complete(
+            role="recon",
+            prompt="test",
+            context=_recon_context(),
+        )
 
 
 def test_provider_neutral_env_controls(monkeypatch):
@@ -308,13 +307,12 @@ def test_deterministic_local_repair_failure_stays_fail_closed_without_second_htt
     ), patch(
         "spotlight.agents.moonshot.repair_json",
         return_value="{}",
-    ):
-        with pytest.raises(RuntimeError, match="Live model call failed"):
-            client.complete(
-                role="investigator",
-                prompt="test",
-                context={"slice": {}},
-            )
+    ), pytest.raises(RuntimeError, match="Live model call failed"):
+        client.complete(
+            role="investigator",
+            prompt="test",
+            context={"slice": {}},
+        )
 
     assert len(calls) == 1
 
@@ -397,13 +395,12 @@ def test_repair_disabled_keeps_fail_closed_behavior():
     with patch(
         "spotlight.agents.moonshot.httpx.post",
         side_effect=fake_post,
-    ):
-        with pytest.raises(RuntimeError, match="Live model call failed"):
-            client.complete(
-                role="investigator",
-                prompt="test",
-                context={"slice": {}},
-            )
+    ), pytest.raises(RuntimeError, match="Live model call failed"):
+        client.complete(
+            role="investigator",
+            prompt="test",
+            context={"slice": {}},
+        )
 
     assert len(calls) == 1
 

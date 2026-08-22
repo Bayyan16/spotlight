@@ -361,10 +361,9 @@ class Reducer:
         return (
             not function
             or function == "unknown"
-            or function.startswith(("unknown ", "<unknown"))
+            or function.startswith(("unknown ", "<unknown", "semgrep::"))
             or "(matched by rule " in function
             or "(rule:" in function
-            or function.startswith("semgrep::")
             or "detected by semgrep" in function
         )
 
