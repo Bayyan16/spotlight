@@ -982,7 +982,7 @@ class Orchestrator:
 
         # 3. Reduce
         self._advance_phase("reduce")
-        reduced = Reducer().run(candidates) if candidates else []
+        reduced = Reducer().run(candidates, repo_root=repo_path) if candidates else []
 
         # 3b. Chain — compose reduced candidates into cross-surface
         #     ExploitPath objects (Tranche B4). Runs regardless of whether

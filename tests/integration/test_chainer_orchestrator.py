@@ -93,3 +93,47 @@ def test_chainer_stable_across_reducer_output_shape():
     p = paths[0]
     assert p["cross_surface"] is False  # both agentic
     assert len(p["steps"]) == 2
+
+
+def test_orchestrator_wires_repo_root_into_reducer():
+    """The production Reduce phase must pass the target repository root.
+
+    Reducer needs repo_root to canonicalize absolute scanner paths against
+    repo-relative Investigator paths before duplicate matching.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    source = textwrap.dedent(inspect.getsource(Orchestrator.run))
+    tree = ast.parse(source)
+
+    wired = False
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+
+        # Match: Reducer().run(...)
+        if not (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "run"
+            and isinstance(node.func.value, ast.Call)
+            and isinstance(node.func.value.func, ast.Name)
+            and node.func.value.func.id == "Reducer"
+        ):
+            continue
+
+        for keyword in node.keywords:
+            if (
+                keyword.arg == "repo_root"
+                and isinstance(keyword.value, ast.Name)
+                and keyword.value.id == "repo_path"
+            ):
+                wired = True
+                break
+
+    assert wired, (
+        "Orchestrator Reduce phase must call "
+        "Reducer().run(..., repo_root=repo_path)"
+    )
