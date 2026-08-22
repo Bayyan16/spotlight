@@ -183,22 +183,24 @@ def _valid_investigator_json():
     })
 
 
-def test_bounded_repair_runs_exactly_once_and_marks_output():
+def test_deterministic_local_repair_uses_no_second_http_call_and_marks_output():
     import hashlib
 
     malformed = (
-        '{"verdict":"candidate","class":"sqli",'
-        '"recommendation":"unsafe "quoted" value"}'
+        '{"verdict":"candidate",'
+        '"class":"sqli",'
+        '"cwe":"CWE-89",'
+        '"title":"SQL injection",'
+        '"severity":"high",'
+        '"location":{"file":"app.py","line":27,"function":"query_user"},'
+        '"root_cause":"Untrusted input reaches a raw SQL execution sink.",'
+        '"recommendation":"Reject payload "' + "' OR 1=1--" + '" and use parameterized queries.",'
+        '"evidence_used":["source-to-sink path reaches execute()"]}'
     )
-    repaired = _valid_investigator_json()
 
-    responses = [malformed, repaired]
     calls = []
 
     class FakeResponse:
-        def __init__(self, content):
-            self._content = content
-
         def raise_for_status(self):
             return None
 
@@ -207,7 +209,7 @@ def test_bounded_repair_runs_exactly_once_and_marks_output():
                 "choices": [
                     {
                         "message": {
-                            "content": self._content,
+                            "content": malformed,
                         }
                     }
                 ]
@@ -219,7 +221,7 @@ def test_bounded_repair_runs_exactly_once_and_marks_output():
             "json": json,
             "timeout": timeout,
         })
-        return FakeResponse(responses.pop(0))
+        return FakeResponse()
 
     client = MoonshotModelClient(
         api_key="test-key",
@@ -241,33 +243,37 @@ def test_bounded_repair_runs_exactly_once_and_marks_output():
             context={"slice": {}},
         )
 
-    assert len(calls) == 2
+    # Critical invariant: original model request only.
+    # Deterministic repair MUST NOT make a second network/model request.
+    assert len(calls) == 1
+
     assert out["verdict"] == "candidate"
+    assert out["class"] == "sqli"
+    assert out["cwe"] == "CWE-89"
+
     assert out["_parse_repaired"] is True
+    assert out["_parse_repair_method"] == "deterministic-local"
     assert out["_parse_repair_attempts"] == 1
+
     assert out["_parse_repair_source_sha256"] == hashlib.sha256(
         malformed.encode("utf-8")
     ).hexdigest()
 
-    repair_request = calls[1]["json"]
-    repair_user = repair_request["messages"][1]["content"]
+    assert len(out["_parse_repair_output_sha256"]) == 64
 
-    assert "UNTRUSTED_MALFORMED_JSON_BEGIN" in repair_user
-    assert "UNTRUSTED_MALFORMED_JSON_END" in repair_user
-    assert malformed in repair_user
+    # Semantic content that triggered the malformed JSON must survive repair.
+    assert "OR 1=1--" in out["recommendation"]
 
 
-def test_failed_repair_stops_after_exactly_one_attempt():
-    responses = [
-        '{"broken": "json" "missing-comma"}',
-        '{"still": "broken" "again"}',
-    ]
+def test_deterministic_local_repair_failure_stays_fail_closed_without_second_http_call():
+    malformed = (
+        '{"verdict":"candidate","class":"sqli",'
+        '"recommendation":"broken "quoted" value"}'
+    )
+
     calls = []
 
     class FakeResponse:
-        def __init__(self, content):
-            self._content = content
-
         def raise_for_status(self):
             return None
 
@@ -276,7 +282,7 @@ def test_failed_repair_stops_after_exactly_one_attempt():
                 "choices": [
                     {
                         "message": {
-                            "content": self._content,
+                            "content": malformed,
                         }
                     }
                 ]
@@ -284,7 +290,7 @@ def test_failed_repair_stops_after_exactly_one_attempt():
 
     def fake_post(url, headers=None, json=None, timeout=None):
         calls.append(json)
-        return FakeResponse(responses.pop(0))
+        return FakeResponse()
 
     client = MoonshotModelClient(
         api_key="test-key",
@@ -294,9 +300,14 @@ def test_failed_repair_stops_after_exactly_one_attempt():
         repair_invalid_json=True,
     )
 
+    # Force the local repair stage to produce a structurally unacceptable
+    # object. This must fail closed and MUST NOT trigger another HTTP request.
     with patch(
         "spotlight.agents.moonshot.httpx.post",
         side_effect=fake_post,
+    ), patch(
+        "spotlight.agents.moonshot.repair_json",
+        return_value="{}",
     ):
         with pytest.raises(RuntimeError, match="Live model call failed"):
             client.complete(
@@ -305,8 +316,7 @@ def test_failed_repair_stops_after_exactly_one_attempt():
                 context={"slice": {}},
             )
 
-    # Original request + exactly ONE repair request.
-    assert len(calls) == 2
+    assert len(calls) == 1
 
 
 def test_valid_json_never_triggers_repair_request():
