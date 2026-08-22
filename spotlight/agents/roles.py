@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from spotlight.agentic import AgenticScanner
+from spotlight.finding_identity import canonical_repo_path
 from spotlight.sandbox import CapabilityToken, SandboxResult, SandboxRunner, get_sandbox
 from spotlight.sg_core import CodeGraph, DataFlowSlice
 from spotlight.warden import WardenService
@@ -360,8 +361,10 @@ class Reducer:
         return (
             not function
             or function == "unknown"
-            or function.startswith("unknown (")
-            or function.startswith("<unknown")
+            or function.startswith(("unknown ", "<unknown"))
+            or "(matched by rule " in function
+            or "(rule:" in function
+            or "detected by semgrep" in function
         )
 
     @staticmethod
@@ -378,6 +381,8 @@ class Reducer:
         cls,
         existing: dict[str, Any],
         incoming: dict[str, Any],
+        *,
+        repo_root: str | Path | None = None,
     ) -> bool:
         existing_loc = existing.get("location") or {}
         incoming_loc = incoming.get("location") or {}
@@ -385,7 +390,15 @@ class Reducer:
         if existing.get("class") != incoming.get("class"):
             return False
 
-        if existing_loc.get("file") != incoming_loc.get("file"):
+        existing_file = canonical_repo_path(
+            existing_loc.get("repo_relative_path") or existing_loc.get("file"),
+            repo_root,
+        )
+        incoming_file = canonical_repo_path(
+            incoming_loc.get("repo_relative_path") or incoming_loc.get("file"),
+            repo_root,
+        )
+        if existing_file != incoming_file:
             return False
 
         existing_function = cls._function(existing)
@@ -440,12 +453,21 @@ class Reducer:
         winner["evidence_used"] = merged_evidence
         return winner
 
-    def run(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def run(
+        self,
+        candidates: list[dict[str, Any]],
+        *,
+        repo_root: str | Path | None = None,
+    ) -> list[dict[str, Any]]:
         reduced: list[dict[str, Any]] = []
 
         for candidate in candidates:
             for index, existing in enumerate(reduced):
-                if self._should_merge(existing, candidate):
+                if self._should_merge(
+                    existing,
+                    candidate,
+                    repo_root=repo_root,
+                ):
                     reduced[index] = self._merge_pair(
                         existing,
                         candidate,

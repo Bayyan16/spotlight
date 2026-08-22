@@ -189,3 +189,67 @@ def test_reducer_prefers_concrete_function_when_placeholder_arrives_first():
         "agentic evidence",
         "investigator evidence",
     }
+
+
+def test_reducer_canonicalizes_absolute_and_relative_paths(tmp_path):
+    repo = tmp_path / "vuln-bank-api"
+    repo.mkdir()
+
+    absolute_file = str(repo / "app.py")
+
+    candidates = [
+        _candidate(
+            function="get_account",
+            line=27,
+            file=absolute_file,
+            evidence="investigator",
+        ),
+        _candidate(
+            function=(
+                "unknown Flask route handler "
+                "(matched by rule python.flask.security.injection.tainted-sql-string)"
+            ),
+            line=26,
+            file="app.py",
+            evidence="agentic",
+        ),
+    ]
+
+    reduced = Reducer().run(
+        candidates,
+        repo_root=repo,
+    )
+
+    assert len(reduced) == 1
+    assert reduced[0]["location"]["function"] == "get_account"
+    assert set(reduced[0]["evidence_used"]) == {
+        "investigator",
+        "agentic",
+    }
+
+
+def test_reducer_treats_rule_generated_function_descriptor_as_placeholder():
+    candidates = [
+        _candidate(
+            function="get_account",
+            line=27,
+            evidence="investigator",
+        ),
+        _candidate(
+            function=(
+                "route handler invoking raw sqlalchemy execute "
+                "(rule: python.sqlalchemy.security.sqlalchemy-execute-raw-query)"
+            ),
+            line=27,
+            evidence="semgrep",
+        ),
+    ]
+
+    reduced = Reducer().run(candidates)
+
+    assert len(reduced) == 1
+    assert reduced[0]["location"]["function"] == "get_account"
+    assert set(reduced[0]["evidence_used"]) == {
+        "investigator",
+        "semgrep",
+    }
