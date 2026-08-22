@@ -253,3 +253,30 @@ def test_reducer_treats_rule_generated_function_descriptor_as_placeholder():
         "investigator",
         "semgrep",
     }
+
+
+def test_reducer_treats_semgrep_rule_id_as_placeholder():
+    candidates = [
+        _candidate(
+            function="get_account",
+            line=27,
+            evidence="investigator",
+        ),
+        _candidate(
+            function="semgrep::sqlalchemy-execute-raw-query",
+            line=27,
+            evidence="semgrep",
+        ),
+    ]
+
+    reduced = Reducer().run(candidates)
+
+    assert len(reduced) == 1
+
+    finding = reduced[0]
+
+    assert finding["location"]["function"] == "get_account"
+    assert set(finding["evidence_used"]) == {
+        "investigator",
+        "semgrep",
+    }
