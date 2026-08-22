@@ -338,13 +338,123 @@ class AgenticAnalyst:
 
 
 class Reducer:
+    """Conservatively collapse duplicate findings from multiple detectors.
+
+    Exact (file, function, class) matches retain the historical dedup
+    behaviour. Nearby findings may also merge when at least one side has an
+    explicitly non-authoritative/unknown function symbol.
+
+    Two distinct concrete functions are never merged solely because their
+    lines are close.
+    """
+
+    @staticmethod
+    def _function(candidate: dict[str, Any]) -> str:
+        return str(
+            (candidate.get("location") or {}).get("function") or ""
+        ).strip()
+
+    @classmethod
+    def _is_placeholder_function(cls, candidate: dict[str, Any]) -> bool:
+        function = cls._function(candidate).lower()
+        return (
+            not function
+            or function == "unknown"
+            or function.startswith("unknown (")
+            or function.startswith("<unknown")
+        )
+
+    @staticmethod
+    def _line(candidate: dict[str, Any]) -> int | None:
+        value = (candidate.get("location") or {}).get("line")
+        try:
+            line = int(value)
+        except (TypeError, ValueError):
+            return None
+        return line if line > 0 else None
+
+    @classmethod
+    def _should_merge(
+        cls,
+        existing: dict[str, Any],
+        incoming: dict[str, Any],
+    ) -> bool:
+        existing_loc = existing.get("location") or {}
+        incoming_loc = incoming.get("location") or {}
+
+        if existing.get("class") != incoming.get("class"):
+            return False
+
+        if existing_loc.get("file") != incoming_loc.get("file"):
+            return False
+
+        existing_function = cls._function(existing)
+        incoming_function = cls._function(incoming)
+
+        # Preserve historical exact-symbol dedup behaviour.
+        if existing_function == incoming_function:
+            return True
+
+        # Different authoritative concrete symbols describe different
+        # findings, even when their line numbers are close.
+        if not (
+            cls._is_placeholder_function(existing)
+            or cls._is_placeholder_function(incoming)
+        ):
+            return False
+
+        existing_line = cls._line(existing)
+        incoming_line = cls._line(incoming)
+
+        # Do not proximity-merge when location information is incomplete.
+        if existing_line is None or incoming_line is None:
+            return False
+
+        return abs(existing_line - incoming_line) <= 2
+
+    @classmethod
+    def _merge_pair(
+        cls,
+        existing: dict[str, Any],
+        incoming: dict[str, Any],
+    ) -> dict[str, Any]:
+        existing_placeholder = cls._is_placeholder_function(existing)
+        incoming_placeholder = cls._is_placeholder_function(incoming)
+
+        # Prefer the candidate carrying an authoritative concrete symbol.
+        if existing_placeholder and not incoming_placeholder:
+            winner = incoming
+            loser = existing
+        else:
+            winner = existing
+            loser = incoming
+
+        merged_evidence: list[Any] = []
+        for item in (
+            list(winner.get("evidence_used") or [])
+            + list(loser.get("evidence_used") or [])
+        ):
+            if item not in merged_evidence:
+                merged_evidence.append(item)
+
+        winner["evidence_used"] = merged_evidence
+        return winner
+
     def run(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        seen: dict[tuple, dict] = {}
-        for c in candidates:
-            key = (c["location"]["file"], c["location"]["function"], c["class"])
-            if key not in seen:
-                seen[key] = c
-        return list(seen.values())
+        reduced: list[dict[str, Any]] = []
+
+        for candidate in candidates:
+            for index, existing in enumerate(reduced):
+                if self._should_merge(existing, candidate):
+                    reduced[index] = self._merge_pair(
+                        existing,
+                        candidate,
+                    )
+                    break
+            else:
+                reduced.append(candidate)
+
+        return reduced
 
 
 @dataclass
