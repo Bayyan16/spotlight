@@ -48,6 +48,8 @@ class MoonshotModelClient:
     model: str = "moonshot-v1-128k"
     family: str = "moonshot"
     timeout_s: float = 45.0
+    fail_closed: bool = False
+    reasoning_effort: str | None = None
     # Sweep-scoped counter of secrets scrubbed from outbound prompts.
     # Read by callers if they want to record it into the sweep summary.
     redactions_applied: int = 0
@@ -66,33 +68,49 @@ class MoonshotModelClient:
         applied = len(matches) + len(sys_matches)
         self.redactions_applied += applied
         try:
+            request_json = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                "temperature": 0.2,
+                "response_format": {"type": "json_object"},
+            }
+            if self.reasoning_effort:
+                request_json["reasoning"] = {
+                    "effort": self.reasoning_effort,
+                    "exclude": True,
+                }
+
             resp = httpx.post(
                 f"{self.base_url}/chat/completions",
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json",
                 },
-                json={
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                    "temperature": 0.2,
-                    "response_format": {"type": "json_object"},
-                },
+                json=request_json,
                 timeout=self.timeout_s,
             )
             resp.raise_for_status()
             body = resp.json()
             content = body["choices"][0]["message"]["content"]
-            out = _parse_json_safely(content, role, context)
+            out = _parse_json_safely(
+                content,
+                role,
+                context,
+                fail_closed=self.fail_closed,
+            )
             if applied:
                 out["redaction.applied"] = applied
             return out
         except Exception as e:
-            # Never let a model hiccup break the sweep. Fall back to the mock
-            # for schema-safety, tag it in the audit trail.
+            if self.fail_closed:
+                raise RuntimeError(
+                    f"Live model call failed for role={role}: {e}"
+                ) from e
+
+            # Compatibility mode: preserve the original mock fallback.
             fallback = MockModelClient().complete(role=role, prompt=prompt, context=context)
             fallback["_model_error"] = repr(e)[:200]
             fallback["_fallback"] = True
@@ -201,19 +219,66 @@ def _prompts_for(role: str, prompt: str, ctx: dict[str, Any]) -> tuple[str, str]
     raise ValueError(f"MoonshotModelClient has no prompt template for role={role}")
 
 
-def _parse_json_safely(content: str, role: str, ctx: dict[str, Any]) -> dict[str, Any]:
-    """Model output is JSON per response_format, but be defensive."""
+def _parse_json_safely(
+    content: str,
+    role: str,
+    ctx: dict[str, Any],
+    *,
+    fail_closed: bool = False,
+) -> dict[str, Any]:
+    """Parse model output as one JSON object.
+
+    A provider may occasionally append prose after an otherwise-valid JSON
+    object. In that case preserve the JSON object and explicitly mark that
+    trailing content was ignored. Truly invalid output fails closed when
+    requested instead of silently substituting MockModelClient output.
+    """
     content = content.strip()
+
     # Strip possible ```json fences.
     if content.startswith("```"):
-        content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.MULTILINE).strip()
+        content = re.sub(
+            r"^```(?:json)?\\s*|\\s*```$",
+            "",
+            content,
+            flags=re.MULTILINE,
+        ).strip()
+
     try:
-        return json.loads(content)
-    except Exception:
-        fallback = MockModelClient().complete(role=role, prompt="", context=ctx)
-        fallback["_parse_error"] = True
-        fallback["_raw"] = content[:400]
-        return fallback
+        out = json.loads(content)
+        if not isinstance(out, dict):
+            raise ValueError("Model output must be a JSON object")
+        return out
+    except Exception as strict_error:
+        # Accept one valid leading JSON object followed only by provider/model
+        # prose. This covers models that violate json_object mode by appending
+        # an explanation after the object.
+        try:
+            out, end = json.JSONDecoder().raw_decode(content)
+            if not isinstance(out, dict):
+                raise ValueError("Model output must be a JSON object")
+
+            trailing = content[end:].strip()
+            if not trailing:
+                return out
+
+            out["_parse_warning"] = "trailing_text_ignored"
+            return out
+
+        except Exception as parse_error:
+            if fail_closed:
+                raise ValueError(
+                    "Live model returned invalid JSON output"
+                ) from parse_error
+
+            fallback = MockModelClient().complete(
+                role=role,
+                prompt="",
+                context=ctx,
+            )
+            fallback["_parse_error"] = True
+            fallback["_raw"] = content[:400]
+            return fallback
 
 
 # Provider-neutral alias — same client, clearer name for new code / docs.
@@ -251,6 +316,13 @@ def maybe_from_env() -> "MoonshotModelClient | None":
             base_url=os.environ.get("SPOTLIGHT_LLM_BASE_URL", "https://api.openai.com/v1"),
             model=os.environ.get("SPOTLIGHT_LLM_MODEL", "gpt-4o-mini"),
             family=os.environ.get("SPOTLIGHT_LLM_FAMILY", "openai-compatible"),
+            timeout_s=float(os.environ.get("SPOTLIGHT_LLM_TIMEOUT_S", "45")),
+            fail_closed=os.environ.get(
+                "SPOTLIGHT_LLM_FAIL_CLOSED", ""
+            ).lower() in {"1", "true", "yes", "on"},
+            reasoning_effort=os.environ.get(
+                "SPOTLIGHT_LLM_REASONING_EFFORT"
+            ) or None,
         )
     # 2) Moonshot (Kimi) preset.
     key = os.environ.get("MOONSHOT_API_KEY")
