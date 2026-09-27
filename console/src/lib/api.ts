@@ -499,3 +499,197 @@ export function openSweepStream(id: string, onEvent: (e: SweepEvent) => void): W
   };
   return ws;
 }
+
+// ── Cortex — the self-improving layer (see docs/CORTEX.md) ──────────────
+// Every route here is 404 on a workspace that has not set SPOTLIGHT_CORTEX_DIR,
+// so callers treat "not configured" as a first-class state rather than an error.
+
+export type CortexDirective = {
+  cohort: string;
+  action: "none" | "adjust-confidence" | "route-to-review";
+  target_confidence: number;
+  n_labeled: number;
+  tp: number;
+  fp: number;
+  human_tp: number;
+  precision_mean: number;
+  precision_lower: number;
+  rationale: string;
+};
+
+export type CortexPolicy = {
+  policy_id: string;
+  version: number;
+  ledger_head: string;
+  min_support: number;
+  directives: Record<string, CortexDirective>;
+  created_at: string;
+  derived_from: string;
+  notes: string;
+  is_identity: boolean;
+  is_active?: boolean;
+};
+
+export type CortexShadow = {
+  rows_replayed: number;
+  labeled_rows: number;
+  tp_demoted: number;
+  fp_demoted: number;
+  tp_boosted: number;
+  fp_boosted: number;
+  tp_confidence_loss: number;
+  fp_confidence_loss: number;
+  unchanged: number;
+  demoted_true_positive_keys: string[];
+  beneficial_effects: number;
+  raises_anything: boolean;
+};
+
+export type CortexStatus = {
+  /** Standing replay of the policy in force against today's labels. */
+  active_policy_audit: CortexShadow;
+  root: string;
+  autonomy: boolean;
+  policy: CortexPolicy;
+  pin: Record<string, unknown>;
+  ledger: {
+    records: number;
+    distinct_findings: number;
+    labeled: number;
+    unlabeled: number;
+    head: string;
+  };
+  cohorts: { total: number; actionable: number };
+  lessons: { served: number; quarantined: number };
+  governance_entries: number;
+};
+
+export type CortexEvolution = {
+  proposal: {
+    policy: CortexPolicy;
+    shadow: CortexShadow;
+    invariant_violations: string[];
+    gate_failures: string[];
+    admissible: boolean;
+    requires_human: boolean;
+    auto_activatable: boolean;
+  };
+  activation: {
+    activated: boolean;
+    reason: string;
+    policy_id: string;
+    version: number;
+    approver: string;
+  };
+  lessons_refreshed: number;
+  lessons_quarantined: number;
+};
+
+export type CortexLesson = {
+  lesson_id: string;
+  scope: string;
+  key: string;
+  class_: string;
+  path_hint: string;
+  observations: number;
+  text: string;
+  quarantined: boolean;
+  quarantine_kinds: string[];
+};
+
+export type CortexGovernanceEntry = {
+  ts: string;
+  action: string;
+  actor: string;
+  payload: Record<string, unknown>;
+};
+
+/** null means "this workspace has no Cortex configured" — not an error. */
+export async function getCortexStatus(): Promise<CortexStatus | null> {
+  const r = await apiFetch(`${BASE}/cortex/status`);
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`cortex status failed: HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function getCortexPolicyHistory(): Promise<{
+  active_policy_id: string;
+  policies: CortexPolicy[];
+}> {
+  const r = await apiFetch(`${BASE}/cortex/policy/history`);
+  if (!r.ok) throw new Error(`cortex history failed: HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function getCortexLessons(): Promise<{
+  served: CortexLesson[];
+  quarantined: CortexLesson[];
+}> {
+  const r = await apiFetch(`${BASE}/cortex/lessons`);
+  if (!r.ok) throw new Error(`cortex lessons failed: HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function getCortexGovernance(limit = 50): Promise<{
+  total: number;
+  entries: CortexGovernanceEntry[];
+}> {
+  const r = await apiFetch(`${BASE}/cortex/governance?limit=${limit}`);
+  if (!r.ok) throw new Error(`cortex governance failed: HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function verifyCortexLedger(): Promise<{
+  ok: boolean;
+  records: number;
+  head: string;
+  chain_ok: boolean;
+  signatures_ok: boolean;
+  signatures_checked: number;
+  broken_at: number | null;
+  reason: string;
+}> {
+  const r = await apiFetch(`${BASE}/cortex/ledger/verify`);
+  if (!r.ok) throw new Error(`ledger verify failed: HTTP ${r.status}`);
+  return r.json();
+}
+
+/** Propose + gate. Activates only a strictly conservative change. */
+export async function evolveCortex(): Promise<CortexEvolution> {
+  const r = await apiFetch(`${BASE}/cortex/evolve`, { method: "POST" });
+  if (!r.ok) throw new Error(`cortex evolve failed: HTTP ${r.status}`);
+  return r.json();
+}
+
+/** Human sign-off on a proposal the Cortex withheld from itself. */
+export async function activateCortexPolicy(
+  approver: string,
+  policyId?: string,
+): Promise<CortexEvolution> {
+  const r = await apiFetch(`${BASE}/cortex/policy/activate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ approver, policy_id: policyId ?? null }),
+  });
+  if (!r.ok) {
+    const detail = await r.json().catch(() => ({ detail: `HTTP ${r.status}` }));
+    throw new Error(String(detail.detail ?? `HTTP ${r.status}`));
+  }
+  return r.json();
+}
+
+export async function rollbackCortexPolicy(
+  policyId: string,
+  approver: string,
+): Promise<{ activated: boolean; reason: string; version: number; policy_id: string }> {
+  const r = await apiFetch(`${BASE}/cortex/policy/rollback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ policy_id: policyId, approver }),
+  });
+  if (!r.ok) {
+    const detail = await r.json().catch(() => ({ detail: `HTTP ${r.status}` }));
+    throw new Error(String(detail.detail ?? `HTTP ${r.status}`));
+  }
+  return r.json();
+}

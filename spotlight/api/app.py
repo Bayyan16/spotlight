@@ -431,6 +431,183 @@ def workspace_verify_key() -> dict:
         raise HTTPException(500, f"signer unavailable: {exc!r}")
 
 
+# ── Cortex — learned policy, experience ledger, governance ───────────────
+# Read routes are plain workspace reads. The two write routes are deliberately
+# narrow: a human can *activate* a proposal the Cortex already evaluated, or
+# *roll back* to an earlier immutable policy. There is no route that edits a
+# policy, adds a directive, or relaxes a gate — a learned change can only come
+# from the ledger, through the governor, and every path is signed.
+
+
+def _maybe_cortex() -> Any:
+    """Build the workspace Cortex, or None when memory is not configured."""
+    try:
+        from spotlight.cortex import Cortex
+        from spotlight.non_repudiation import Signer
+
+        return Cortex.from_env(signer=Signer())
+    except Exception as exc:  # noqa: BLE001
+        print(f"[cortex] unavailable: {exc!r}")
+        return None
+
+
+def _require_cortex() -> Any:
+    cortex = _maybe_cortex()
+    if cortex is None:
+        raise HTTPException(
+            404,
+            "Cortex is not enabled for this workspace — set SPOTLIGHT_CORTEX_DIR",
+        )
+    return cortex
+
+
+class PolicyActivateRequest(BaseModel):
+    """Human activation of an already-evaluated proposal.
+
+    ``approver`` is required and is recorded verbatim in the signed governance
+    log: an activation with no name attached is exactly the audit gap the
+    non-repudiation work exists to close.
+    """
+
+    approver: str
+    policy_id: str | None = None  # optional pin: refuse if the proposal drifted
+
+
+class PolicyRollbackRequest(BaseModel):
+    policy_id: str
+    approver: str
+
+
+@app.get("/cortex/status")
+def cortex_status() -> dict:
+    """Ledger size, label coverage, active policy, cohort counts, lessons."""
+    return _redact_response(_require_cortex().status())
+
+
+@app.get("/cortex/policy")
+def cortex_active_policy() -> dict:
+    cortex = _require_cortex()
+    return {
+        "policy": cortex.active_policy().to_dict(),
+        "pointer": cortex.policies.active_pointer(),
+    }
+
+
+@app.get("/cortex/policy/history")
+def cortex_policy_history() -> dict:
+    """Every policy ever derived, oldest first. Immutable; never rewritten."""
+    cortex = _require_cortex()
+    active = cortex.active_policy().policy_id
+    return {
+        "active_policy_id": active,
+        "policies": [
+            {**pol.to_dict(), "is_active": pol.policy_id == active}
+            for pol in cortex.policies.history()
+        ],
+    }
+
+
+@app.get("/cortex/calibration")
+def cortex_calibration() -> dict:
+    """Per-cohort precision estimates behind the current policy."""
+    from spotlight.cortex import calibrate
+
+    cortex = _require_cortex()
+    rows = list(cortex.ledger.latest_by_finding().values())
+    return calibrate(
+        rows, ledger_head=cortex.ledger.head(), min_support=cortex.min_support
+    ).to_dict()
+
+
+@app.get("/cortex/lessons")
+def cortex_lessons() -> dict:
+    """Lessons served to Investigators, plus the quarantined ones.
+
+    Quarantined lessons are surfaced rather than hidden: a lesson that tripped
+    the injection detector means something tried to write an instruction into
+    Spotlight's own memory, and that belongs in front of a human.
+    """
+    cortex = _require_cortex()
+    all_lessons = cortex.lessons.load()
+    return _redact_response(
+        {
+            "served": [l.to_dict() for l in all_lessons if not l.quarantined],
+            "quarantined": [l.to_dict() for l in all_lessons if l.quarantined],
+        }
+    )
+
+
+@app.get("/cortex/ledger/verify")
+def cortex_ledger_verify() -> dict:
+    """Recompute the hash chain and every signature. Offline-equivalent."""
+    return _require_cortex().verify().to_dict()
+
+
+@app.get("/cortex/governance")
+def cortex_governance_log(limit: int = 50) -> dict:
+    """Proposals, rejections, activations and rollbacks — newest last."""
+    entries = _require_cortex().governance.entries()
+    limit = max(1, min(int(limit), 500))
+    return {"total": len(entries), "entries": entries[-limit:]}
+
+
+@app.post("/cortex/evolve")
+def cortex_evolve() -> dict:
+    """Run one evolution cycle: calibrate → propose → gate → maybe activate.
+
+    Activates nothing that is not strictly conservative. A proposal that would
+    make Spotlight more assertive comes back un-activated with the reason, for
+    a human to approve through ``/cortex/policy/activate``.
+    """
+    return _redact_response(_require_cortex().evolve().to_dict())
+
+
+@app.post("/cortex/policy/activate")
+def cortex_activate_policy(req: PolicyActivateRequest) -> dict:
+    """Human approval of the current proposal.
+
+    Re-derives the proposal from the live ledger before activating so the
+    approver signs what is actually true now, not a stale quote. If they pinned
+    a ``policy_id`` and the ledger has moved since, the request is refused
+    rather than silently activating something they never read.
+    """
+    approver = (req.approver or "").strip()
+    if not approver:
+        raise HTTPException(400, "approver is required")
+    from spotlight.cortex import SELF_APPROVER
+
+    if approver == SELF_APPROVER:
+        raise HTTPException(
+            400,
+            f"{SELF_APPROVER!r} is the Cortex's own actor id and cannot be used "
+            "as a human approver",
+        )
+    cortex = _require_cortex()
+    # Check the pin BEFORE anything is activated. Validating afterwards would
+    # mean refusing a request that had already taken effect.
+    if req.policy_id:
+        candidate = cortex.propose(record=False).policy.policy_id
+        if req.policy_id != candidate:
+            raise HTTPException(
+                409,
+                f"ledger moved: current proposal is {candidate}, you approved "
+                f"{req.policy_id}. Re-read /cortex/evolve and approve again.",
+            )
+    return _redact_response(cortex.evolve(approver=approver).to_dict())
+
+
+@app.post("/cortex/policy/rollback")
+def cortex_rollback_policy(req: PolicyRollbackRequest) -> dict:
+    """Re-point at an earlier policy. Ungated by design — undo must be easy."""
+    approver = (req.approver or "").strip()
+    if not approver:
+        raise HTTPException(400, "approver is required")
+    result = _require_cortex().rollback(req.policy_id, approver=approver)
+    if not result.activated:
+        raise HTTPException(400, result.reason)
+    return result.to_dict()
+
+
 @app.get("/targets")
 def list_targets() -> list[dict]:
     root = Path(__file__).resolve().parents[2] / "targets"
@@ -1605,7 +1782,28 @@ def post_finding_review(finding_id: str, req: ReviewRequest) -> dict:
 
     _persist_finding_update(finding_id, sweep_id, finding)
 
-    return _redact_response(finding)
+    # Feed the verdict to the Cortex. A human's call is the highest-authority
+    # label the ledger can hold — it is the only thing that can mark a finding
+    # a false positive at all — so this is where learning actually earns its
+    # keep. Best-effort: a memory write must never fail an analyst's review.
+    cortex_recorded = False
+    cortex = _maybe_cortex()
+    if cortex is not None:
+        try:
+            cortex.record_review(
+                finding,
+                review_state=review["state"],
+                reason=reason,
+                sweep_id=sweep_id or "",
+            )
+            cortex_recorded = True
+        except Exception as exc:  # noqa: BLE001
+            print(f"[cortex] review harvest failed: {exc!r}")
+
+    response = _redact_response(finding)
+    if isinstance(response, dict):
+        response["cortex_recorded"] = cortex_recorded
+    return response
 
 
 @app.get("/findings/{finding_id}/presence")

@@ -287,7 +287,12 @@ def test_tier_decision_to_dict_shape():
         "rationale",
         "independent_corroborators",
         "adjudication",
+        # Cortex block — None unless a learned policy was supplied to
+        # promote(). Present in the shape so the orchestrator can persist it
+        # without a key check.
+        "cortex",
     }
+    assert dumped["cortex"] is None
 
 
 def test_adjudicator_heuristic_fallback_when_no_model():

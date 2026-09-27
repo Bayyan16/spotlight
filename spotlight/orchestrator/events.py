@@ -49,6 +49,15 @@ class EventType(str, Enum):
     REMEDIATION_OPENED = "remediation.opened"
     VERIFY_RESULT = "verify.result"
     ATTESTATION_WRITTEN = "attestation.written"
+    # Cortex — the learned-policy / experience-memory layer. Pinned once per
+    # sweep, applied per finding, harvested at the end. `lesson.quarantined`
+    # is a self-defense event in the Warden sense: something tried to write an
+    # instruction into Spotlight's own memory.
+    CORTEX_POLICY_PINNED = "cortex.policy.pinned"
+    CORTEX_ADJUSTMENT_APPLIED = "cortex.adjustment.applied"
+    CORTEX_EXPERIENCE_RECORDED = "cortex.experience.recorded"
+    CORTEX_POLICY_ACTIVATED = "cortex.policy.activated"
+    CORTEX_LESSON_QUARANTINED = "cortex.lesson.quarantined"
 
 
 @dataclass

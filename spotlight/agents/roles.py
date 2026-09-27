@@ -298,13 +298,32 @@ def _canonical_class(raw: str, sink_class: str | None = None) -> str:
 class Investigator:
     model: ModelClient
 
-    def run(self, slice_dict: dict[str, Any]) -> dict[str, Any] | None:
+    def run(
+        self,
+        slice_dict: dict[str, Any],
+        lessons: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        """Judge one data-flow slice.
+
+        ``lessons`` are prior-review observations from the Cortex — "this class
+        at this path was called a false positive twice, here's why". They are
+        passed as *advisory* context, never as a gate: the model may look harder
+        at what a lesson names, but a lesson alone cannot reject a candidate,
+        and the tier decision stays with the Consensus Kernel. They arrive
+        already templated, redacted and injection-scanned (see
+        ``spotlight.cortex.lessons``) — memory that re-enters a prompt is a
+        persistent injection surface, so it is sanitized at write time rather
+        than trusted at read time.
+        """
         if slice_dict.get("sanitized"):
             return None
+        context: dict[str, Any] = {"slice": slice_dict}
+        if lessons:
+            context["lessons"] = list(lessons)
         judgment = self.model.complete(
             role="investigator",
             prompt="judge whether this data-flow slice is a real vuln",
-            context={"slice": slice_dict},
+            context=context,
         )
         if judgment.get("verdict") != "candidate":
             return None
