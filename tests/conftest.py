@@ -41,6 +41,12 @@ def _no_real_model(monkeypatch):
         "SPOTLIGHT_SWEEPS_PER_HOUR",
         "SPOTLIGHT_LOGIN_FAILURE_LIMIT",
         "SPOTLIGHT_LOGIN_WINDOW_SECONDS",
+        # Cortex memory. An ambient SPOTLIGHT_CORTEX_DIR would make the suite
+        # read and WRITE a developer's real experience ledger — and a learned
+        # policy in that ledger would silently change the tiers the tests
+        # assert on. Cortex tests construct their own Cortex under tmp_path.
+        "SPOTLIGHT_CORTEX_DIR",
+        "SPOTLIGHT_CORTEX_AUTONOMY",
     ):
         monkeypatch.delenv(var, raising=False)
     yield

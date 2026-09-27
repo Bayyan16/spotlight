@@ -100,6 +100,7 @@ class Reporter:
         sweep_result: Any,
         warden_events: list[dict] | None = None,
         chain_of_custody: dict | None = None,
+        cortex: dict | None = None,
     ) -> dict[str, Any]:
         """Build the full attestation dict.
 
@@ -239,6 +240,12 @@ class Reporter:
             "chain_of_custody": chain_of_custody,
             "sandbox_proofs": sandbox_proofs,
             "metrics": metrics,
+            # Cortex pin — the learned policy id and experience-ledger head in
+            # effect for this sweep, plus what the Cortex recorded afterwards.
+            # An auditor comparing two attestations of the same repo reads this
+            # first: if a tier moved, either the code changed or the policy did,
+            # and both are named here.
+            "cortex": cortex or {},
         }
         return attestation
 
@@ -339,6 +346,7 @@ def render_markdown(attestation: dict) -> str:
     warden = attestation.get("warden", {}) or {}
     coc = attestation.get("chain_of_custody", {}) or {}
     metrics = attestation.get("metrics", {}) or {}
+    cortex = attestation.get("cortex", {}) or {}
 
     lines: list[str] = []
 
@@ -578,6 +586,68 @@ def render_markdown(attestation: dict) -> str:
     else:
         lines.append("_No chain-of-custody entries recorded for this sweep._")
     lines.append("")
+
+    # ── cortex ───────────────────────────────────────────────────────────
+    # Only rendered when a Cortex was active. An auditor reading two reports of
+    # the same repo months apart needs to know whether a tier moved because the
+    # code changed or because the learned policy did — so the policy id, the
+    # ledger head it was derived from, and who activated it are all stated.
+    if cortex:
+        lines.append("## Cortex — Learned Policy in Effect")
+        lines.append("")
+        policy_id = cortex.get("policy_id") or "(none)"
+        identity = cortex.get("policy_is_identity")
+        lines.append(f"- **Policy**: `{_md_escape(policy_id)}` "
+                     f"(version {cortex.get('policy_version', 0)}, "
+                     f"{cortex.get('directives', 0)} directive(s))")
+        lines.append(
+            f"- **Experience ledger head**: `{_md_escape(cortex.get('ledger_head', ''))}` "
+            f"over {cortex.get('ledger_records', 0)} record(s)"
+        )
+        approver = cortex.get("activated_by") or "—"
+        lines.append(
+            f"- **Activated by**: {_md_escape(approver)} "
+            f"{('at ' + str(cortex.get('activated_at'))) if cortex.get('activated_at') else ''}"
+        )
+        lines.append(f"- **Lessons served to investigators**: {cortex.get('lessons_served', 0)}")
+        if identity:
+            lines.append(
+                "- _Identity policy — no learned directive altered any tier in "
+                "this sweep._"
+            )
+        adjusted = [
+            f for f in findings
+            if ((f.get("consensus") or {}).get("cortex") or {}).get("applied")
+        ]
+        if adjusted:
+            lines.append("")
+            lines.append("| Finding | Cohort | Tier before | Tier after | Confidence |")
+            lines.append("|---------|--------|-------------|------------|------------|")
+            for f in adjusted:
+                block = (f.get("consensus") or {}).get("cortex") or {}
+                lines.append(
+                    f"| {_md_escape(f.get('id'))} "
+                    f"| `{_md_escape(block.get('cohort'))}` "
+                    f"| {_md_escape(block.get('tier_before'))} "
+                    f"| {_md_escape(f.get('tier'))} "
+                    f"| {block.get('confidence_before')} → {f.get('confidence')} |"
+                )
+        harvest = cortex.get("harvest") or {}
+        if harvest:
+            lines.append("")
+            lines.append(
+                f"- **Recorded after this sweep**: "
+                f"{harvest.get('experiences_recorded', 0)} experience row(s)"
+            )
+            evolution = harvest.get("evolution") or {}
+            if evolution:
+                verdict = (
+                    f"activated as version {evolution.get('policy_version')}"
+                    if evolution.get("activated")
+                    else f"withheld — {evolution.get('reason')}"
+                )
+                lines.append(f"- **Evolution cycle**: {_md_escape(verdict)}")
+        lines.append("")
 
     # ── metrics ──────────────────────────────────────────────────────────
     lines.append("## Metrics")

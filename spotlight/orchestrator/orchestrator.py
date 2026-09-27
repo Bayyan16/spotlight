@@ -14,6 +14,7 @@ Phase-2 Tranche A1 adds two production guards:
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from dataclasses import dataclass, field
@@ -353,6 +354,23 @@ def _get_signer() -> Any:
         return None
 
 
+def _maybe_cortex(signer: Any = None) -> Any:
+    """Build the Cortex from the environment, or return None.
+
+    Memory is opt-in: with ``SPOTLIGHT_CORTEX_DIR`` unset this returns None and
+    the sweep behaves exactly as it did before the Cortex existed. Any failure
+    to construct it also returns None — a workspace whose memory directory is
+    unreadable must still get its findings.
+    """
+    try:
+        from spotlight.cortex import Cortex
+
+        return Cortex.from_env(signer=signer)
+    except Exception as exc:  # noqa: BLE001 — memory must never crash a sweep
+        print(f"[cortex] disabled: {exc!r}")
+        return None
+
+
 def _new_coc(signer: Any) -> Any:
     """Materialize a ChainOfCustody bound to the workspace signer, or None
     if signing is unavailable. Callers must tolerate None (see _coc_append)."""
@@ -618,6 +636,8 @@ class Orchestrator:
         model: ModelClient | None = None,
         bus: EventBus | None = None,
         profile: Profile | None = None,
+        cortex: Any = None,
+        use_cortex: bool = True,
     ) -> None:
         # Priority: explicit model > Moonshot from env > mock.
         raw_model = model or maybe_from_env() or MockModelClient()
@@ -649,6 +669,41 @@ class Orchestrator:
         # in tests.
         self._signer: Any = None
         self._sweep_id: str | None = None
+        # Cortex — the learned-policy + experience-memory layer.
+        #
+        #   * Explicit injection wins; otherwise we read SPOTLIGHT_CORTEX_DIR.
+        #     None means "no memory", the default, byte-identical to the
+        #     pre-Cortex pipeline.
+        #   * `use_cortex=False` opts out entirely whatever the environment
+        #     says. The eval harness needs that: a benchmark run that both
+        #     trains the ledger AND is judged under a policy derived from it is
+        #     measuring itself, and that benchmark gates CI.
+        #   * The signer is materialized early only when a Cortex will actually
+        #     use it (ledger rows are signed on append); the no-memory path
+        #     keeps the original lazy-signing behaviour.
+        self.cortex: Any = cortex if use_cortex else None
+        cortex_dir = os.environ.get("SPOTLIGHT_CORTEX_DIR", "").strip()
+        if use_cortex and self.cortex is None and cortex_dir:
+            self._signer = _get_signer()
+            self.cortex = _maybe_cortex(self._signer)
+        elif self.cortex is not None and getattr(self.cortex, "signer", None) is not None:
+            # An injected Cortex brings its own signer, and it signs every
+            # ledger row with it. Adopt that key for this sweep's chain of
+            # custody too: one workspace key must verify the whole sweep, or an
+            # external auditor needs two public keys to check one attestation.
+            # (In production both would resolve to SPOTLIGHT_SIGNING_KEY anyway;
+            # this makes the guarantee hold without depending on that.)
+            self._signer = self.cortex.signer
+        # Policy pinned for the duration of a run. Pinning matters: a policy
+        # activated halfway through a sweep must not tier the second half of
+        # the findings differently from the first, or the attestation would
+        # describe two different decision procedures under one signature.
+        self._cortex_policy: Any = None
+        self._cortex_pin: dict[str, Any] = {}
+        self._cortex_lessons: list[Any] = []
+        # Repo root of the run in progress — lesson lookup canonicalizes slice
+        # paths against it.
+        self._repo_root: Any = None
 
     # ── budget helpers ────────────────────────────────────────────────
     def _wall_elapsed(self) -> float:
@@ -670,6 +725,87 @@ class Orchestrator:
         if used is None:
             used = _estimate_tokens(judgment)
         self._tokens_used += int(used)
+
+    # ── cortex helpers ────────────────────────────────────────────────
+    def _lessons_for_slice(self, slice_: dict[str, Any]) -> list[str]:
+        """Prior-review observations relevant to one slice, as prompt strings.
+
+        Advisory only, and capped by the LessonBook. Returns [] whenever there
+        is no Cortex, no matching lesson, or anything goes wrong: an
+        Investigator must never depend on memory being available, or two
+        workspaces would judge the same slice differently for reasons nobody
+        can see.
+        """
+        if self.cortex is None or not self._cortex_lessons:
+            return []
+        try:
+            # A slice carries the checkout path (`/tmp/spotlight-clone-.../app.py`);
+            # a lesson carries the repo-relative one, because that is what
+            # survives a fresh clone into a different tempdir. Canonicalize
+            # before matching or nothing ever matches.
+            path = canonical_repo_path(slice_.get("file") or "", self._repo_root)
+            cls = str((slice_.get("sink") or {}).get("class") or slice_.get("class_") or "")
+            matched = self.cortex.lessons.for_slice(
+                class_=cls, path=path, lessons=self._cortex_lessons
+            )
+            return [l.text for l in matched]
+        except Exception as exc:  # noqa: BLE001
+            print(f"[cortex] lesson lookup failed: {exc!r}")
+            return []
+
+    def _cortex_harvest(self, sweep_id: str, result: Any) -> dict[str, Any]:
+        """Record this sweep's outcomes, then evolve if the gates allow.
+
+        Order matters: harvest first so the evolution cycle sees this sweep's
+        rows, and evolve *after* the attestation has been pinned to the policy
+        that actually ran — a newly activated policy applies to the next sweep,
+        never retroactively to this one.
+        """
+        report: dict[str, Any] = {}
+        if self.cortex is None:
+            return report
+        try:
+            written = self.cortex.record_sweep(result)
+            report["experiences_recorded"] = written
+            self.bus.emit(
+                sweep_id, EventType.CORTEX_EXPERIENCE_RECORDED, "cortex",
+                recorded=written, ledger_head=self.cortex.ledger.head(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[cortex] harvest failed: {exc!r}")
+            return report
+        try:
+            evolution = self.cortex.evolve()
+            report["evolution"] = {
+                "activated": evolution.activation.activated,
+                "reason": evolution.activation.reason,
+                "policy_id": evolution.activation.policy_id,
+                "policy_version": evolution.activation.version,
+                "approver": evolution.activation.approver,
+                "shadow": evolution.proposal.shadow.to_dict(),
+                "lessons_refreshed": evolution.lessons_refreshed,
+                "lessons_quarantined": evolution.lessons_quarantined,
+            }
+            if evolution.activation.activated:
+                self.bus.emit(
+                    sweep_id, EventType.CORTEX_POLICY_ACTIVATED, "cortex",
+                    policy_id=evolution.activation.policy_id,
+                    version=evolution.activation.version,
+                    approver=evolution.activation.approver,
+                    autonomous=evolution.activation.approver == "cortex-autonomous",
+                    shadow=evolution.proposal.shadow.to_dict(),
+                )
+            if evolution.lessons_quarantined:
+                # A quarantined lesson means something tried to write an
+                # instruction into our own memory. That is a Warden-class
+                # event, not a bookkeeping detail.
+                self.bus.emit(
+                    sweep_id, EventType.CORTEX_LESSON_QUARANTINED, "cortex",
+                    count=evolution.lessons_quarantined,
+                )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[cortex] evolution failed: {exc!r}")
+        return report
 
     # ── phase state machine ───────────────────────────────────────────
     def _advance_phase(self, target: str, **payload: Any) -> bool:
@@ -744,9 +880,27 @@ class Orchestrator:
         self._start_wall = time.monotonic()
         self._current_phase = None
         self._sweep_id = sweep_id
+        self._repo_root = repo_path
 
         emit = lambda t, actor, **p: self.bus.emit(sweep_id, t, actor, **p)
         emit(EventType.SWEEP_STARTED, "orchestrator", repo=str(repo_path))
+
+        # 0. Pin the Cortex — one policy and one lesson set for the whole
+        #    sweep. A policy activated mid-run must not tier the tail of the
+        #    findings differently from the head, or one signed attestation
+        #    would describe two decision procedures.
+        self._cortex_policy = None
+        self._cortex_pin = {}
+        self._cortex_lessons = []
+        if self.cortex is not None:
+            try:
+                self._cortex_policy = self.cortex.active_policy()
+                self._cortex_pin = self.cortex.pin()
+                self._cortex_lessons = self.cortex.served_lessons()
+                emit(EventType.CORTEX_POLICY_PINNED, "cortex", **self._cortex_pin)
+            except Exception as exc:  # noqa: BLE001 — memory is never fatal
+                print(f"[cortex] pin failed: {exc!r}")
+                self._cortex_policy = None
 
         # 1. PLAN — repo-native rule authoring runs BEFORE Recon so the
         #    CodeGraph + Semgrep pass both benefit from the tuned rules.
@@ -884,7 +1038,9 @@ class Orchestrator:
                 slice=slice_,
                 worker=f"inv-{idx}",
             )
-            judgment = Investigator(self.model).run(slice_)
+            judgment = Investigator(self.model).run(
+                slice_, lessons=self._lessons_for_slice(slice_)
+            )
             if not judgment:
                 emit(EventType.AGENT_FINISHED, f"inv-{idx}", verdict="reject")
                 return None
@@ -910,7 +1066,9 @@ class Orchestrator:
                 slice=slice_,
                 worker=f"cog-{idx}",
             )
-            judgment = Investigator(self.model).run(slice_)
+            judgment = Investigator(self.model).run(
+                slice_, lessons=self._lessons_for_slice(slice_)
+            )
             if not judgment:
                 emit(EventType.AGENT_FINISHED, f"cog-{idx}", verdict="reject")
                 return None
@@ -1142,8 +1300,25 @@ class Orchestrator:
 
             evidence = _build_evidence(cand, repro, self.model.family, sweep_id)
             decision = ConsensusKernel().promote(
-                cand, evidence, model=self.model, code_graph_slice=cand.get("location")
+                cand,
+                evidence,
+                model=self.model,
+                code_graph_slice=cand.get("location"),
+                policy=self._cortex_policy,
             )
+            if decision.cortex and decision.cortex.get("applied"):
+                emit(
+                    EventType.CORTEX_ADJUSTMENT_APPLIED,
+                    "cortex",
+                    finding=fid,
+                    cohort=decision.cortex.get("cohort"),
+                    policy_id=decision.cortex.get("policy_id"),
+                    tier_before=decision.cortex.get("tier_before"),
+                    tier_after=decision.tier,
+                    confidence_before=decision.cortex.get("confidence_before"),
+                    confidence_after=decision.confidence,
+                    adjustments=decision.cortex.get("adjustments", []),
+                )
             tier = decision.tier
             confidence = decision.confidence
             tier_reason = decision.rationale
@@ -1286,6 +1461,10 @@ class Orchestrator:
                     "decision": "promote" if tier in ("verified", "high-confidence") else "hold",
                     "rationale": tier_reason,
                     "adjudication": decision.adjudication,
+                    # Learned-policy provenance: the cohort this decision fell
+                    # into, the immutable policy id that judged it, and exactly
+                    # what changed. None when no Cortex was active.
+                    "cortex": decision.cortex,
                 },
                 "audit": {
                     "model": self.model.family,
@@ -1311,6 +1490,12 @@ class Orchestrator:
                             "confidence": confidence,
                             "independent_corroborators": decision.independent_corroborators,
                             "rationale": tier_reason,
+                            # Which learned policy judged this finding, and
+                            # whether it changed anything. Signed, so a tier
+                            # that differs from the evidence-only reading can
+                            # always be traced to a named, immutable artifact.
+                            "cortex_policy_id": (decision.cortex or {}).get("policy_id", ""),
+                            "cortex_applied": bool((decision.cortex or {}).get("applied")),
                         },
                     ),
                 },
@@ -1369,6 +1554,10 @@ class Orchestrator:
             # rules the sweep used. Empty when Planner isn't wired in.
             "plan": recon_out.get("plan", {}),
             "exploit_paths": exploit_paths,
+            # Cortex pin — the learned policy id + experience-ledger head this
+            # sweep ran under. Both are immutable, so the tier decisions in
+            # this attestation stay re-derivable after the policy moves on.
+            "cortex": dict(self._cortex_pin),
         }
         (out_dir / "attestation.json").write_text(json.dumps(attestation, indent=2))
         (out_dir / "findings.json").write_text(json.dumps(findings, indent=2))
@@ -1444,6 +1633,7 @@ class Orchestrator:
                     sweep_entries.append(entry)
             rich = Reporter().assemble(
                 result,
+                cortex=dict(self._cortex_pin) or None,
                 warden_events=[
                     e for e in result.events_log
                     if e.get("type", "").startswith("warden.")
@@ -1468,6 +1658,24 @@ class Orchestrator:
                 print(f"[reporter] PDF skipped: {pdf_exc}", flush=True)
         except Exception as exc:
             print(f"[reporter] rich report failed: {exc!r}", flush=True)
+
+        # Learn from what just happened. Runs after the attestation is written
+        # so this sweep's record is already sealed under the policy that judged
+        # it; anything the Cortex activates here applies to the NEXT sweep.
+        cortex_report = self._cortex_harvest(sweep_id, result)
+        if cortex_report:
+            for att in result.attestations:
+                if isinstance(att, dict):
+                    block = dict(att.get("cortex") or {})
+                    block["harvest"] = cortex_report
+                    att["cortex"] = block
+            try:
+                (out_dir / "attestation.json").write_text(
+                    json.dumps(result.attestations[0], indent=2)
+                    if result.attestations else "{}"
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[cortex] attestation rewrite failed: {exc!r}")
 
         self.bus.emit(
             sweep_id, EventType.SWEEP_FINISHED, "orchestrator",

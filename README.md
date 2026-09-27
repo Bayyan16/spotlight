@@ -30,6 +30,15 @@ verification are promoted:
 7. **Attest** — emits a signed report (JSON · Markdown · PDF) recording every
    action, offline-verifiable against the workspace's Ed25519 public key.
 
+It also **improves itself**. Every finding's outcome — reproduced, verified, or
+called a false positive by an analyst — is recorded in a signed, hash-chained
+experience ledger, and Spotlight recalibrates its own confidence from that
+history. The **Cortex** may activate a change unattended only when the change is
+strictly conservative; anything that would make it *more* assertive requires a
+named human approver, and a hard gate blocks any policy that would have demoted a
+finding a sandbox or a human confirmed was real. See
+[`docs/CORTEX.md`](docs/CORTEX.md). Off unless you set `SPOTLIGHT_CORTEX_DIR`.
+
 Supporting machinery: the **Consensus Kernel** (prices agent agreement by
 independence, promotes disagreement to human review instead of averaging it
 away), the **Warden** control plane (prompt-injection detection, backdoor
@@ -113,11 +122,29 @@ For real sandboxed reproduction, set `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET`
 (see [`.env.example`](.env.example)); otherwise reproductions run in a local
 subprocess sandbox suitable for development.
 
+## Getting smarter over time (optional)
+
+```bash
+export SPOTLIGHT_CORTEX_DIR=./.cortex     # turns memory on; off by default
+spotlight sweep targets/vuln-bank-api     # records what each finding turned out to be
+spotlight cortex status                   # active policy, label coverage, learned directives
+spotlight cortex evolve --dry-run         # propose a policy + show the shadow replay
+spotlight cortex verify                   # recompute the ledger hash chain and signatures
+```
+
+Every sweep stamps the policy id and ledger head it ran under into its
+attestation, so a tier decision stays re-derivable months later, and
+`spotlight cortex rollback <policy_id> --approver you@example.com` undoes a
+change with a pointer move. The full design, including the six invariants no
+amount of learning can amend, is in [`docs/CORTEX.md`](docs/CORTEX.md).
+
 ## Architecture
 
 See [`docs/SPOTLIGHT_ARCHITECTURE.md`](docs/SPOTLIGHT_ARCHITECTURE.md) for the
 full design — the agent roster, the Consensus Kernel, the Warden control plane,
 the non-repudiation chain of custody, and the data-flow engine (`sg-core`).
+[`docs/CORTEX.md`](docs/CORTEX.md) covers the self-improving layer: the
+experience ledger, calibration, the learned policy and its governance gates.
 
 ## Contributing
 

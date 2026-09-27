@@ -152,7 +152,11 @@ def aggregate_per_class(case_results: list[dict[str, Any]]) -> dict[str, dict[st
 def _scan(repo: str, commit: str, output: Path) -> list[dict[str, Any]]:
     checkout = GitOps().clone_at(repo, sha=commit)
     try:
-        result = Orchestrator().run(checkout, out_dir=output)
+        # `use_cortex=False`: the benchmark must be judged by the evidence
+        # pipeline alone. A run that harvests its own findings into the
+        # experience ledger AND is tiered by a policy derived from that ledger
+        # would be grading its own homework — and this harness gates CI.
+        result = Orchestrator(use_cortex=False).run(checkout, out_dir=output)
         return result.findings
     finally:
         workdir = checkout.resolve().parent

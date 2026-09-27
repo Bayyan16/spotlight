@@ -12,6 +12,7 @@ import { DeltaView } from "./components/DeltaView";
 import { ExploitPathsView } from "./components/ExploitPathsView";
 import { FirstScanWizard } from "./components/FirstScanWizard";
 import { WardenView } from "./components/WardenView";
+import { CortexView } from "./components/CortexView";
 import { Cmul8Mark } from "./components/Cmul8Mark";
 import { IconPlay } from "./components/Icons";
 import {
@@ -29,7 +30,16 @@ import {
 } from "./lib/api";
 import { invalidateWorkspaceFindings, useWorkspaceData } from "./hooks/useWorkspaceData";
 
-const NAV_ORDER: NavKey[] = ["home", "sweeps", "findings", "paths", "warden", "delta", "attestations"];
+const NAV_ORDER: NavKey[] = [
+  "home",
+  "sweeps",
+  "findings",
+  "paths",
+  "warden",
+  "cortex",
+  "delta",
+  "attestations",
+];
 
 export default function App() {
   return (
@@ -369,6 +379,7 @@ function WorkspaceApp() {
 
           {nav === "paths" && <ExploitPathsView onOpenSweep={openHistoricalSweep} />}
           {nav === "warden" && <WardenView onOpenSweep={openHistoricalSweep} />}
+          {nav === "cortex" && <CortexView />}
           {nav === "delta" && <DeltaView />}
           {nav === "attestations" && (
             <AttestationsView

@@ -88,6 +88,13 @@ class TierDecision:
     rationale: str
     independent_corroborators: int
     adjudication: dict | None = None
+    # Cortex (learned-policy) record: which cohort this decision fell into and
+    # what the active policy did about it. `{}` when no policy was supplied —
+    # the default, and byte-identical to pre-Cortex behaviour. A populated
+    # block always names the policy id, so a tier that differs from the
+    # evidence-only reading is traceable to an immutable artifact rather than
+    # to "the model changed its mind".
+    cortex: dict | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -96,6 +103,7 @@ class TierDecision:
             "rationale": self.rationale,
             "independent_corroborators": self.independent_corroborators,
             "adjudication": self.adjudication,
+            "cortex": self.cortex,
         }
 
 
@@ -164,7 +172,85 @@ class ConsensusKernel:
         *,
         model: Any = None,
         code_graph_slice: dict | None = None,
+        policy: Any = None,
     ) -> TierDecision:
+        """Decide a tier from evidence, then let a learned policy nudge it.
+
+        ``policy`` is an optional :class:`spotlight.cortex.CortexPolicy`. The
+        evidence logic in ``_decide`` runs first and unchanged — a learned
+        policy never participates in deciding whether something was reproduced
+        or corroborated. It only sees the finished decision, and the invariants
+        in ``cortex.policy`` bound what it may do with it: lower confidence, or
+        route an already-promoted finding to a human. It can never promote, and
+        it can never suppress. With ``policy=None`` (the default) this method is
+        behaviourally identical to the pre-Cortex kernel.
+        """
+        decision = self._decide(
+            candidate, evidence, model=model, code_graph_slice=code_graph_slice
+        )
+        if policy is None:
+            return decision
+        return self._apply_policy(decision, candidate, evidence, policy)
+
+    # ── learned-policy application ─────────────────────────────────────
+    def _apply_policy(
+        self,
+        decision: TierDecision,
+        candidate: dict[str, Any],
+        evidence: list[EvidenceItem],
+        policy: Any,
+    ) -> TierDecision:
+        """Apply a Cortex policy to a finished decision. Never raises.
+
+        The cohort is computed from the *independence-filtered* modality set —
+        the same set the tier logic just reasoned over — so the cohort a
+        decision is nudged by is exactly the cohort the ledger measured. A
+        policy failure degrades to the un-nudged decision: a broken memory must
+        never be able to change a tier by accident.
+        """
+        try:
+            from spotlight.cortex.experience import cohort_key, evidence_signature
+
+            independent = _dedupe_independent(evidence)
+            signature = evidence_signature([i.modality for i in independent])
+            cohort = cohort_key((candidate or {}).get("class", ""), signature)
+            effect = policy.apply(
+                tier=decision.tier,
+                confidence=decision.confidence,
+                rationale=decision.rationale,
+                cohort=cohort,
+            )
+        except Exception as exc:  # noqa: BLE001 — memory must not break tiering
+            print(f"[consensus] cortex policy skipped: {exc!r}")
+            return decision
+
+        cortex_block = {
+            "policy_id": getattr(policy, "policy_id", ""),
+            "policy_version": getattr(policy, "version", 0),
+            "cohort": cohort,
+            "applied": bool(effect.adjustments),
+            "adjustments": [a.to_dict() for a in effect.adjustments],
+            "tier_before": decision.tier,
+            "confidence_before": decision.confidence,
+        }
+        return TierDecision(
+            tier=effect.tier,
+            confidence=effect.confidence,
+            rationale=effect.rationale,
+            independent_corroborators=decision.independent_corroborators,
+            adjudication=decision.adjudication,
+            cortex=cortex_block,
+        )
+
+    def _decide(
+        self,
+        candidate: dict[str, Any],
+        evidence: list[EvidenceItem],
+        *,
+        model: Any = None,
+        code_graph_slice: dict | None = None,
+    ) -> TierDecision:
+        """Evidence-only tier decision (PRD §8.2). Unaffected by any policy."""
         cls = (candidate or {}).get("class", "")
 
         # Independence-filtered view is the ONLY thing tier logic reads.

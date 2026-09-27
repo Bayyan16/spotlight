@@ -803,6 +803,83 @@ The five-layer coverage strategy in §12.5 handles known-CWE breadth (Semgrep) a
 
 ---
 
+## 12.7 · The Cortex — the layer that learns from its own outcomes
+
+Everything above describes a pipeline that is exactly as good on its thousandth
+run as its first. It re-derives every judgment from zero each sweep: the
+Planner's validated rules are discarded at teardown, the Verifier's gold labels
+die with the tempdir, and the analyst who signs *"false positive — that template
+string is a constant"* is answered once, for one sweep.
+
+**`spotlight/cortex/`** closes that loop. Full design in
+[`CORTEX.md`](CORTEX.md); the short version:
+
+1. **Experience ledger** — append-only, hash-chained, Ed25519-signed record of
+   every judgment and what it turned out to be. Verifiable offline against the
+   key already published at `/verify-key`.
+2. **Calibration** — Jeffreys posterior + Wilson lower bound per
+   `(class, evidence-shape)` cohort. Arithmetic, not a model, so every learned
+   change is reproducible from a ledger head and explainable to an auditor.
+3. **Learned policy** — an immutable, content-addressed table of per-cohort
+   directives that may nudge the Consensus Kernel's *output*. It never
+   participates in deciding whether something was reproduced or corroborated.
+4. **Governance** — a candidate policy is replayed against the labelled history
+   it came from and activated only if it would not have demoted a single
+   finding a sandbox or a human confirmed was real.
+
+**Labelling authority.** Only an analyst verdict, a sandbox reproduction, or a
+static-fact literal may label a row. In particular `not-reproduced` is **not** a
+false positive — it is a statement about our Reproducer, not about the code, and
+counting it would teach the system to bury exactly the classes it is weakest at
+(authz, IDOR, crypto misuse) while precision looked excellent.
+
+**Six invariants, enforced at activation and again at runtime:** a policy can
+never raise a tier (promotion to `verified` stays welded to reproduction +
+independent corroboration); confidence moves ≤ 0.15 and stays in `[0.05, 0.95]`;
+nothing can be suppressed or dropped — the strongest available action is routing
+a promoted finding to `needs-review`; the schema has nowhere to express a change
+to Warden, redaction, sandbox egress or capability tokens; any *upward* move
+requires an analyst-confirmed true positive in the cohort, because an agent may
+not certify its own reliability; and every policy is immutable and pinned into
+each sweep's attestation, so rollback is a pointer move and an old tier decision
+stays re-derivable.
+
+**Bounded autonomy.** A strictly conservative policy — lowers confidence or
+routes to review, raises nothing, zero shadow regressions — is activated by the
+Cortex itself under its own actor id `cortex-autonomous`, signed. Anything that
+would make Spotlight *more* assertive is withheld for a named human approver.
+Rollback is ungated by design: undo must be easier than change.
+
+**Retraction.** The activation gate runs once; evidence keeps arriving. Every
+cycle re-audits the policy *already in force*, and retracts it the moment it
+would demote a confirmed true positive against the current ledger — unattended,
+because restoring evidence-only tiering can only reveal, never hide. That is the
+opposite asymmetry from activation, and for the same reason.
+
+**Lessons** feed analyst corrections back into the Investigator's prompt as
+advisory context. That path — target repo → experience → lesson → every future
+prompt — is a persistent injection channel, which our own taxonomy calls
+`agent-memory-tampering`, so lessons are templated from structured fields (never
+model prose), redacted and injection-scanned at write time, quarantined on a hit,
+and explicitly non-authoritative at read time.
+
+**New events:** `cortex.policy.pinned`, `cortex.adjustment.applied`,
+`cortex.experience.recorded`, `cortex.policy.activated`,
+`cortex.lesson.quarantined` (a Warden-class self-defense event — something tried
+to write an instruction into Spotlight's own memory).
+
+**Relation to Phase 4.** This is not D4. No weights move: the learned artifact is
+a readable table, which is what makes it auditable and instantly reversible. The
+ledger is, however, exactly the `(slice, verdict)` substrate D4's LoRA pipeline
+and D7's TemplateWriter would train on — it is the prerequisite those tranches
+assumed existed. And the Cortex adds no recall: it makes Spotlight better
+calibrated about what it finds, not able to find more. New recall still comes
+from the five layers in §12.5.
+
+Off unless `SPOTLIGHT_CORTEX_DIR` is set.
+
+---
+
 ## 13 · Fixture targets (bundled)
 
 Every fixture ships with a `ground_truth.json` declaring the expected findings so the eval harness can measure recall.
@@ -842,6 +919,22 @@ Every fixture ships with a `ground_truth.json` declaring the expected findings s
 **Capability token** — a per-agent-job security grant.
 
 **Chain of custody** — signed list of every action (agent + human) on a finding.
+
+**Cohort** — `(class, evidence-shape)`, the unit the Cortex calibrates on. Answers "when a finding of this class was supported by this shape of evidence, how often was it real?"
+
+**Cortex** — the self-improving layer (`spotlight/cortex/`): experience ledger, calibration, learned policy, governance. See §12.7 and `CORTEX.md`.
+
+**Experience** — one judged finding reduced to its evidence shape, decided tier, and label. The row the Cortex learns from.
+
+**Experience ledger** — the append-only, hash-chained, signed store of Experiences. Tamper-evident offline.
+
+**Learned policy** — an immutable, content-addressed table of per-cohort directives that may lower confidence or route a promoted finding to review. It can never promote or suppress.
+
+**Lesson** — a templated, injection-scanned correction from analyst review history, injected into the Investigator prompt as advisory context only.
+
+**Shadow replay** — re-applying a candidate policy to decisions whose truth is already known, to measure what it would have changed before activating it.
+
+**Weak negative** — a reproduction that ran and did not fire. Recorded, never counted as a false positive.
 
 **Chainer** — the component that composes findings into ExploitPaths.
 

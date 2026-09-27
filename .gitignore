@@ -31,5 +31,9 @@ UI inspo/
 Evals/results/**/cve-*/
 # Local Alembic dev DB
 spotlight-local.db
+# Cortex memory — the local default for SPOTLIGHT_CORTEX_DIR. The experience
+# ledger is workspace state (and carries this repo's own review history), not
+# source; production points the variable at a persistent volume instead.
+.cortex/
 # Launch assets — agent-internal, not for public distribution
 launch/
