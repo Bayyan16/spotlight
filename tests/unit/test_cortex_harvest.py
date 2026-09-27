@@ -18,6 +18,7 @@ from spotlight.cortex.experience import (
     evidence_signature,
 )
 from spotlight.cortex.harvest import (
+    evidence_decision,
     experience_from_finding,
     experience_from_review,
     experiences_from_sweep,
@@ -199,3 +200,53 @@ def test_harvest_skips_non_dict_entries():
         findings = [_finding(), "not-a-finding", None]
 
     assert len(experiences_from_sweep(Result())) == 1
+
+
+# ── the ledger must not learn from the policy's own output ───────────────
+
+
+def test_a_nudged_finding_is_recorded_at_its_evidence_tier():
+    """The subtlest failure mode in the whole subsystem.
+
+    When a policy routes a cohort, every finding in it ships as
+    ``needs-review``. If the ledger recorded *that*, the shadow replay would
+    later see a row already at ``needs-review``, conclude that routing the
+    cohort demotes nothing, and pass the gate — while the policy is in fact
+    burying a sandbox-confirmed exploit. The policy would have erased the only
+    witness to its own harm, and no check could ever notice.
+    """
+    finding = _finding(tier="needs-review", confidence=0.78)
+    finding["consensus"] = {
+        "tier": "needs-review",
+        "confidence": 0.78,
+        "cortex": {
+            "applied": True,
+            "cohort": "sqli|x",
+            "policy_id": "p1",
+            "tier_before": "verified",
+            "confidence_before": 0.93,
+            "adjustments": [{"action": "route-to-review"}],
+        },
+    }
+    assert evidence_decision(finding) == ("verified", 0.93)
+
+    exp = experience_from_finding(finding, sweep_id="sw_1")
+    assert exp.tier == "verified"
+    assert exp.confidence == 0.93
+    assert exp.label == TRUE_POSITIVE   # the sandbox still confirmed it
+
+
+def test_an_untouched_finding_records_its_own_tier():
+    finding = _finding(tier="verified", confidence=0.93)
+    finding["consensus"] = {"tier": "verified", "confidence": 0.93, "cortex": None}
+    assert evidence_decision(finding) == ("verified", 0.93)
+
+
+def test_a_finding_the_policy_saw_but_did_not_change_records_its_own_tier():
+    finding = _finding(tier="verified", confidence=0.93)
+    finding["consensus"] = {
+        "tier": "verified",
+        "confidence": 0.93,
+        "cortex": {"applied": False, "cohort": "sqli|x", "policy_id": "p1"},
+    }
+    assert evidence_decision(finding) == ("verified", 0.93)

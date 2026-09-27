@@ -112,6 +112,33 @@ def _features(finding: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def evidence_decision(finding: dict[str, Any]) -> tuple[str, float]:
+    """The tier and confidence the *evidence* produced, before any policy nudge.
+
+    This is the single most important line of defence against the system
+    learning from itself. When a policy routes a cohort, every finding in it is
+    written to the report as ``needs-review`` — so if the ledger recorded that,
+    the shadow replay would see a row already sitting at ``needs-review``,
+    conclude that routing the cohort demotes nothing, and pass the gate. The
+    policy would have suppressed the evidence of its own harm: it keeps routing
+    a cohort that now contains a sandbox-confirmed exploit, and no check can
+    ever notice, because the only witness was overwritten.
+
+    So the ledger records what the Consensus Kernel decided from evidence alone.
+    ``consensus.cortex`` carries that reading verbatim (`tier_before`,
+    `confidence_before`) whenever a policy changed something; otherwise the
+    finding's own tier already is the evidence reading.
+    """
+    cortex_block = (finding.get("consensus") or {}).get("cortex") or {}
+    if cortex_block.get("applied"):
+        tier = str(cortex_block.get("tier_before") or finding.get("tier") or "")
+        confidence = cortex_block.get("confidence_before")
+        if confidence is None:
+            confidence = finding.get("confidence")
+        return tier, float(confidence or 0.0)
+    return str(finding.get("tier") or ""), float(finding.get("confidence") or 0.0)
+
+
 def _finding_key(finding: dict[str, Any]) -> str:
     identity = finding.get("identity") or {}
     key = str(identity.get("fingerprint") or "")
@@ -150,14 +177,15 @@ def experience_from_finding(
         or (class_ in STATIC_FACT_CLASSES and _has_static_fact(finding)),
         review_reason=reason,
     )
+    tier, confidence = evidence_decision(finding)
     return Experience(
         sweep_id=sweep_id or str(finding.get("sweep_id") or ""),
         finding_key=_finding_key(finding),
         class_=class_,
         cohort=cohort_key(class_, signature),
         signature=signature,
-        tier=str(finding.get("tier") or ""),
-        confidence=float(finding.get("confidence") or 0.0),
+        tier=tier,
+        confidence=confidence,
         label=label,
         label_source=source,
         label_reason=why,

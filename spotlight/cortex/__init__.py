@@ -85,6 +85,7 @@ from .governance import (
     shadow_replay,
 )
 from .harvest import (
+    evidence_decision,
     experience_from_finding,
     experience_from_review,
     experiences_from_sweep,
@@ -131,6 +132,7 @@ __all__ = [
     "calibrate",
     "cohort_key",
     "derive_policy",
+    "evidence_decision",
     "evidence_signature",
     "experience_from_finding",
     "experience_from_review",

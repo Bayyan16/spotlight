@@ -701,6 +701,9 @@ class Orchestrator:
         self._cortex_policy: Any = None
         self._cortex_pin: dict[str, Any] = {}
         self._cortex_lessons: list[Any] = []
+        # Repo root of the run in progress — lesson lookup canonicalizes slice
+        # paths against it.
+        self._repo_root: Any = None
 
     # ── budget helpers ────────────────────────────────────────────────
     def _wall_elapsed(self) -> float:
@@ -736,7 +739,11 @@ class Orchestrator:
         if self.cortex is None or not self._cortex_lessons:
             return []
         try:
-            path = str(slice_.get("file") or "")
+            # A slice carries the checkout path (`/tmp/spotlight-clone-.../app.py`);
+            # a lesson carries the repo-relative one, because that is what
+            # survives a fresh clone into a different tempdir. Canonicalize
+            # before matching or nothing ever matches.
+            path = canonical_repo_path(slice_.get("file") or "", self._repo_root)
             cls = str((slice_.get("sink") or {}).get("class") or slice_.get("class_") or "")
             matched = self.cortex.lessons.for_slice(
                 class_=cls, path=path, lessons=self._cortex_lessons
@@ -873,6 +880,7 @@ class Orchestrator:
         self._start_wall = time.monotonic()
         self._current_phase = None
         self._sweep_id = sweep_id
+        self._repo_root = repo_path
 
         emit = lambda t, actor, **p: self.bus.emit(sweep_id, t, actor, **p)
         emit(EventType.SWEEP_STARTED, "orchestrator", repo=str(repo_path))
