@@ -44,3 +44,32 @@ def _no_real_model(monkeypatch):
     ):
         monkeypatch.delenv(var, raising=False)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _no_semgrep_registry(monkeypatch):
+    """Keep the suite off semgrep.dev.
+
+    `p/default` is downloaded from the registry on first use. Where that
+    host is slow or blocked (air-gapped box, restricted CI runner, proxied
+    sandbox) every sweep in the suite pays `timeout_s + 15` seconds and
+    still gets zero matches — minutes of tests become an hour. Semgrep is a
+    corroborator, and no test asserts on its matches, so switch it off by
+    default. Opt back in with SPOTLIGHT_TEST_SEMGREP=1 (which also gates the
+    live adapter test); tests/unit/test_semgrep_adapter.py overrides this
+    fixture's setting because the switches themselves are what it covers.
+    """
+    from spotlight.signals.semgrep_adapter import reset_degraded_state
+
+    if os.environ.get("SPOTLIGHT_TEST_SEMGREP"):
+        # Deliberately running live — respect whichever ruleset the
+        # operator pointed us at, including a vendored local one.
+        pass
+    else:
+        monkeypatch.setenv("SPOTLIGHT_SEMGREP", "off")
+        monkeypatch.delenv("SPOTLIGHT_SEMGREP_CONFIG", raising=False)
+    # The degradation latch is process-wide by design; reset it between
+    # tests so one test's simulated outage can't silence another's.
+    reset_degraded_state()
+    yield
+    reset_degraded_state()
