@@ -87,17 +87,16 @@ class Recon:
         # in `signals` alongside the sg-core slices; the Consensus Kernel
         # treats it as an INDEPENDENT external signal (§8.1) when a
         # sg-core slice AND a semgrep match land at the same (file, line).
+        semgrep_status = "unavailable (adapter did not load)"
         try:
             from spotlight.signals import SemgrepAdapter
 
             adapter = SemgrepAdapter()
-            available = adapter.available()
-            print(f"[recon] semgrep available: {available}")
-            if available:
+            if adapter.available():
                 extra_configs: list[str] = []
                 if plan is not None and getattr(plan, "semgrep_rules_yaml", ""):
                     # Planner-authored rulepack — write to a temp file and
-                    # feed to semgrep --config alongside p/default.
+                    # feed to semgrep --config alongside the base rulepack.
                     try:
                         import tempfile as _tmp
 
@@ -109,12 +108,17 @@ class Recon:
                         print(f"[recon] planner rulepack write failed: {exc!r}")
                 semgrep_matches = adapter.scan(repo_path, extra_configs=extra_configs or None)
                 semgrep_signals = [m.as_slice_dict() for m in semgrep_matches]
-                print(f"[recon] semgrep matches: {len(semgrep_matches)}")
                 signals = signals + semgrep_signals
             else:
                 semgrep_signals = []
+            # Report what Semgrep actually DID, not whether the binary
+            # exists: "available: True" is a lie when the rulepack never
+            # downloaded and the run contributed nothing but latency.
+            semgrep_status = adapter.describe()
+            print(f"[recon] semgrep: {semgrep_status}")
         except Exception as exc:
             print(f"[recon] semgrep failed: {exc!r}")
+            semgrep_status = f"degraded: error ({exc!r})"
             semgrep_signals = []
         threat_model = self.model.complete(
             role="recon",
@@ -137,6 +141,7 @@ class Recon:
             "wrapped_docs": wrapped_docs,
             "agentic_signals": agentic_signals,
             "semgrep_signals": semgrep_signals,
+            "semgrep_status": semgrep_status,
         }
 
 
