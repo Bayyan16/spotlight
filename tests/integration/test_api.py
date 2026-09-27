@@ -1,4 +1,5 @@
 """FastAPI contract tests."""
+import time
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,27 @@ from fastapi.testclient import TestClient
 from spotlight.api.app import app, BUSES, SWEEPS, _running_threads
 
 ROOT = Path(__file__).resolve().parents[2]
+
+# A sweep runs the full pipeline on a worker thread. The old 5-second poll
+# budget was only ever enough because the machine was fast; on a loaded CI
+# runner it turned "the sweep is slow" into "the API is broken". Wait long
+# enough for the answer to mean something, and fail with the last status we
+# saw rather than a bare KeyError on the next line.
+SWEEP_TIMEOUT_S = 120.0
+
+
+def _wait_for_sweep(client: TestClient, sweep_id: str, timeout_s: float = SWEEP_TIMEOUT_S) -> dict:
+    """Poll until the sweep finishes, or fail with what it was doing."""
+    deadline = time.monotonic() + timeout_s
+    status: dict = {}
+    while time.monotonic() < deadline:
+        status = client.get(f"/sweeps/{sweep_id}").json()
+        if status.get("status") in {"finished", "failed", "error"}:
+            return status
+        time.sleep(0.1)
+    raise AssertionError(
+        f"sweep {sweep_id} did not finish within {timeout_s}s; last status: {status}"
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -41,23 +63,22 @@ def test_full_sweep_via_api():
     r = client.post("/sweeps", json={"repo": "vuln-bank-api"})
     assert r.status_code == 200
     sweep_id = r.json()["sweep_id"]
-    # Poll for completion.
-    import time
-    for _ in range(50):
-        s = client.get(f"/sweeps/{sweep_id}").json()
-        if s["status"] == "finished":
-            break
-        time.sleep(0.1)
+    s = _wait_for_sweep(client, sweep_id)
     assert s["status"] == "finished"
-    assert s["findings_count"] == 1
-
+    # The sqli in this fixture is the finding under test. Pick it out by
+    # CWE rather than by index: with Semgrep switched on (see the
+    # _no_semgrep_registry fixture) the external signals add findings of
+    # their own, and which one lands at index 0 depends on the rulepack.
+    assert s["findings_count"] >= 1
     findings = client.get(f"/sweeps/{sweep_id}/findings").json()
-    assert findings[0]["tier"] == "verified"
-    assert findings[0]["state"] == "confirmed-fixed"
+    sqli = [f for f in findings if f["cwe"] == "CWE-89"]
+    assert sqli, f"no CWE-89 finding in {[f['cwe'] for f in findings]}"
+    assert sqli[0]["tier"] == "verified"
+    assert sqli[0]["state"] == "confirmed-fixed"
 
     att = client.get(f"/attestations/{sweep_id}").json()
     assert att["sweep_id"] == sweep_id
-    assert len(att["findings"]) == 1
+    assert len(att["findings"]) == len(findings)
 
     events = client.get(f"/sweeps/{sweep_id}/events").json()
     types = {e["type"] for e in events}
@@ -69,12 +90,7 @@ def test_clean_sweep_via_api_produces_zero_findings():
     client = TestClient(app)
     r = client.post("/sweeps", json={"repo": "clean-bank-api"})
     sweep_id = r.json()["sweep_id"]
-    import time
-    for _ in range(50):
-        s = client.get(f"/sweeps/{sweep_id}").json()
-        if s["status"] == "finished":
-            break
-        time.sleep(0.1)
+    assert _wait_for_sweep(client, sweep_id)["status"] == "finished"
     findings = client.get(f"/sweeps/{sweep_id}/findings").json()
     assert findings == []
 
@@ -103,14 +119,11 @@ def test_finding_lookup_by_id():
     client = TestClient(app)
     r = client.post("/sweeps", json={"repo": "vuln-bank-api"})
     sweep_id = r.json()["sweep_id"]
-    import time
-    for _ in range(50):
-        s = client.get(f"/sweeps/{sweep_id}").json()
-        if s["status"] == "finished":
-            break
-        time.sleep(0.1)
+    assert _wait_for_sweep(client, sweep_id)["status"] == "finished"
     findings = client.get(f"/sweeps/{sweep_id}/findings").json()
-    fid = findings[0]["id"]
+    sqli = [f for f in findings if f["cwe"] == "CWE-89"]
+    assert sqli, f"no CWE-89 finding in {[f['cwe'] for f in findings]}"
+    fid = sqli[0]["id"]
     f = client.get(f"/findings/{fid}").json()
     assert f["id"] == fid
     assert f["cwe"] == "CWE-89"

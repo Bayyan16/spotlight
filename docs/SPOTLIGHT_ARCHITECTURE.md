@@ -621,6 +621,16 @@ Expansion mechanisms:
 2. **Customer rule ingest** — customers can point Spotlight at their own Semgrep ruleset (`config: p/default,file:./custom-rules.yml`). Rules become another external_signal in Consensus.
 3. **Add sg-core sinks per language** — new classes join the `SINKS` dict; the class alias table in `semgrep_adapter.py` maps Semgrep IDs onto them. One-liner per class.
 
+**Air-gapped operation (T2).** `p/default` is a *registry* reference: semgrep downloads it from `semgrep.dev` on first use, and semgrep also pings that host for a version check on every invocation. Where the host is unreachable — T2, a restricted CI runner, a proxy that 403s the registry — both calls block with no timeout of their own, so every sweep pays a dead wait and Semgrep still contributes nothing. Three knobs, all read in `SemgrepAdapter`:
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `SPOTLIGHT_SEMGREP` | `auto` | `off` skips Semgrep outright — `available()` returns False with no subprocess. `on` retries every sweep, ignoring the latch below. |
+| `SPOTLIGHT_SEMGREP_CONFIG` | `p/default` | Any `--config` value semgrep accepts. Point it at a vendored ruleset directory and no scan touches the network. |
+| — (always on) | — | `--disable-version-check` is passed unconditionally; on a proxied sandbox it takes a local-rules scan of `targets/vuln-bank-api` from 99s to 2s. |
+
+Failure is latched, not re-paid: the first timeout or registry error prints one line (`[semgrep] registry unreachable …`) and disables Semgrep for the rest of the process, so subsequent sweeps skip straight past. Recon reports what Semgrep actually *did* — `[recon] semgrep: ok — 12 matches via p/default`, or `degraded: registry unreachable (…)` — rather than whether the binary is on PATH.
+
 ### Layer 2 — Language-native taint (depth on the hot classes)
 
 **Engine: sg-core (`spotlight/sg_core`)** — Python + JS/TS today.

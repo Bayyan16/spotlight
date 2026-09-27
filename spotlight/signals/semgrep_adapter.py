@@ -16,14 +16,34 @@ The adapter is best-effort:
   * The subprocess call is arg-list (no `shell=True`), so target paths
     can't shell-inject Spotlight.
 
+Operator switches (both read once per adapter instance):
+  * `SPOTLIGHT_SEMGREP=off|auto|on` (default `auto`). `off` makes
+    `available()` return False immediately — no subprocess, no wait. `on`
+    ignores the process-wide degradation latch described below, for
+    operators who would rather retry every sweep.
+  * `SPOTLIGHT_SEMGREP_CONFIG=<config>` overrides the default `p/default`
+    rulepack. Point it at a vendored ruleset directory (or a
+    comma-separated list semgrep understands) on an air-gapped T2 install
+    so no scan ever reaches semgrep.dev.
+
+Failure is latched, not re-paid. `p/default` is a *registry* reference:
+semgrep downloads it from semgrep.dev at scan time. Where that host is
+unreachable — air-gapped T2, a restricted CI runner, a proxy that 403s the
+registry — the subprocess blocks until `timeout_s + 15` and then yields
+nothing. The first such failure prints one line and latches for the rest of
+the process, so the next sweep skips straight past instead of paying the
+timeout again.
+
 Emits `SemgrepMatch` records mirroring the sg-core `DataFlowSlice` shape
 so downstream Investigator + Consensus code treats them uniformly.
 """
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -162,21 +182,179 @@ def _canonical_class(check_id: str) -> str | None:
     return None
 
 
+# ── environment switches ────────────────────────────────────────────────
+ENV_MODE = "SPOTLIGHT_SEMGREP"  # off | auto | on
+ENV_CONFIG = "SPOTLIGHT_SEMGREP_CONFIG"  # overrides DEFAULT_CONFIG
+
+# `p/default` is Semgrep's curated community security ruleset. Beats `auto`
+# because auto requires metrics-on (phones home per run), which we don't
+# want either in demos or in a bank's env. It IS still a registry id, so it
+# is fetched from semgrep.dev on first use — see ENV_CONFIG for air-gapped
+# installs.
+DEFAULT_CONFIG = "p/default"
+
+# ── run status ──────────────────────────────────────────────────────────
+STATUS_NOT_RUN = "not-run"
+STATUS_OK = "ok"  # semgrep ran and its output parsed — the only usable one
+STATUS_DISABLED = "disabled"  # SPOTLIGHT_SEMGREP=off
+STATUS_MISSING = "missing"  # CLI not on PATH
+STATUS_SKIPPED = "skipped"  # an earlier run in this process degraded
+STATUS_UNREACHABLE = "unreachable"  # registry / network failure
+STATUS_TIMEOUT = "timeout"  # subprocess blocked past timeout_s + 15
+STATUS_ERROR = "error"  # non-zero exit or unparseable output
+
+# Substrings that mean "semgrep never got its rules", matched against
+# stderr. Deliberately narrow: a match takes Semgrep out for the rest of
+# the process, so a finding-related message must never trip it.
+_NETWORK_ERROR_MARKERS: tuple[str, ...] = (
+    "failed to download config",
+    "unable to download config",
+    "error while loading config",
+    "failed to download",
+    "could not reach",
+    "connection refused",
+    "connection reset",
+    "connection error",
+    "connectionerror",
+    "max retries exceeded",
+    "name or service not known",
+    "temporary failure in name resolution",
+    "nodename nor servname",
+    "network is unreachable",
+    "certificate verify failed",
+    "sslerror",
+    "proxy error",
+    "407 proxy",
+    "403 forbidden",
+    "502 bad gateway",
+    "503 service unavailable",
+    "504 gateway",
+    "semgrep.dev",
+)
+
+# ── process-wide degradation latch ──────────────────────────────────────
+# Recon runs one adapter per sweep, so without this the dead wait is paid
+# on every sweep for the whole life of the worker.
+#
+# The latch exists to avoid *dead waits*, so only a slow failure earns it.
+# A run that fails in under this many seconds — a malformed planner
+# rulepack, a bad local path — costs nothing to retry next sweep, and
+# latching on it would blame the network for a config bug.
+_SLOW_FAILURE_S = 10.0
+
+_DEGRADED_REASON: str | None = None
+
+
+def degraded_reason() -> str | None:
+    """Why Semgrep is being skipped process-wide, or None while healthy."""
+    return _DEGRADED_REASON
+
+
+def reset_degraded_state() -> None:
+    """Clear the latch — for tests, and for workers that want to retry."""
+    global _DEGRADED_REASON
+    _DEGRADED_REASON = None
+
+
+def _is_registry_config(config: str) -> bool:
+    """True when `config` is fetched from semgrep.dev rather than read off disk."""
+    for entry in str(config).split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if entry == "auto" or entry.startswith(("p/", "r/", "s/", "http://", "https://")):
+            return True
+    return False
+
+
+def _network_failure(stderr: str) -> str:
+    """Return the offending stderr line when it names a registry/network failure."""
+    lowered = stderr.lower()
+    for marker in _NETWORK_ERROR_MARKERS:
+        if marker in lowered:
+            for line in stderr.splitlines():
+                if marker in line.lower():
+                    return line.strip()[:200]
+            return marker
+    return ""
+
+
+def _first_line(text: str) -> str:
+    for line in (text or "").splitlines():
+        if line.strip():
+            return line.strip()[:200]
+    return ""
+
+
 @dataclass
 class SemgrepAdapter:
-    """Wraps the semgrep CLI. Instantiate once per sweep."""
+    """Wraps the semgrep CLI. Instantiate once per sweep.
+
+    `config` and `mode` default to None, meaning "read the environment".
+    An explicit constructor argument always wins over the env var, so
+    callers that know exactly which rulepack they want (the live test, a
+    customer-rules path) are unaffected by operator config.
+
+    `available()` and `scan()` both record why they gave up on `status` /
+    `status_detail`; `describe()` renders that for a log line.
+    """
 
     timeout_s: int = 60
-    # `p/default` is Semgrep's curated community security ruleset. Beats
-    # `auto` because auto requires metrics-on (phones home per run), which
-    # we don't want either in demos or in a bank's env. `p/default` is
-    # local-only.
-    config: str = "p/default"
+    config: str | None = None
     executable: str = "semgrep"
+    mode: str | None = None  # off | auto | on
+    status: str = field(default=STATUS_NOT_RUN, init=False)
+    status_detail: str = field(default="", init=False)
+    match_count: int = field(default=0, init=False)
 
+    def __post_init__(self) -> None:
+        if self.config is None:
+            self.config = os.environ.get(ENV_CONFIG, "").strip() or DEFAULT_CONFIG
+        if self.mode is None:
+            self.mode = os.environ.get(ENV_MODE, "auto").strip().lower() or "auto"
+        if self.mode not in {"off", "auto", "on"}:
+            print(f"[semgrep] ignoring unknown {ENV_MODE}={self.mode!r}; using 'auto'")
+            self.mode = "auto"
+
+    # ── availability ───────────────────────────────────────────────────
     def available(self) -> bool:
-        return shutil.which(self.executable) is not None
+        """True when a scan is worth attempting. Records why when it isn't."""
+        if self.mode == "off":
+            self.status = STATUS_DISABLED
+            self.status_detail = f"{ENV_MODE}=off"
+            return False
+        if _DEGRADED_REASON is not None and self.mode != "on":
+            self.status = STATUS_SKIPPED
+            self.status_detail = _DEGRADED_REASON
+            return False
+        if shutil.which(self.executable) is None:
+            self.status = STATUS_MISSING
+            self.status_detail = f"{self.executable} not on PATH"
+            return False
+        return True
 
+    def usable(self) -> bool:
+        """True only after a run that actually produced parseable output."""
+        return self.status == STATUS_OK
+
+    def describe(self) -> str:
+        """One-line status for operators — what really happened, not just
+        whether the binary exists."""
+        if self.status == STATUS_OK:
+            return f"ok — {self.match_count} matches via {self.config}"
+        if self.status == STATUS_NOT_RUN:
+            return "not run"
+        label = {
+            STATUS_DISABLED: "off",
+            STATUS_MISSING: "unavailable",
+            STATUS_SKIPPED: "skipped",
+            STATUS_UNREACHABLE: "degraded: registry unreachable",
+            STATUS_TIMEOUT: "degraded: timed out",
+            STATUS_ERROR: "degraded: error",
+        }.get(self.status, self.status)
+        return f"{label} ({self.status_detail})" if self.status_detail else label
+
+    # ── scan ───────────────────────────────────────────────────────────
     def scan(
         self,
         root: Path,
@@ -187,25 +365,34 @@ class SemgrepAdapter:
 
         `extra_configs` — additional `--config` values appended after the
         base rulepack. Enables the Planner-authored ephemeral YAML rulepack
-        to ride alongside `p/default` for a single sweep. Silently ignored
-        entries that don't resolve to a file or a valid config id are
-        semgrep's problem, not ours (its `--config` handling accepts
+        to ride alongside the base config for a single sweep. Silently
+        ignored entries that don't resolve to a file or a valid config id
+        are semgrep's problem, not ours (its `--config` handling accepts
         broken values and just logs a warning).
         """
         if not self.available():
             return []
+        self.match_count = 0
         cmd = [
             self.executable,
-            "--config", self.config,
+            "--config", str(self.config),
             "--json",
             "--quiet",
             "--timeout", str(self.timeout_s),
             "--metrics=off",
+            # Independent of --metrics: semgrep pings semgrep.dev for a
+            # version check on every invocation, and that ping has no
+            # timeout of its own. Measured on a proxied sandbox: a scan
+            # whose rules are already local takes 99s with the check and
+            # 2s without it. Nothing downstream reads the upgrade notice,
+            # so it is off unconditionally.
+            "--disable-version-check",
         ]
         for extra in extra_configs or []:
             if extra:
                 cmd.extend(["--config", str(extra)])
         cmd.append(str(root))
+        started = time.monotonic()
         try:
             proc = subprocess.run(
                 cmd,
@@ -214,15 +401,77 @@ class SemgrepAdapter:
                 timeout=self.timeout_s + 15,
                 check=False,
             )
-        except (subprocess.TimeoutExpired, FileNotFoundError):
+        except subprocess.TimeoutExpired:
+            # The registry fetch is the usual culprit: it blocks with no
+            # output at all. Either way, a scan that can't finish once
+            # won't finish on the next sweep either.
+            self._degrade(STATUS_TIMEOUT, f"no result after {self.timeout_s + 15}s")
             return []
-        if not proc.stdout:
+        except FileNotFoundError:
+            self.status = STATUS_MISSING
+            self.status_detail = f"{self.executable} vanished from PATH mid-scan"
             return []
-        try:
-            data = json.loads(proc.stdout)
-        except json.JSONDecodeError:
+
+        elapsed = time.monotonic() - started
+        stderr = proc.stderr or ""
+        network = _network_failure(stderr)
+        matches: list[SemgrepMatch] = []
+        parsed = False
+        if proc.stdout:
+            try:
+                matches = _extract_matches(json.loads(proc.stdout))
+                parsed = True
+            except json.JSONDecodeError:
+                parsed = False
+
+        if not parsed:
+            # `--quiet` suppresses semgrep's own error text, so a blocked
+            # registry can arrive as nothing but a non-zero exit and an
+            # empty stdout — measured at 98s through a 403ing proxy. A
+            # failing exit with no parseable results means semgrep reached
+            # no verdict at all, which is a fact about the install rather
+            # than the target.
+            detail = network or _first_line(stderr) or (
+                f"exit {proc.returncode} after {elapsed:.0f}s, no JSON on stdout"
+            )
+            self.status = STATUS_ERROR
+            self.status_detail = detail
+            if network or (proc.returncode != 0 and elapsed >= _SLOW_FAILURE_S):
+                registry = bool(network) or _is_registry_config(str(self.config))
+                self._degrade(STATUS_UNREACHABLE if registry else STATUS_ERROR, detail)
+            # Anything else — a fast non-zero exit, or exit 0 with unusable
+            # output — is cheap to retry, so it stays a per-run error.
             return []
-        return list(_extract_matches(data))
+        if network and not matches:
+            # Output parsed, but the rules never loaded — zero matches here
+            # means "we learned nothing", not "the repo is clean".
+            self._degrade(STATUS_UNREACHABLE, network)
+            return []
+
+        self.status = STATUS_OK
+        self.status_detail = ""
+        self.match_count = len(matches)
+        return matches
+
+    def _degrade(self, status: str, detail: str) -> None:
+        """Record the failure and latch it for the rest of the process."""
+        global _DEGRADED_REASON
+        self.status = status
+        self.status_detail = detail
+        if _DEGRADED_REASON is not None:
+            return
+        _DEGRADED_REASON = detail
+        if _is_registry_config(str(self.config)):
+            print(
+                f"[semgrep] registry unreachable ({detail}); "
+                "continuing without external signals — set "
+                f"{ENV_CONFIG} to a local ruleset or {ENV_MODE}=off to skip this wait"
+            )
+        else:
+            print(
+                f"[semgrep] scan failed ({detail}); "
+                "continuing without external signals"
+            )
 
 
 def _extract_matches(data: dict) -> list[SemgrepMatch]:
@@ -318,6 +567,12 @@ def _slugify(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-") or "unknown"
 
 
-def run_semgrep(root: Path, *, timeout_s: int = 60, config: str = "auto") -> list[SemgrepMatch]:
-    """Convenience for callers that don't need to hold an adapter instance."""
+def run_semgrep(
+    root: Path, *, timeout_s: int = 60, config: str | None = None
+) -> list[SemgrepMatch]:
+    """Convenience for callers that don't need to hold an adapter instance.
+
+    `config=None` resolves through `SPOTLIGHT_SEMGREP_CONFIG`, then
+    `DEFAULT_CONFIG` — same precedence as the adapter.
+    """
     return SemgrepAdapter(timeout_s=timeout_s, config=config).scan(root)
