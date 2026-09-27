@@ -91,6 +91,22 @@ Rows carry structural features only — class, surface, framework, repo-relative
 path, function. No target file content, ever: the ledger is replayed into
 prompts, and anything stored here becomes a persistent injection surface.
 
+### The row records what the *evidence* decided, never what the policy did
+
+A row's tier and confidence are the Consensus Kernel's evidence-only reading,
+taken from `consensus.cortex.tier_before` whenever a policy changed something.
+
+This is not bookkeeping tidiness; it is the property that stops the system
+learning from itself. When a policy routes a cohort, every finding in it ships
+as `needs-review`. If the ledger recorded *that*, the next shadow replay would
+see a row already sitting at `needs-review`, conclude that routing the cohort
+demotes nothing, and pass the gate — while the policy was in fact burying a
+sandbox-confirmed exploit. The policy would have erased the only witness to its
+own harm, re-deriving and re-activating itself forever with every check
+reporting green. Recording the evidence reading keeps the replay able to see a
+demotion for what it is, which is what makes the retraction below possible at
+all.
+
 ---
 
 ## 3 · Cohorts and calibration
