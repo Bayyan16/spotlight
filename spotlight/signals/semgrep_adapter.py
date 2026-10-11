@@ -279,6 +279,24 @@ def _network_failure(stderr: str) -> str:
     return ""
 
 
+def _json_errors(data: dict) -> str:
+    """Summarize semgrep's own `errors` array.
+
+    It explains a non-zero exit far better than the code does: exit 7 with
+    `"invalid configuration file found (1 configs were invalid)"` says which
+    knob the operator got wrong. Entries whose message is absent are skipped
+    — semgrep emits some with a null message alongside the useful one.
+    """
+    out: list[str] = []
+    for e in (data.get("errors") or [])[:3]:
+        if not isinstance(e, dict):
+            continue
+        msg = str(e.get("message") or e.get("type") or "").strip()
+        if msg and msg.lower() != "none":
+            out.append(msg)
+    return "; ".join(out)[:200]
+
+
 def _first_line(text: str) -> str:
     for line in (text or "").splitlines():
         if line.strip():
@@ -352,7 +370,10 @@ class SemgrepAdapter:
             STATUS_TIMEOUT: "degraded: timed out",
             STATUS_ERROR: "degraded: error",
         }.get(self.status, self.status)
-        return f"{label} ({self.status_detail})" if self.status_detail else label
+        out = f"{label} ({self.status_detail})" if self.status_detail else label
+        if self.match_count:
+            out += f" — {self.match_count} matches kept"
+        return out
 
     # ── scan ───────────────────────────────────────────────────────────
     def scan(
@@ -416,10 +437,12 @@ class SemgrepAdapter:
         stderr = proc.stderr or ""
         network = _network_failure(stderr)
         matches: list[SemgrepMatch] = []
+        data: dict = {}
         parsed = False
         if proc.stdout:
             try:
-                matches = _extract_matches(json.loads(proc.stdout))
+                data = json.loads(proc.stdout)
+                matches = _extract_matches(data)
                 parsed = True
             except json.JSONDecodeError:
                 parsed = False
@@ -447,6 +470,24 @@ class SemgrepAdapter:
             # means "we learned nothing", not "the repo is clean".
             self._degrade(STATUS_UNREACHABLE, network)
             return []
+        if proc.returncode != 0:
+            # Semgrep printed parseable JSON and still failed. Measured:
+            # one malformed file in a ruleset directory drops every rule in
+            # that config and exits 7 with `{"results": [], "errors": [...]}`.
+            # Reachable from the planner's generated rulepack and from a
+            # typo in SPOTLIGHT_SEMGREP_CONFIG, so calling it `ok — 0
+            # matches` would be the same lie this adapter exists to stop
+            # telling. Whatever it DID match is real evidence and still
+            # goes through; only the status says the run was partial. A
+            # fast config failure is cheap to retry, so the slow-failure
+            # latch above stays the only thing that disables Semgrep
+            # process-wide.
+            self.status = STATUS_ERROR
+            self.status_detail = (
+                _json_errors(data) or f"exit {proc.returncode} after {elapsed:.0f}s"
+            )
+            self.match_count = len(matches)
+            return matches
 
         self.status = STATUS_OK
         self.status_detail = ""

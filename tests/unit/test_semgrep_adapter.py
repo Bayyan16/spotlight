@@ -474,6 +474,74 @@ def test_successful_run_is_not_degraded(monkeypatch, tmp_path):
     assert "1 matches" in a.describe()
 
 
+def test_nonzero_exit_with_parseable_json_is_not_reported_as_ok(monkeypatch, tmp_path):
+    """Semgrep can fail and still print valid JSON.
+
+    Reproduced against semgrep 1.178: one malformed file in a ruleset
+    directory drops every rule in that config and exits 7 with
+    `{"results": [], "errors": [...]}`. Reporting that as `ok — 0 matches`
+    is the same lie this adapter exists to stop telling, so the exit code
+    decides, not the parse.
+    """
+    _fake_which(monkeypatch)
+    payload = {
+        "results": [],
+        "errors": [
+            {"level": "error", "message": None},
+            {
+                "level": "error",
+                "message": "invalid configuration file found (1 configs were invalid)",
+            },
+        ],
+    }
+    monkeypatch.setattr(
+        "spotlight.signals.semgrep_adapter.subprocess.run",
+        lambda *a, **kw: _fake_proc(stdout=json.dumps(payload), returncode=7),
+    )
+    a = SemgrepAdapter()
+    assert a.scan(tmp_path) == []
+    assert a.status == STATUS_ERROR
+    assert a.usable() is False
+    # The operator needs to know WHICH knob is wrong, so semgrep's own
+    # errors array is preferred over the bare exit code; the null-message
+    # entry beside it must not crowd out the useful one.
+    assert "invalid configuration file found" in a.status_detail
+    # A config typo fails fast and costs nothing to retry, so it must not
+    # take Semgrep out for the whole process.
+    assert degraded_reason() is None
+
+
+def test_nonzero_exit_still_returns_the_matches_it_found(monkeypatch, tmp_path):
+    """A partial run's matches are real evidence — report them, but don't
+    call the run clean. Discarding them would lose findings in a security
+    scanner over one bad rule."""
+    _fake_which(monkeypatch)
+    payload = {
+        "results": [
+            {
+                "check_id": "python.flask.security.injection.tainted-sql-string",
+                "path": "app.py",
+                "start": {"line": 7},
+                "end": {"line": 7},
+                "extra": {"severity": "ERROR", "message": "sqli", "lines": "x"},
+            }
+        ],
+        "errors": [{"level": "error", "message": "some rules did not run"}],
+    }
+    monkeypatch.setattr(
+        "spotlight.signals.semgrep_adapter.subprocess.run",
+        lambda *a, **kw: _fake_proc(stdout=json.dumps(payload), returncode=7),
+    )
+    a = SemgrepAdapter()
+    matches = a.scan(tmp_path)
+    assert len(matches) == 1
+    assert matches[0].class_ == "sqli"
+    assert a.status == STATUS_ERROR
+    assert a.usable() is False
+    assert "1 matches kept" in a.describe()
+    assert degraded_reason() is None
+
+
 def test_zero_matches_with_a_clean_run_is_not_degraded(monkeypatch, tmp_path):
     """A genuinely clean repo must not take Semgrep out of the process."""
     _fake_which(monkeypatch)
