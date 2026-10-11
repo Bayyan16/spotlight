@@ -264,37 +264,48 @@ _PROBE_TIMEOUT_S = 20
 @dataclass
 class _Latch:
     reason: str
-    config: str
     at: float
 
 
-_LATCH: _Latch | None = None
+# Keyed by config, because that is the thing a latch is a statement about.
+# A single slot could not express "p/default is unreachable but the vendored
+# ruleset is fine": whichever failed first would block the other from ever
+# latching, and a success on either would clear the other's.
+_LATCHES: dict[str, _Latch] = {}
 
 
-def _live_latch() -> _Latch | None:
-    """The latch, if one is set and has not expired."""
-    latch = _LATCH
+def _live_latch(config: str) -> _Latch | None:
+    """This config's latch, if it is set and has not expired."""
+    latch = _LATCHES.get(config)
     if latch is None:
         return None
     if time.monotonic() - latch.at >= _LATCH_TTL_S:
+        _LATCHES.pop(config, None)
         return None
     return latch
 
 
-def degraded_reason() -> str | None:
-    """Why Semgrep is being skipped, or None while healthy.
+def _clear_latch(config: str) -> None:
+    """Drop this config's latch, leaving any other config's in place."""
+    _LATCHES.pop(config, None)
 
-    Scoped to a config, so `available()` is what decides for a given
+
+def degraded_reason() -> str | None:
+    """The reason some config is being skipped, or None while all are healthy.
+
+    Latches are per-config, so `available()` is what decides for a given
     adapter; this is for observability and tests.
     """
-    latch = _live_latch()
-    return latch.reason if latch else None
+    for config in list(_LATCHES):
+        latch = _live_latch(config)
+        if latch is not None:
+            return latch.reason
+    return None
 
 
 def reset_degraded_state() -> None:
-    """Clear the latch — for tests, and for workers that want to retry."""
-    global _LATCH
-    _LATCH = None
+    """Clear every latch — for tests, and for workers that want to retry."""
+    _LATCHES.clear()
 
 
 def _is_registry_config(config: str) -> bool:
@@ -382,8 +393,8 @@ class SemgrepAdapter:
             self.status = STATUS_DISABLED
             self.status_detail = f"{ENV_MODE}=off"
             return False
-        latch = _live_latch()
-        if latch is not None and latch.config == str(self.config) and self.mode != "on":
+        latch = _live_latch(str(self.config))
+        if latch is not None and self.mode != "on":
             self.status = STATUS_SKIPPED
             self.status_detail = latch.reason
             return False
@@ -547,10 +558,12 @@ class SemgrepAdapter:
         self.status = STATUS_OK
         self.status_detail = ""
         self.match_count = len(matches)
-        # A good run is proof the latch no longer applies — including a
-        # `SPOTLIGHT_SEMGREP=on` run taken to probe recovery, which would
-        # otherwise leave Semgrep suppressed for everyone on `auto`.
-        reset_degraded_state()
+        # A good run is proof this config's latch no longer applies —
+        # including a `SPOTLIGHT_SEMGREP=on` run taken to probe recovery,
+        # which would otherwise leave Semgrep suppressed for everyone on
+        # `auto`. Only this config's, though: another ruleset being
+        # reachable says nothing about one that is not.
+        _clear_latch(str(self.config))
         return matches
 
     def _config_loads(self) -> bool:
@@ -587,12 +600,13 @@ class SemgrepAdapter:
 
     def _degrade(self, status: str, detail: str) -> None:
         """Record the failure and latch it against this config."""
-        global _LATCH
         self.status = status
         self.status_detail = detail
-        if _live_latch() is not None:
+        config = str(self.config)
+        if _live_latch(config) is not None:
+            # Already latched, and the first reason is the useful one.
             return
-        _LATCH = _Latch(reason=detail, config=str(self.config), at=time.monotonic())
+        _LATCHES[config] = _Latch(reason=detail, at=time.monotonic())
         if _is_registry_config(str(self.config)):
             print(
                 f"[semgrep] registry unreachable ({detail}); "

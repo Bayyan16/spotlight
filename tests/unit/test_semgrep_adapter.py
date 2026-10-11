@@ -492,6 +492,56 @@ def test_latch_applies_only_to_the_config_that_failed(monkeypatch, tmp_path):
     assert SemgrepAdapter(config=str(tmp_path / "vendored")).available() is True
 
 
+def test_a_second_failing_config_latches_on_its_own(monkeypatch, tmp_path):
+    """One config already being latched must not stop another from latching.
+
+    With a single latch slot, whichever ruleset failed first blocked the
+    other from ever recording its own failure — so the second config
+    re-paid its dead wait on every sweep.
+    """
+    _fake_which(monkeypatch)
+    monkeypatch.setattr(
+        "spotlight.signals.semgrep_adapter.subprocess.run",
+        lambda *a, **kw: (_ for _ in ()).throw(
+            subprocess.TimeoutExpired(cmd="semgrep", timeout=30)
+        ),
+    )
+    first = SemgrepAdapter(config="p/default")
+    first.scan(tmp_path)
+    assert SemgrepAdapter(config="p/default").available() is False
+
+    second = SemgrepAdapter(config="p/ci")
+    assert second.available() is True
+    second.scan(tmp_path)
+    # Its own failure is now recorded, rather than swallowed because some
+    # other config got there first.
+    assert SemgrepAdapter(config="p/ci").available() is False
+    assert SemgrepAdapter(config="p/default").available() is False
+
+
+def test_success_on_one_config_leaves_another_latched(monkeypatch, tmp_path):
+    """A reachable ruleset says nothing about an unreachable one."""
+    _fake_which(monkeypatch)
+    monkeypatch.setattr(
+        "spotlight.signals.semgrep_adapter.subprocess.run",
+        lambda *a, **kw: (_ for _ in ()).throw(
+            subprocess.TimeoutExpired(cmd="semgrep", timeout=30)
+        ),
+    )
+    SemgrepAdapter(config="p/default").scan(tmp_path)
+    assert SemgrepAdapter(config="p/default").available() is False
+
+    monkeypatch.setattr(
+        "spotlight.signals.semgrep_adapter.subprocess.run",
+        lambda *a, **kw: _fake_proc(stdout=json.dumps({"results": []})),
+    )
+    healthy = SemgrepAdapter(config=str(tmp_path / "vendored"))
+    assert healthy.scan(tmp_path) == []
+    assert healthy.status == STATUS_OK
+    # The broken registry config stays latched.
+    assert SemgrepAdapter(config="p/default").available() is False
+
+
 def test_latch_expires(monkeypatch, tmp_path):
     """A transient outage must recover on its own, not wait for a restart."""
     _fake_which(monkeypatch)
