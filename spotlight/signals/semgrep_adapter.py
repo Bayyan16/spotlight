@@ -285,8 +285,20 @@ def _live_latch(config: str) -> _Latch | None:
     return latch
 
 
-def _clear_latch(config: str) -> None:
-    """Drop this config's latch, leaving any other config's in place."""
+def _clear_latch(config: str, older_than: float | None = None) -> None:
+    """Drop this config's latch, leaving any other config's in place.
+
+    `older_than` guards a completion-ordered race: overlapping sweeps share
+    this module state, so a slow successful scan can finish *after* a faster
+    one has just latched a real failure, and clearing blindly would make the
+    next sweep re-pay that wait. Only clear a latch that predates the scan
+    now reporting success.
+    """
+    latch = _LATCHES.get(config)
+    if latch is None:
+        return
+    if older_than is not None and latch.at > older_than:
+        return
     _LATCHES.pop(config, None)
 
 
@@ -537,13 +549,15 @@ class SemgrepAdapter:
             )
             self.status = STATUS_ERROR
             self.status_detail = detail
-            if network:
-                # Direct evidence: semgrep named the network itself.
-                self._degrade(STATUS_UNREACHABLE, detail)
-            elif proc.returncode != 0 and elapsed >= _SLOW_FAILURE_S:
+            if network or (proc.returncode != 0 and elapsed >= _SLOW_FAILURE_S):
+                # A network marker shapes the *message* but never the
+                # decision to latch. stderr is diagnostic text produced
+                # while scanning a repository we do not control, and the
+                # invocation mixes the base config with planner extras, so
+                # only the probe can say that this config is at fault.
                 blame = self._blame(extras)
                 if blame == "install":
-                    registry = _is_registry_config(str(self.config))
+                    registry = bool(network) or _is_registry_config(str(self.config))
                     self._degrade(STATUS_UNREACHABLE if registry else STATUS_ERROR, detail)
                 elif blame == "extras":
                     self.status_detail = f"{detail}; extra ruleset at fault"
@@ -552,8 +566,16 @@ class SemgrepAdapter:
             return []
         if network and not matches:
             # Output parsed, but the rules never loaded — zero matches here
-            # means "we learned nothing", not "the repo is clean".
-            self._degrade(STATUS_UNREACHABLE, network)
+            # means "we learned nothing", not "the repo is clean". Still
+            # confirm with the probe before latching: stderr is diagnostic
+            # text from a run over a repository we do not control, so
+            # matching a marker in it is a hint about the cause, never
+            # proof that this config is the thing that failed.
+            if self._blame(extras) == "install":
+                self._degrade(STATUS_UNREACHABLE, network)
+            else:
+                self.status = STATUS_ERROR
+                self.status_detail = network
             return []
         if proc.returncode != 0:
             # Semgrep printed parseable JSON and still failed. Measured:
@@ -593,8 +615,10 @@ class SemgrepAdapter:
         # including a `SPOTLIGHT_SEMGREP=on` run taken to probe recovery,
         # which would otherwise leave Semgrep suppressed for everyone on
         # `auto`. Only this config's, though: another ruleset being
-        # reachable says nothing about one that is not.
-        _clear_latch(str(self.config))
+        # reachable says nothing about one that is not — and only if the
+        # latch predates this scan, since overlapping sweeps mean a slow
+        # success can land after a newer, genuine failure.
+        _clear_latch(str(self.config), older_than=started)
         return matches
 
     def _config_loads(self, configs: list[str] | None = None) -> bool:

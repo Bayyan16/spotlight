@@ -363,6 +363,84 @@ def test_registry_error_on_stderr_degrades_without_a_timeout(monkeypatch, tmp_pa
     assert "registry unreachable" in capsys.readouterr().out
 
 
+def test_network_marker_alone_does_not_latch(monkeypatch, tmp_path):
+    """stderr is diagnostic text from a repository we do not control.
+
+    Matching a marker in it is a hint about the cause, never proof that
+    this config is what failed — and the invocation mixes the base config
+    with planner extras. If a marker alone could latch, anything able to
+    get network-looking text into semgrep's stderr could suppress the base
+    config for unrelated targets. So the probe decides.
+    """
+    _fake_which(monkeypatch)
+    monkeypatch.setattr("spotlight.signals.semgrep_adapter._SLOW_FAILURE_S", 0.0)
+    stderr = "Failed to download config from https://semgrep.dev/c/p/default: 403"
+
+    def semgrep(cmd, **kw):
+        if _is_probe(cmd):
+            # The ruleset resolves perfectly well.
+            return _fake_proc(stdout=json.dumps({"results": []}))
+        return _fake_proc(stdout="", stderr=stderr, returncode=2)
+
+    monkeypatch.setattr("spotlight.signals.semgrep_adapter.subprocess.run", semgrep)
+
+    a = SemgrepAdapter()
+    assert a.scan(tmp_path) == []
+    assert a.status == STATUS_ERROR
+    assert degraded_reason() is None, "a marker in stderr must not latch on its own"
+    assert SemgrepAdapter().available() is True
+
+
+def test_network_marker_with_a_failing_probe_does_latch(monkeypatch, tmp_path):
+    """The air-gapped case this adapter exists for still latches."""
+    _fake_which(monkeypatch)
+    monkeypatch.setattr("spotlight.signals.semgrep_adapter._SLOW_FAILURE_S", 0.0)
+    stderr = "Failed to download config from https://semgrep.dev/c/p/default: 403"
+
+    def semgrep(cmd, **kw):
+        if _is_probe(cmd):
+            return _fake_proc(stdout="", returncode=2)
+        return _fake_proc(stdout="", stderr=stderr, returncode=2)
+
+    monkeypatch.setattr("spotlight.signals.semgrep_adapter.subprocess.run", semgrep)
+
+    a = SemgrepAdapter()
+    assert a.scan(tmp_path) == []
+    assert a.status == STATUS_UNREACHABLE
+    assert "semgrep.dev" in (degraded_reason() or "")
+    assert SemgrepAdapter().available() is False
+
+
+def test_a_slow_success_does_not_clear_a_newer_latch(monkeypatch, tmp_path):
+    """Overlapping sweeps share this module state.
+
+    A slow successful scan can finish after a faster one has latched a real
+    failure for the same config. Clearing by completion order would make
+    the next sweep re-pay the wait the latch exists to prevent.
+    """
+    _fake_which(monkeypatch)
+    clock = [1000.0]
+    monkeypatch.setattr(
+        "spotlight.signals.semgrep_adapter.time.monotonic", lambda: clock[0]
+    )
+
+    def slow_success(cmd, **kw):
+        # While this scan is in flight, another sweep latches the config.
+        clock[0] += 10
+        SemgrepAdapter(config="p/default")._degrade("unreachable", "newer real failure")
+        clock[0] += 10
+        return _fake_proc(stdout=json.dumps({"results": []}))
+
+    monkeypatch.setattr("spotlight.signals.semgrep_adapter.subprocess.run", slow_success)
+
+    a = SemgrepAdapter(config="p/default")
+    assert a.scan(tmp_path) == []
+    assert a.status == STATUS_OK
+    # The newer failure survives this older scan's success.
+    assert degraded_reason() == "newer real failure"
+    assert SemgrepAdapter(config="p/default").available() is False
+
+
 def test_local_config_failure_does_not_claim_the_registry_is_down(monkeypatch, tmp_path, capsys):
     _fake_which(monkeypatch)
     monkeypatch.setenv(ENV_CONFIG, "/opt/rules")
