@@ -474,6 +474,92 @@ def test_target_specific_timeout_does_not_disable_later_sweeps(monkeypatch, tmp_
     assert scans["n"] == 2, "the second sweep must still have run semgrep"
 
 
+def test_rejected_extra_ruleset_does_not_cost_the_sweep_its_base_coverage(
+    monkeypatch, tmp_path
+):
+    """A malformed planner rulepack must not zero out Semgrep entirely.
+
+    Measured against semgrep 1.178: one rejected entry among the
+    `--config` values drops EVERY rule, so `--config healthy --config
+    broken` returns no results at all even though `--config healthy` alone
+    matches. Recon feeds the planner's LLM-generated YAML through
+    `extra_configs`, so this is reachable on any sweep where the planner
+    emits something semgrep refuses.
+    """
+    _fake_which(monkeypatch)
+    BAD = "/tmp/planner-rules.yml"
+    seen: list[list[str]] = []
+    hit = {
+        "check_id": "python.flask.security.injection.tainted-sql-string",
+        "path": "app.py",
+        "start": {"line": 7},
+        "end": {"line": 7},
+        "extra": {"severity": "ERROR", "message": "sqli", "lines": "x"},
+    }
+
+    def semgrep(cmd, **kw):
+        seen.append(cmd)
+        if _is_probe(cmd):
+            # The base config resolves; the planner rulepack does not.
+            return _fake_proc(
+                stdout=json.dumps({"results": []}),
+                returncode=7 if BAD in cmd else 0,
+            )
+        if BAD in cmd:
+            # The poisoned run: parseable JSON, non-zero, and no results.
+            return _fake_proc(
+                stdout=json.dumps(
+                    {"results": [], "errors": [{"message": "invalid configuration file found"}]}
+                ),
+                returncode=7,
+            )
+        return _fake_proc(stdout=json.dumps({"results": [hit]}))
+
+    monkeypatch.setattr("spotlight.signals.semgrep_adapter.subprocess.run", semgrep)
+
+    a = SemgrepAdapter()
+    matches = a.scan(tmp_path, extra_configs=[BAD])
+    # The retry without the extras recovers what the base rules do find.
+    assert len(matches) == 1
+    assert matches[0].class_ == "sqli"
+    assert a.status == STATUS_OK
+    # Nothing latched: the extras are ephemeral (a fresh mkdtemp per sweep,
+    # so no identity worth latching) and the base config is innocent.
+    assert degraded_reason() is None
+    # One retry, not a loop.
+    assert sum(1 for c in seen if not _is_probe(c)) == 2
+
+
+def test_extras_induced_timeout_is_blamed_on_the_extras(monkeypatch, tmp_path):
+    """Probing only the base config called this "target-specific", so the
+    same stall was paid again every sweep. The probe must cover the config
+    set actually run."""
+    _fake_which(monkeypatch)
+    BAD = "/tmp/planner-rules.yml"
+    scans: list[list[str]] = []
+
+    def semgrep(cmd, **kw):
+        if _is_probe(cmd):
+            if BAD in cmd:
+                raise subprocess.TimeoutExpired(cmd="semgrep", timeout=5)
+            return _fake_proc(stdout=json.dumps({"results": []}))
+        scans.append(cmd)
+        if BAD in cmd:
+            raise subprocess.TimeoutExpired(cmd="semgrep", timeout=30)
+        return _fake_proc(stdout=json.dumps({"results": []}))
+
+    monkeypatch.setattr("spotlight.signals.semgrep_adapter.subprocess.run", semgrep)
+
+    a = SemgrepAdapter()
+    assert a.scan(tmp_path, extra_configs=[BAD]) == []
+    # Blamed on the extras, and the base-only retry succeeded.
+    assert a.status == STATUS_OK
+    assert len(scans) == 2 and BAD not in scans[1]
+    # The innocent base config must not be latched over this.
+    assert degraded_reason() is None
+    assert SemgrepAdapter().available() is True
+
+
 def test_latch_applies_only_to_the_config_that_failed(monkeypatch, tmp_path):
     """Switching to a healthy local ruleset restores scanning without a
     process restart."""

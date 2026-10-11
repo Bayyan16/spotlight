@@ -447,6 +447,7 @@ class SemgrepAdapter:
         if not self.available():
             return []
         self.match_count = 0
+        extras = [str(e) for e in (extra_configs or []) if e]
         cmd = [
             self.executable,
             "--config", str(self.config),
@@ -462,9 +463,8 @@ class SemgrepAdapter:
             # so it is off unconditionally.
             "--disable-version-check",
         ]
-        for extra in extra_configs or []:
-            if extra:
-                cmd.extend(["--config", str(extra)])
+        for extra in extras:
+            cmd.extend(["--config", extra])
         cmd.append(str(root))
         started = time.monotonic()
         try:
@@ -477,19 +477,34 @@ class SemgrepAdapter:
             )
         except subprocess.TimeoutExpired:
             detail = f"no result after {self.timeout_s + 15}s"
-            if self._config_loads():
-                # The ruleset resolves fine, so this is this repository's
-                # problem, not the install's. Suppressing unrelated sweeps
-                # over one pathological target would trade a slow scan for
-                # lost coverage everywhere else this worker goes.
-                self.status = STATUS_TIMEOUT
-                self.status_detail = f"{detail}; ruleset loads, so target-specific"
-                print(
-                    f"[semgrep] timed out on this target ({detail}); ruleset is"
-                    " healthy, so later sweeps still run"
-                )
+            blame = self._blame(extras)
+            if blame == "install":
+                self._degrade(STATUS_TIMEOUT, f"{detail}; ruleset did not load")
                 return []
-            self._degrade(STATUS_TIMEOUT, f"{detail}; ruleset did not load")
+            if blame == "extras":
+                # The base config is fine and the extras are what stall.
+                # They are ephemeral — the planner writes a fresh mkdtemp
+                # path per sweep — so there is no identity worth latching,
+                # and latching the innocent base config would suppress
+                # scans that never use these extras. Drop them and keep
+                # the sweep's base coverage instead.
+                self.status = STATUS_TIMEOUT
+                self.status_detail = f"{detail}; extra ruleset stalls, dropped"
+                print(
+                    f"[semgrep] the extra ruleset stalls ({detail}); scanning"
+                    f" with {self.config} alone so this sweep keeps coverage"
+                )
+                return self.scan(root, extra_configs=None)
+            # The whole config set resolves, so this is this repository's
+            # problem. Suppressing unrelated sweeps over one pathological
+            # target would trade a slow scan for lost coverage everywhere
+            # else this worker goes.
+            self.status = STATUS_TIMEOUT
+            self.status_detail = f"{detail}; ruleset loads, so target-specific"
+            print(
+                f"[semgrep] timed out on this target ({detail}); ruleset is"
+                " healthy, so later sweeps still run"
+            )
             return []
         except FileNotFoundError:
             self.status = STATUS_MISSING
@@ -525,9 +540,13 @@ class SemgrepAdapter:
             if network:
                 # Direct evidence: semgrep named the network itself.
                 self._degrade(STATUS_UNREACHABLE, detail)
-            elif proc.returncode != 0 and elapsed >= _SLOW_FAILURE_S and not self._config_loads():
-                registry = _is_registry_config(str(self.config))
-                self._degrade(STATUS_UNREACHABLE if registry else STATUS_ERROR, detail)
+            elif proc.returncode != 0 and elapsed >= _SLOW_FAILURE_S:
+                blame = self._blame(extras)
+                if blame == "install":
+                    registry = _is_registry_config(str(self.config))
+                    self._degrade(STATUS_UNREACHABLE if registry else STATUS_ERROR, detail)
+                elif blame == "extras":
+                    self.status_detail = f"{detail}; extra ruleset at fault"
             # Anything else — a fast non-zero exit, or exit 0 with unusable
             # output — is cheap to retry, so it stays a per-run error.
             return []
@@ -553,6 +572,18 @@ class SemgrepAdapter:
                 _json_errors(data) or f"exit {proc.returncode} after {elapsed:.0f}s"
             )
             self.match_count = len(matches)
+            if not matches and extras and self._config_loads([str(self.config)]):
+                # Measured against semgrep 1.178: one rejected entry among
+                # the `--config` values drops EVERY rule, so a malformed
+                # planner rulepack silently takes the base rules with it
+                # and the sweep gets no Semgrep coverage at all. The base
+                # config loads on its own, so retry without the extras
+                # rather than lose the lot.
+                print(
+                    f"[semgrep] extra ruleset rejected ({self.status_detail});"
+                    f" retrying with {self.config} alone"
+                )
+                return self.scan(root, extra_configs=None)
             return matches
 
         self.status = STATUS_OK
@@ -566,29 +597,28 @@ class SemgrepAdapter:
         _clear_latch(str(self.config))
         return matches
 
-    def _config_loads(self) -> bool:
-        """Can this ruleset be resolved at all, independent of any target?
+    def _config_loads(self, configs: list[str] | None = None) -> bool:
+        """Can these rulesets be resolved at all, independent of any target?
 
-        Probes the config against an empty directory, so the answer is
-        about the install and not the repository: a reachable registry or a
-        local ruleset returns in about 2s, an unreachable registry blocks
-        past `_PROBE_TIMEOUT_S`, and a malformed ruleset exits non-zero.
-        That is what separates a dead wait worth latching from one slow
-        target.
+        Probes them against an empty directory, so the answer is about the
+        install and not the repository: a reachable registry or a local
+        ruleset returns in about 2s, an unreachable registry blocks past
+        `_PROBE_TIMEOUT_S`, and a malformed ruleset exits non-zero. That is
+        what separates a dead wait worth latching from one slow target.
+
+        Defaults to this adapter's base config; pass the full set actually
+        handed to `scan` to include the planner's extras, since a single
+        bad entry among the `--config` values takes the others down with it.
         """
+        cmd = [self.executable]
+        for config in configs if configs is not None else [str(self.config)]:
+            cmd.extend(["--config", config])
+        cmd.extend(["--json", "--quiet", "--timeout", "5", "--metrics=off",
+                    "--disable-version-check"])
         try:
             with tempfile.TemporaryDirectory(prefix="spotlight-semgrep-probe-") as probe:
                 proc = subprocess.run(
-                    [
-                        self.executable,
-                        "--config", str(self.config),
-                        "--json",
-                        "--quiet",
-                        "--timeout", "5",
-                        "--metrics=off",
-                        "--disable-version-check",
-                        probe,
-                    ],
+                    [*cmd, probe],
                     capture_output=True,
                     text=True,
                     timeout=_PROBE_TIMEOUT_S,
@@ -597,6 +627,19 @@ class SemgrepAdapter:
         except (subprocess.TimeoutExpired, OSError):
             return False
         return proc.returncode == 0
+
+    def _blame(self, extras: list[str]) -> str:
+        """Who owns a slow failure: the target, the extras, or the install?
+
+        Probing only the base config would call an extras-induced stall
+        "target-specific" and latch nothing, so the same wait is paid again
+        next sweep. Probe what was actually run, then narrow.
+        """
+        if self._config_loads([str(self.config), *extras]):
+            return "target"
+        if extras and self._config_loads([str(self.config)]):
+            return "extras"
+        return "install"
 
     def _degrade(self, status: str, detail: str) -> None:
         """Record the failure and latch it against this config."""
