@@ -629,7 +629,7 @@ Expansion mechanisms:
 | `SPOTLIGHT_SEMGREP_CONFIG` | `p/default` | Any `--config` value semgrep accepts. Point it at a vendored ruleset directory and no scan touches the network. |
 | — (always on) | — | `--disable-version-check` is passed unconditionally; on a proxied sandbox it takes a local-rules scan of `targets/vuln-bank-api` from 99s to 2s. |
 
-Failure is latched, not re-paid: the first timeout or registry error prints one line (`[semgrep] registry unreachable …`) and disables Semgrep for the rest of the process, so subsequent sweeps skip straight past. Recon reports what Semgrep actually *did* — `[recon] semgrep: ok — 12 matches via p/default`, or `degraded: registry unreachable (…)` — rather than whether the binary is on PATH.
+Failure is latched, not re-paid: a timeout or registry error prints one line (`[semgrep] registry unreachable …`) and disables Semgrep so subsequent sweeps skip straight past. The latch is deliberately narrow, because Spotlight scans repositories it does not control and a target crafted to exhaust semgrep's time budget must not cost every later sweep its independent signal. So on a timeout the adapter asks the *config* rather than the target — it resolves the ruleset against an empty directory (~2s when reachable, bounded at 20s) and latches only when the ruleset genuinely cannot load. The latch then applies to that config alone, expires after 15 minutes, and is cleared by any successful scan, a forced `on` recovery probe included. Recon reports what Semgrep actually *did* — `[recon] semgrep: ok — 12 matches via p/default`, or `degraded: registry unreachable (…)` — rather than whether the binary is on PATH.
 
 ### Layer 2 — Language-native taint (depth on the hot classes)
 

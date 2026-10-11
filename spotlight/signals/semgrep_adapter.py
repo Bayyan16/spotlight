@@ -43,6 +43,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -242,18 +243,58 @@ _NETWORK_ERROR_MARKERS: tuple[str, ...] = (
 # latching on it would blame the network for a config bug.
 _SLOW_FAILURE_S = 10.0
 
-_DEGRADED_REASON: str | None = None
+# A latch is scoped three ways, because an unscoped one turns a slow scan
+# into lost coverage. Spotlight scans repositories it does not control, and
+# a target crafted to exhaust semgrep's time budget would otherwise
+# suppress this worker's independent security signal for every later sweep
+# of every other target. So a latch:
+#   * applies only to the config that failed — switching to a healthy local
+#     ruleset restores scanning without a restart;
+#   * expires, so a transient outage recovers on its own;
+#   * is cleared by any successful scan, including a forced `on` one.
+# And it is only taken when the failure is shown to be the environment's
+# rather than the target's — see `_config_loads`.
+_LATCH_TTL_S = 900.0
+
+# Bound on the config probe. A reachable registry or a local ruleset
+# resolves in about 2s, measured; this only has to outlast that.
+_PROBE_TIMEOUT_S = 20
+
+
+@dataclass
+class _Latch:
+    reason: str
+    config: str
+    at: float
+
+
+_LATCH: _Latch | None = None
+
+
+def _live_latch() -> _Latch | None:
+    """The latch, if one is set and has not expired."""
+    latch = _LATCH
+    if latch is None:
+        return None
+    if time.monotonic() - latch.at >= _LATCH_TTL_S:
+        return None
+    return latch
 
 
 def degraded_reason() -> str | None:
-    """Why Semgrep is being skipped process-wide, or None while healthy."""
-    return _DEGRADED_REASON
+    """Why Semgrep is being skipped, or None while healthy.
+
+    Scoped to a config, so `available()` is what decides for a given
+    adapter; this is for observability and tests.
+    """
+    latch = _live_latch()
+    return latch.reason if latch else None
 
 
 def reset_degraded_state() -> None:
     """Clear the latch — for tests, and for workers that want to retry."""
-    global _DEGRADED_REASON
-    _DEGRADED_REASON = None
+    global _LATCH
+    _LATCH = None
 
 
 def _is_registry_config(config: str) -> bool:
@@ -341,9 +382,10 @@ class SemgrepAdapter:
             self.status = STATUS_DISABLED
             self.status_detail = f"{ENV_MODE}=off"
             return False
-        if _DEGRADED_REASON is not None and self.mode != "on":
+        latch = _live_latch()
+        if latch is not None and latch.config == str(self.config) and self.mode != "on":
             self.status = STATUS_SKIPPED
-            self.status_detail = _DEGRADED_REASON
+            self.status_detail = latch.reason
             return False
         if shutil.which(self.executable) is None:
             self.status = STATUS_MISSING
@@ -423,10 +465,20 @@ class SemgrepAdapter:
                 check=False,
             )
         except subprocess.TimeoutExpired:
-            # The registry fetch is the usual culprit: it blocks with no
-            # output at all. Either way, a scan that can't finish once
-            # won't finish on the next sweep either.
-            self._degrade(STATUS_TIMEOUT, f"no result after {self.timeout_s + 15}s")
+            detail = f"no result after {self.timeout_s + 15}s"
+            if self._config_loads():
+                # The ruleset resolves fine, so this is this repository's
+                # problem, not the install's. Suppressing unrelated sweeps
+                # over one pathological target would trade a slow scan for
+                # lost coverage everywhere else this worker goes.
+                self.status = STATUS_TIMEOUT
+                self.status_detail = f"{detail}; ruleset loads, so target-specific"
+                print(
+                    f"[semgrep] timed out on this target ({detail}); ruleset is"
+                    " healthy, so later sweeps still run"
+                )
+                return []
+            self._degrade(STATUS_TIMEOUT, f"{detail}; ruleset did not load")
             return []
         except FileNotFoundError:
             self.status = STATUS_MISSING
@@ -459,8 +511,11 @@ class SemgrepAdapter:
             )
             self.status = STATUS_ERROR
             self.status_detail = detail
-            if network or (proc.returncode != 0 and elapsed >= _SLOW_FAILURE_S):
-                registry = bool(network) or _is_registry_config(str(self.config))
+            if network:
+                # Direct evidence: semgrep named the network itself.
+                self._degrade(STATUS_UNREACHABLE, detail)
+            elif proc.returncode != 0 and elapsed >= _SLOW_FAILURE_S and not self._config_loads():
+                registry = _is_registry_config(str(self.config))
                 self._degrade(STATUS_UNREACHABLE if registry else STATUS_ERROR, detail)
             # Anything else — a fast non-zero exit, or exit 0 with unusable
             # output — is cheap to retry, so it stays a per-run error.
@@ -492,16 +547,52 @@ class SemgrepAdapter:
         self.status = STATUS_OK
         self.status_detail = ""
         self.match_count = len(matches)
+        # A good run is proof the latch no longer applies — including a
+        # `SPOTLIGHT_SEMGREP=on` run taken to probe recovery, which would
+        # otherwise leave Semgrep suppressed for everyone on `auto`.
+        reset_degraded_state()
         return matches
 
+    def _config_loads(self) -> bool:
+        """Can this ruleset be resolved at all, independent of any target?
+
+        Probes the config against an empty directory, so the answer is
+        about the install and not the repository: a reachable registry or a
+        local ruleset returns in about 2s, an unreachable registry blocks
+        past `_PROBE_TIMEOUT_S`, and a malformed ruleset exits non-zero.
+        That is what separates a dead wait worth latching from one slow
+        target.
+        """
+        try:
+            with tempfile.TemporaryDirectory(prefix="spotlight-semgrep-probe-") as probe:
+                proc = subprocess.run(
+                    [
+                        self.executable,
+                        "--config", str(self.config),
+                        "--json",
+                        "--quiet",
+                        "--timeout", "5",
+                        "--metrics=off",
+                        "--disable-version-check",
+                        probe,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=_PROBE_TIMEOUT_S,
+                    check=False,
+                )
+        except (subprocess.TimeoutExpired, OSError):
+            return False
+        return proc.returncode == 0
+
     def _degrade(self, status: str, detail: str) -> None:
-        """Record the failure and latch it for the rest of the process."""
-        global _DEGRADED_REASON
+        """Record the failure and latch it against this config."""
+        global _LATCH
         self.status = status
         self.status_detail = detail
-        if _DEGRADED_REASON is not None:
+        if _live_latch() is not None:
             return
-        _DEGRADED_REASON = detail
+        _LATCH = _Latch(reason=detail, config=str(self.config), at=time.monotonic())
         if _is_registry_config(str(self.config)):
             print(
                 f"[semgrep] registry unreachable ({detail}); "

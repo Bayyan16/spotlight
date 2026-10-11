@@ -17,6 +17,7 @@ import pytest
 
 from spotlight.signals.semgrep_adapter import (
     DEFAULT_CONFIG,
+    _LATCH_TTL_S,
     ENV_CONFIG,
     ENV_MODE,
     STATUS_DISABLED,
@@ -61,6 +62,11 @@ def _fake_which(monkeypatch, path="/usr/local/bin/semgrep"):
         "spotlight.signals.semgrep_adapter.shutil.which",
         lambda _cmd: path,
     )
+
+
+def _is_probe(cmd) -> bool:
+    """True for the config probe, which scans its own empty temp dir."""
+    return any("spotlight-semgrep-probe-" in str(part) for part in cmd)
 
 
 def _fake_proc(stdout="", stderr="", returncode=0):
@@ -310,7 +316,11 @@ def test_timeout_is_not_retried_for_every_subsequent_scan(monkeypatch, tmp_path,
     first = SemgrepAdapter()
     assert first.scan(tmp_path) == []
     assert first.status == STATUS_TIMEOUT
-    assert calls["n"] == 1
+    # The scan, plus the config probe that establishes this is the
+    # install's problem and not the target's (here the probe times out
+    # too, so the ruleset genuinely cannot load).
+    assert calls["n"] == 2
+    spent = calls["n"]
 
     # A brand-new adapter — i.e. the next sweep — must not shell out again.
     for _ in range(3):
@@ -318,7 +328,7 @@ def test_timeout_is_not_retried_for_every_subsequent_scan(monkeypatch, tmp_path,
         assert nxt.available() is False
         assert nxt.scan(tmp_path) == []
         assert nxt.status == STATUS_SKIPPED
-    assert calls["n"] == 1
+    assert calls["n"] == spent
     assert degraded_reason()
 
 
@@ -427,6 +437,115 @@ def test_exit_zero_with_unparseable_output_does_not_latch(monkeypatch, tmp_path)
     assert degraded_reason() is None
 
 
+def test_target_specific_timeout_does_not_disable_later_sweeps(monkeypatch, tmp_path):
+    """A slow repository is that repository's problem.
+
+    Spotlight scans repositories it does not control. A target crafted to
+    exhaust semgrep's time budget must not suppress this worker's
+    independent security signal for every later sweep of every other
+    target — that would trade a slow scan for lost coverage everywhere
+    else. The config probe is what tells the two apart.
+    """
+    _fake_which(monkeypatch)
+    scans = {"n": 0}
+
+    def scan_times_out_probe_is_fine(cmd, **kw):
+        if _is_probe(cmd):
+            # The ruleset resolves cleanly, so the install is healthy.
+            return _fake_proc(stdout=json.dumps({"results": []}))
+        scans["n"] += 1
+        raise subprocess.TimeoutExpired(cmd="semgrep", timeout=30)
+
+    monkeypatch.setattr(
+        "spotlight.signals.semgrep_adapter.subprocess.run",
+        scan_times_out_probe_is_fine,
+    )
+
+    hostile = SemgrepAdapter()
+    assert hostile.scan(tmp_path) == []
+    assert hostile.status == STATUS_TIMEOUT
+    assert "target-specific" in hostile.status_detail
+    # Nothing latched, so the next target is scanned normally.
+    assert degraded_reason() is None
+
+    nxt = SemgrepAdapter()
+    assert nxt.available() is True
+    assert nxt.scan(tmp_path) == []
+    assert scans["n"] == 2, "the second sweep must still have run semgrep"
+
+
+def test_latch_applies_only_to_the_config_that_failed(monkeypatch, tmp_path):
+    """Switching to a healthy local ruleset restores scanning without a
+    process restart."""
+    _fake_which(monkeypatch)
+    monkeypatch.setattr("spotlight.signals.semgrep_adapter._SLOW_FAILURE_S", 0.0)
+    monkeypatch.setattr(
+        "spotlight.signals.semgrep_adapter.subprocess.run",
+        lambda *a, **kw: _fake_proc(stdout="", stderr="", returncode=2),
+    )
+    broken = SemgrepAdapter(config="p/default")
+    assert broken.scan(tmp_path) == []
+    assert degraded_reason()
+
+    assert SemgrepAdapter(config="p/default").available() is False
+    # A different ruleset was never implicated.
+    assert SemgrepAdapter(config=str(tmp_path / "vendored")).available() is True
+
+
+def test_latch_expires(monkeypatch, tmp_path):
+    """A transient outage must recover on its own, not wait for a restart."""
+    _fake_which(monkeypatch)
+    # Drive the clock from the start, so the latch timestamp and the later
+    # reading come from the same fake one.
+    clock = [1000.0]
+    monkeypatch.setattr(
+        "spotlight.signals.semgrep_adapter.time.monotonic", lambda: clock[0]
+    )
+    monkeypatch.setattr(
+        "spotlight.signals.semgrep_adapter.subprocess.run",
+        lambda *a, **kw: (_ for _ in ()).throw(
+            subprocess.TimeoutExpired(cmd="semgrep", timeout=30)
+        ),
+    )
+    SemgrepAdapter().scan(tmp_path)
+    assert degraded_reason()
+    assert SemgrepAdapter().available() is False
+
+    clock[0] += _LATCH_TTL_S - 1
+    assert degraded_reason(), "must still hold just inside the window"
+
+    clock[0] += 2
+    assert degraded_reason() is None
+    assert SemgrepAdapter().available() is True
+
+
+def test_successful_scan_clears_the_latch(monkeypatch, tmp_path):
+    """Including a forced `on` run — otherwise a successful recovery probe
+    leaves Semgrep suppressed for everyone still on `auto`."""
+    _fake_which(monkeypatch)
+    monkeypatch.setattr(
+        "spotlight.signals.semgrep_adapter.subprocess.run",
+        lambda *a, **kw: (_ for _ in ()).throw(
+            subprocess.TimeoutExpired(cmd="semgrep", timeout=30)
+        ),
+    )
+    SemgrepAdapter().scan(tmp_path)
+    assert degraded_reason()
+
+    monkeypatch.setenv(ENV_MODE, "on")
+    monkeypatch.setattr(
+        "spotlight.signals.semgrep_adapter.subprocess.run",
+        lambda *a, **kw: _fake_proc(stdout=json.dumps({"results": []})),
+    )
+    forced = SemgrepAdapter()
+    assert forced.scan(tmp_path) == []
+    assert forced.status == STATUS_OK
+    assert degraded_reason() is None
+
+    monkeypatch.setenv(ENV_MODE, "auto")
+    assert SemgrepAdapter().available() is True
+
+
 def test_mode_on_retries_despite_the_latch(monkeypatch, tmp_path):
     """`on` is the escape hatch for operators who want a retry per sweep."""
     _fake_which(monkeypatch)
@@ -438,13 +557,14 @@ def test_mode_on_retries_despite_the_latch(monkeypatch, tmp_path):
 
     monkeypatch.setattr("spotlight.signals.semgrep_adapter.subprocess.run", boom)
     SemgrepAdapter().scan(tmp_path)
-    assert calls["n"] == 1
+    spent = calls["n"]
+    assert spent  # scan + config probe
 
     monkeypatch.setenv(ENV_MODE, "on")
     forced = SemgrepAdapter()
     assert forced.available() is True
     forced.scan(tmp_path)
-    assert calls["n"] == 2
+    assert calls["n"] > spent
 
 
 def test_successful_run_is_not_degraded(monkeypatch, tmp_path):
